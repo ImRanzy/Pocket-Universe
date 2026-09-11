@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Pocket Universe</title>
+<link rel="stylesheet" href="css/style.css">
+
+</head>
+<body class="state-menu">
+
+<div id="crosshair"></div>
+<div id="creditsDisplay">¢ 0</div>
+
+<div id="staminaWrap"><div id="staminaLabel">SPRINT</div><div id="staminaBar"></div></div>
+  <div id="flashlightStatus" class="hidden">FLASHLIGHT ON · F</div>
+  <div id="rocketFlightStatus" class="hidden"><div id="rocketFlightTitle">ROCKET FLIGHT</div><div id="rocketFlightFuel">FUEL 0%</div><div id="rocketFlightMode">ATMOSPHERE</div><div id="rocketFlightControls">WASD MOVE · SPACE UP · SHIFT DOWN · E EXIT</div></div>
+
+<div id="hotbar">
+  <div class="hotbarSlot selected" data-slot="0"><div class="hotbarNumber">1</div><div class="hotbarEmpty">EMPTY</div></div>
+  <div class="hotbarSlot" data-slot="1"><div class="hotbarNumber">2</div><div class="hotbarEmpty">EMPTY</div></div>
+  <div class="hotbarSlot" data-slot="2"><div class="hotbarNumber">3</div><div class="hotbarEmpty">EMPTY</div></div>
+  <div class="hotbarSlot" data-slot="3"><div class="hotbarNumber">4</div><div class="hotbarEmpty">EMPTY</div></div>
+</div>
+
+<div id="crystalPrompt" class="hidden"></div>
+
+<div id="inventoryOverlay" class="hidden">
+  <div id="inventoryPanel">
+    <div id="inventoryHeader">
+      <h1>Inventory</h1>
+      <button id="inventorySortButton" class="inventorySortButton">Sort</button><button id="inventoryCraftButton" class="inventoryCraftButton">Craft</button>
+    </div>
+    <div id="inventoryHotbarHint">12 slots total • stacks hold up to 10 • click a slot to swap it with the selected hotbar slot</div>
+    <div id="inventoryGrid"></div>
+  </div>
+</div>
+
+
+<div id="furnaceOverlay" class="hidden">
+  <div id="furnacePanel">
+    <div id="furnaceHeader"><h1>Furnace</h1><button id="furnaceClose" title="Close">×</button></div>
+    <div id="furnaceTop">
+      <div class="furnaceSlot" id="furnaceFuelSlot"><div class="furnaceSlotLabel">Fuel</div></div>
+      <div class="furnaceSlot" id="furnaceInputSlot"><div class="furnaceSlotLabel">Smelt</div></div>
+      <div class="furnaceArrow">→</div>
+      <div class="furnaceSlot output" id="furnaceOutputSlot"><div class="furnaceSlotLabel">Output</div></div>
+    </div>
+    <div id="furnaceStatus"></div>
+    <div class="furnaceInventoryTitle">Inventory · drag items between slots to move them</div>
+    <div id="furnaceInventoryGrid"></div>
+  </div>
+</div>
+<div id="craftingOverlay" class="hidden">
+  <div id="craftingPanel">
+    <div id="craftingHeader">
+      <h1>Crafting</h1>
+      <button id="craftingClose" title="Close">×</button>
+    </div>
+    <div id="craftingRecipes"></div>
+    <div id="craftingFooter">
+      <div id="craftingStatus"></div>
+      <button id="craftingNextPage" title="Next page">›</button>
+    </div>
+  </div>
+</div>
+
+<div id="merchantOverlay" class="hidden">
+  <div id="merchantPanel">
+    <div id="merchantNpcBubble">
+      <div id="merchantNpcName">MERCHANT</div>
+      <div id="merchantNpcLine">Welcome, traveler. Looking to trade?</div>
+    </div>
+    <div id="merchantDialogue" class="merchantDialogueBox">
+      <button id="merchantSellChoice" class="merchantChoiceButton">I want to sell stuff</button>
+      <button id="merchantBuyChoice" class="merchantChoiceButton">I want to buy stuff</button>
+    </div>
+    <div id="merchantSellSection" class="hidden merchantSection">
+      <div class="merchantSectionHeader"><div><h2>Sell Stuff</h2><p>Everything in your inventory has a value.</p></div><button id="merchantDialogueBack" class="merchantBackButton">← Back</button></div>
+      <div class="merchantSellLayout">
+        <div id="merchantSellList" class="merchantItemList"></div>
+        <div id="merchantSellDetails" class="merchantDetails">
+          <div class="merchantSelectedName" id="merchantSellName">Select an item</div>
+          <div id="merchantSellOwned">Click an item on the left</div>
+          <div id="merchantSellPrice">—</div>
+          <label>How many? <input id="merchantSellQuantity" type="number" min="1" value="1"></label>
+          <div id="merchantSellTotal">Total: ¢0</div>
+          <button id="merchantSellButton" class="merchantActionButton" disabled>SELL</button>
+        </div>
+      </div>
+    </div>
+    <div id="merchantBuySection" class="hidden merchantSection">
+      <div class="merchantSectionHeader"><div><h2>Buy Stuff</h2><p>Crystals, rocket parts, and full jerrycans are available.</p></div><button id="merchantDialogueBackBuy" class="merchantBackButton">← Back</button></div>
+      <div id="merchantBuyList" class="merchantItemList merchantBuyList"></div>
+    </div>
+    <div id="merchantStatus"></div>
+    <button id="merchantClose" class="merchantCloseButton">Close</button>
+  </div>
+</div>
+
+<div id="controlsToggle" title="Settings">⚙</div>
+
+<div id="transitionFade"></div>
+
+<div id="homeScreen">
+  <div id="homeTitle">POCKET UNIVERSE</div>
+  <div id="planetHint">Drag to rotate the planet and explore your spawn location</div>
+  <div id="homeLoading">Loading planet…</div>
+  <div id="homeButtons" class="hidden">
+    <button id="playButton">SINGLEPLAYER</button>
+    <button id="loadGameButton">LOAD GAME</button>
+    <button id="homeSettingsButton">Settings</button>
+  </div>
+  <!-- Hidden file picker used when loading a saved Pocket Universe JSON file. -->
+  <input id="saveFileInput" type="file" accept="application/json,.json" hidden />
+</div>
+
+<div id="modeChooser" class="hidden">
+  <div id="modeChooserPanel">
+    <h1>Choose Game Mode</h1>
+    <p>Survival keeps the normal progression. Freeplay removes crafting costs and makes movement faster for easy testing.</p>
+    <div id="modeButtons">
+      <button id="survivalModeButton">SURVIVAL MODE</button>
+      <button id="freeplayModeButton">FREEPLAY MODE</button>
+      <button id="modeBackButton">Back</button>
+    </div>
+  </div>
+</div>
+
+<div id="pauseOverlay" class="hidden">
+  <div id="pausePanel">
+    <h1>Paused</h1>
+    <div id="pauseButtons">
+      <button id="resumeButton">Resume</button>
+      <button id="saveGameButton">Save Game</button>
+      <button id="pauseSettingsButton">Settings</button>
+      <button id="pauseMenuButton">Go back to Menu</button>
+    </div>
+  </div>
+</div>
+
+<div id="settingsModal" class="hidden">
+  <div id="settingsPanel">
+    <button id="settingsClose" title="Close">×</button>
+    <h1>Controls</h1>
+    <div id="settingsContent">
+    <div class="keyRow">
+      <span class="keyLabel">Move</span>
+      <div class="keys"><div class="key">W</div><div class="key">A</div><div class="key">S</div><div class="key">D</div></div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Sprint</span>
+      <div class="key">Shift</div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Jump</span>
+      <div class="key">Space</div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Toggle view</span>
+      <div class="key">C</div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Flashlight</span>
+      <div class="key">F</div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Collect nearby crystal</span>
+      <div class="key">E</div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Chop tree with axe</span>
+      <div class="key">LMB</div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Inventory</span>
+      <div class="key">I</div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Hotbar slots</span>
+      <div class="keys"><div class="key">1</div><div class="key">2</div><div class="key">3</div><div class="key">4</div></div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Look around</span>
+      <span class="keyNote">Mouse, or hold left-click and drag</span>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Spaceship move</span>
+      <div class="keys"><div class="key">W</div><div class="key">A</div><div class="key">S</div><div class="key">D</div></div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Spaceship up / down</span>
+      <div class="keys"><div class="key">Space</div><div class="key">Shift</div></div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Enter / exit spaceship</span>
+      <div class="key">E</div>
+    </div>
+    <div class="keyRow">
+      <span class="keyLabel">Pause menu</span>
+      <div class="key">Esc</div>
+    </div>
+    </div>
+  </div>
+</div>
+
+<script src="js/state/game-state.js"></script>
+  <script src="js/state/player-state.js"></script>
+<script src="js/state/inventory-state.js"></script>
+<script src="js/state/ui-state.js"></script>
+<script src="js/state/world-state.js"></script>
+<script src="js/state/system-state.js"></script>
+<script src="js/state/render-state.js"></script>
+<script src="js/state/economy-state.js"></script>
+  <script src="js/state/index.js"></script>
+<script src="js/main.js"></script>
+
+</body>
+</html>
