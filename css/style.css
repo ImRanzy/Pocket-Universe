@@ -1165,43 +1165,62 @@ body.state-menu #creditsDisplay { display: none; }
   .mapInstructions { font-size:8px; }
 }
 
-/* ---------- mobile touch controls ---------- */
-#mobileControls { display:none; }
-#mobileControls.mobileEnabled { display:block; position:fixed; inset:0; z-index:130; pointer-events:none; font-family:'Segoe UI',system-ui,-apple-system,sans-serif; touch-action:none; user-select:none; }
-#mobileControls.mobileEnabled button,
-#mobileControls.mobileEnabled #mobileJoystick { pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; }
-#mobileActionButtons { position:absolute; left:max(14px, env(safe-area-inset-left)); bottom:max(118px, calc(92px + env(safe-area-inset-bottom))); display:grid; grid-template-columns:repeat(2, minmax(66px, 78px)); gap:9px; }
-.mobileActionButton { width:72px; height:58px; border:1px solid rgba(255,255,255,.20); border-radius:16px; background:rgba(10,15,22,.66); color:#f4f7fb; box-shadow:0 7px 20px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.08); backdrop-filter:blur(8px); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; font-size:19px; font-weight:900; line-height:1; }
-.mobileActionButton span { font-size:8px; letter-spacing:1px; color:rgba(235,242,250,.62); }
-.mobileActionButton.active { transform:scale(.94); background:rgba(255,255,255,.17); }
-#mobileMoreMenu { position:absolute; left:max(14px, env(safe-area-inset-left)); bottom:max(118px, calc(92px + env(safe-area-inset-bottom))); transform:translateY(-122px); display:flex; flex-direction:column; gap:8px; pointer-events:auto; }
-#mobileMoreMenu button { min-width:128px; height:44px; border-radius:12px; border:1px solid rgba(255,255,255,.18); background:rgba(12,17,24,.82); color:#f4f7fb; font-size:11px; font-weight:900; letter-spacing:1px; box-shadow:0 7px 18px rgba(0,0,0,.28); }
-#mobileJoystick { position:absolute; right:max(18px, env(safe-area-inset-right)); bottom:max(118px, calc(92px + env(safe-area-inset-bottom))); width:168px; height:168px; }
-#mobileJoystickBase { width:100%; height:100%; border-radius:50%; background:rgba(10,15,22,.32); border:2px solid rgba(255,255,255,.22); box-shadow:inset 0 0 35px rgba(255,255,255,.035),0 8px 24px rgba(0,0,0,.22); backdrop-filter:blur(6px); position:relative; }
-#mobileJoystickKnob { position:absolute; left:50%; top:50%; width:74px; height:74px; margin:-37px; border-radius:50%; background:rgba(255,255,255,.19); border:1px solid rgba(255,255,255,.34); box-shadow:0 5px 18px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.13); transform:translate3d(0,0,0); }
-#mobileLookHint { position:absolute; top:68px; left:50%; transform:translateX(-50%); padding:7px 10px; border-radius:10px; background:rgba(8,12,18,.45); color:rgba(255,255,255,.36); font-size:8px; font-weight:800; letter-spacing:1.4px; opacity:0; transition:opacity .2s; }
-#mobileControls.mobileEnabled.showLookHint #mobileLookHint { opacity:1; }
-body.mobile-controls-on #hotbar { pointer-events:auto; }
-body.mobile-controls-on #controlsToggle { display:flex; }
-body.mobile-controls-on #staminaWrap { bottom:calc(106px + env(safe-area-inset-bottom)); }
-body.mobile-controls-on #crystalPrompt { bottom:calc(180px + env(safe-area-inset-bottom)); }
-body.mobile-controls-on #flashlightStatus { bottom:calc(205px + env(safe-area-inset-bottom)); }
-body.mobile-controls-on #rocketFlightStatus { top:max(12px,env(safe-area-inset-top)); left:max(12px,env(safe-area-inset-left)); min-width:170px; }
-body.mobile-controls-on #hotbar .hotbarSlot { width:clamp(46px,12vw,58px); height:clamp(46px,12vw,58px); }
-body.mobile-controls-on #hotbar { bottom:max(14px,env(safe-area-inset-bottom)); gap:3px; }
 
-.mobileToggle { display:inline-flex; align-items:center; cursor:pointer; }
-.mobileToggle input { position:absolute; opacity:0; pointer-events:none; }
-.mobileToggleTrack { width:50px; height:28px; border-radius:99px; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.18); padding:3px; transition:.16s; }
-.mobileToggleThumb { display:block; width:20px; height:20px; border-radius:50%; background:#cfd6df; box-shadow:0 2px 8px rgba(0,0,0,.28); transition:.16s; }
-.mobileToggle input:checked + .mobileToggleTrack { background:rgba(73,180,255,.32); border-color:rgba(73,180,255,.52); }
-.mobileToggle input:checked + .mobileToggleTrack .mobileToggleThumb { transform:translateX(22px); background:#fff; }
-
-@media (max-width:720px) {
-  #settingsPanel { width:min(430px,92vw); max-height:88vh; padding:22px 20px 16px; }
-  #settingsContent { max-height:calc(88vh - 92px); }
-  .keyRow { gap:12px; }
-  .keyNote { max-width:150px; }
-  #homeTitle { font-size:26px; top:7vh; }
-  #planetHint { font-size:11px; bottom:27vh; width:88vw; text-align:center; }
+/* ---------- weather controls ---------- */
+#weatherControlToggle { display:none !important;
+  position: fixed;
+  top: 18px;
+  left: 22px;
+  z-index: 96;
+  padding: 9px 13px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 10px;
+  background: rgba(10,14,20,0.72);
+  color: #f5f7fb;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  box-shadow: 0 8px 26px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.04);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
 }
+#weatherControlToggle:hover { background: rgba(255,255,255,0.12); }
+#weatherControlOverlay {
+  position: fixed; inset: 0; z-index: 91;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4,7,12,0.58);
+  backdrop-filter: blur(5px);
+}
+#weatherControlPanel {
+  position: relative;
+  width: min(360px, 86vw);
+  padding: 28px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(20,26,36,0.98), rgba(9,13,20,0.98));
+  color: #eef3f8;
+  box-shadow: 0 24px 80px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.04);
+}
+#weatherControlPanel h1 { margin: 4px 0 6px; font-size: 21px; }
+#weatherControlPanel p { margin: 0 0 18px; color: rgba(220,228,238,.65); font-size: 12px; line-height: 1.5; }
+.weatherControlEyebrow { color: #7eb8ff; font-size: 10px; font-weight: 900; letter-spacing: 1.2px; }
+#weatherControlClose {
+  position: absolute; top: 12px; right: 12px; width: 28px; height: 28px;
+  border: none; border-radius: 50%; background: rgba(255,255,255,.08); color: #e7edf4;
+  cursor: pointer;
+}
+#weatherControlButtons { display: grid; grid-template-columns: 1fr; gap: 10px; }
+#weatherControlButtons button {
+  min-height: 42px; border-radius: 9px; border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.06); color: #fff; font-weight: 800; cursor: pointer;
+}
+#weatherRainButton { background: rgba(80,145,235,.18) !important; border-color: rgba(104,169,255,.35) !important; }
+#weatherThunderButton { background: rgba(80,80,95,.22) !important; border-color: rgba(180,190,220,.35) !important; }
+#weatherClearButton { background: rgba(120,180,130,.12) !important; border-color: rgba(120,210,140,.25) !important; }
+#weatherControlStatus { margin-top: 15px; text-align: center; font-size: 11px; font-weight: 900; letter-spacing: .8px; color: rgba(235,242,249,.68); }
+@media (max-width: 600px) {
+  #weatherControlToggle { display:none !important; top: 12px; left: 12px; padding: 8px 10px; font-size: 10px; }
+  #weatherControlButtons { grid-template-columns: 1fr; }
+}
+
+#lightningFlash { position: fixed; inset: 0; z-index: 999; pointer-events: none; background: #ffffff; opacity: 0; transition: opacity 0.03s linear; }

@@ -128,26 +128,25 @@
   </div>
 </div>
 
-<div id="controlsToggle" title="Settings">⚙</div>
 
-<!-- ---------- mobile touch controls ---------- -->
-<div id="mobileControls" class="hidden" aria-hidden="true">
-  <div id="mobileActionButtons">
-    <button class="mobileActionButton" id="mobileJumpButton" aria-label="Jump">↟<span>JUMP</span></button>
-    <button class="mobileActionButton" id="mobileSprintButton" aria-label="Sprint">⚡<span>SPRINT</span></button>
-    <button class="mobileActionButton" id="mobileFlashlightButton" aria-label="Flashlight">☼<span>LIGHT</span></button>
-    <button class="mobileActionButton" id="mobileInteractButton" aria-label="Interact">E<span>USE</span></button>
-    <button class="mobileActionButton" id="mobileMoreButton" aria-label="More controls">•••<span>MORE</span></button>
-  </div>
-  <div id="mobileMoreMenu" class="hidden">
-    <button id="mobileMapButton">MAP</button>
-    <button id="mobileInventoryButton">INVENTORY</button>
-  </div>
-  <div id="mobileLookHint" aria-hidden="true">DRAG TO LOOK</div>
-  <div id="mobileJoystick" aria-label="Move joystick">
-    <div id="mobileJoystickBase"><div id="mobileJoystickKnob"></div></div>
+<div id="weatherControlToggle" class="hidden" title="Weather controls">☁ WEATHER</div>
+<div id="weatherControlOverlay" class="hidden">
+  <div id="weatherControlPanel">
+    <button id="weatherControlClose" title="Close">×</button>
+    <div class="weatherControlEyebrow">CREATIVE TOOLS</div>
+    <h1>Weather Control</h1>
+    <p>Test the planet's weather instantly.</p>
+    <div id="weatherControlButtons">
+      <button id="weatherRainButton">START RAIN</button>
+      <button id="weatherThunderButton">START THUNDERSTORM</button>
+      <button id="weatherClearButton">CLEAR WEATHER</button>
+    </div>
+    <div id="weatherControlStatus">WEATHER: CLEAR</div>
   </div>
 </div>
+
+<div id="lightningFlash"></div>
+<div id="controlsToggle" title="Settings">⚙</div>
 
 <div id="transitionFade"></div>
 
@@ -192,10 +191,6 @@
   <div id="settingsPanel">
     <button id="settingsClose" title="Close">×</button>
     <h1>Controls</h1>
-    <div class="keyRow mobileSettingRow">
-      <span class="keyLabel">Mobile controls</span>
-      <label class="mobileToggle"><input id="mobileControlsToggle" type="checkbox" /><span class="mobileToggleTrack"><span class="mobileToggleThumb"></span></span></label>
-    </div>
     <div id="settingsContent">
     <div class="keyRow">
       <span class="keyLabel">Move</span>

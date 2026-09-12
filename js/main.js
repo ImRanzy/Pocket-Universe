@@ -262,7 +262,7 @@
     // ---------- renderer / scene / cameras ----------
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(
-      70, window.innerWidth / window.innerHeight, 0.1, 10000
+      70, window.innerWidth / window.innerHeight, 0.1, 1000000
     );
 
     // Main-menu planet preview camera.
@@ -498,6 +498,8 @@
       color: 0x4fa8ff, side: THREE.BackSide, fog: false,
     });
     const skyMesh = new THREE.Mesh(skyGeo, skyMat);
+    skyMesh.renderOrder = -2;
+    skyMat.depthWrite = false;
     scene.add(skyMesh);
 
     const cloudGeo = new THREE.SphereGeometry(1440, 24, 12);
@@ -507,19 +509,424 @@
     const cloudMesh = new THREE.Mesh(cloudGeo, cloudMat);
     scene.add(cloudMesh);
 
-    // Small star particles are hidden during the day and fade in at night.
+    // ---------- low cloud layer ----------
+    // Simple stylized cloud clusters circling the planet at roughly 60 units above the
+    // planet's 120-unit base radius. Each cluster is made from a few soft white spheres
+    // flattened into little puffs and placed on a spherical shell at radius 180.
+    // The layer rotates slowly around the planet independently from the planet itself.
+    const CLOUD_LAYER_RADIUS = 180;
+    const cloudLayer = new THREE.Group();
+    scene.add(cloudLayer);
+
+    const cloudPuffGeo = new THREE.SphereGeometry(1, 12, 8);
+    const cloudPuffMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.82,
+      depthWrite: false,
+      fog: false
+    });
+
+    function addCloudCluster(direction, scale = 1, puffCountOverride = null) {
+      const normal = direction.clone().normalize();
+      const tangentA = new THREE.Vector3();
+      const tangentB = new THREE.Vector3();
+      const ref = Math.abs(normal.y) > 0.92 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      tangentA.crossVectors(ref, normal).normalize();
+      tangentB.crossVectors(normal, tangentA).normalize();
+
+      const cluster = new THREE.Group();
+      cluster.position.copy(normal).multiplyScalar(CLOUD_LAYER_RADIUS);
+      cluster.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+
+      const puffs = puffCountOverride ?? (4 + Math.floor(Math.random() * 4));
+      for (let i = 0; i < puffs; i++) {
+        const puff = new THREE.Mesh(cloudPuffGeo, cloudPuffMat.clone());
+        const side = (Math.random() - 0.5) * 7 * scale;
+        const along = (Math.random() - 0.5) * 7 * scale;
+        const height = (Math.random() - 0.5) * 1.8 * scale;
+        puff.position.set(side, height, along);
+        puff.scale.set(4.6 * scale * (0.85 + Math.random() * 0.35), 1.15 * scale * (0.85 + Math.random() * 0.4), 3.2 * scale * (0.85 + Math.random() * 0.35));
+        puff.rotation.y = Math.random() * Math.PI * 2;
+        puff.material.opacity = 0.62 + Math.random() * 0.24;
+        cluster.add(puff);
+      }
+
+      cloudLayer.add(cluster);
+    }
+
+    for (let i = 0; i < 72; i++) {
+      const y = Math.random() * 2 - 1;
+      const radial = Math.sqrt(Math.max(0, 1 - y * y));
+      const theta = Math.random() * Math.PI * 2;
+      const dir = new THREE.Vector3(
+        Math.cos(theta) * radial,
+        y,
+        Math.sin(theta) * radial
+      );
+      addCloudCluster(dir, 0.75 + Math.random() * 0.8);
+    }
+
+    // Rain and thunderstorms now use a dense planet-wide cloud deck: about 50x the
+    // normal 72-cluster coverage. Extra storm clouds are lightweight (one puff each)
+    // so the weather can cover the whole planet without exploding the mesh count.
+    const BASE_CLOUD_COUNT = 72;
+    const WEATHER_CLOUD_COUNT = 3600;
+    const EXTRA_WEATHER_CLOUD_COUNT = WEATHER_CLOUD_COUNT - BASE_CLOUD_COUNT;
+    const THUNDER_CLOUD_START = WEATHER_CLOUD_COUNT;
+    for (let i = 0; i < EXTRA_WEATHER_CLOUD_COUNT; i++) {
+      // Fibonacci-sphere placement keeps the rainy cloud deck evenly distributed over
+      // the entire planet rather than leaving large uncovered patches.
+      const t = (i + 0.5) / EXTRA_WEATHER_CLOUD_COUNT;
+      const y = 1 - 2 * t;
+      const radial = Math.sqrt(Math.max(0, 1 - y * y));
+      const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+      const theta = i * goldenAngle;
+      const dir = new THREE.Vector3(Math.cos(theta) * radial, y, Math.sin(theta) * radial);
+      addCloudCluster(dir, 0.60 + Math.random() * 0.55, 1);
+    }
+
+    const cloudShellFade = () => {
+      const a = cloudMat.opacity;
+      cloudLayer.children.forEach(cluster => {
+        cluster.children.forEach(puff => {
+          puff.material.opacity = a > 0 ? (0.58 + 0.28 * (a / 0.06)) : 0;
+        });
+      });
+    };
+
+    // ---------- dynamic weather ----------
+    // Automatic rain starts about once every two in-game days. Creative/freeplay gets
+    // a small control panel to trigger rain or clear weather on demand.
+    const weatherRainGroup = new THREE.Group();
+    weatherRainGroup.renderOrder = 20;
+    scene.add(weatherRainGroup);
+    const rainDropCount = 4200;
+    const rainPositions = new Float32Array(rainDropCount * 6);
+    const rainSpeeds = new Float32Array(rainDropCount);
+    const rainLengths = new Float32Array(rainDropCount);
+    const rainDrift = new Float32Array(rainDropCount * 2);
+    const rainGeo = new THREE.BufferGeometry();
+    rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
+    const rainMat = new THREE.LineBasicMaterial({ color: 0xbfe7ff, transparent: true, opacity: 0.55, fog: false, depthTest: true, depthWrite: false });
+    const rainMesh = new THREE.LineSegments(rainGeo, rainMat);
+    weatherRainGroup.add(rainMesh);
+
+    let weatherState = 'clear'; // clear | building | raining | clearing
+    let weatherThunderstorm = false;
+    let automaticRainNumber = 0;
+    let lightningTimer = 0;
+    let lightningFlashTimer = 0;
+    let lightningBoltTimer = 0;
+    let weatherTimer = 0;
+    let weatherBuildTimer = 0;
+    let weatherRainTimer = 0;
+    let weatherClearTimer = 0;
+    let weatherForced = false;
+
+    const weatherControlToggle = document.getElementById('weatherControlToggle');
+    const weatherControlOverlay = document.getElementById('weatherControlOverlay');
+    const weatherControlClose = document.getElementById('weatherControlClose');
+    const weatherRainButton = document.getElementById('weatherRainButton');
+    const weatherClearButton = document.getElementById('weatherClearButton');
+    const weatherThunderButton = document.getElementById('weatherThunderButton');
+    const lightningFlash = document.getElementById('lightningFlash');
+    const weatherControlStatus = document.getElementById('weatherControlStatus');
+
+    function isWeatherAllowedHere() {
+      const active = playerState.inRocket ? flightPosition : player.position;
+      return active.length() < WEATHER_CLOUD_RADIUS - 1;
+    }
+
+    function setRainParticle(i, centerWorld, downWorld) {
+      const up = downWorld.clone().multiplyScalar(-1);
+      let t = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+      t.addScaledVector(up, -t.dot(up)).normalize();
+      const b = new THREE.Vector3().crossVectors(up, t).normalize();
+      const radius = 8 + Math.random() * 58;
+      const a = Math.random() * Math.PI * 2;
+      const tangent = t.multiplyScalar(Math.cos(a) * radius).addScaledVector(b, Math.sin(a) * radius);
+      const radialHeight = 10 + Math.random() * 34;
+      const start = centerWorld.clone().add(tangent).addScaledVector(up, radialHeight);
+      const length = 1.2 + Math.random() * 1.6;
+      rainSpeeds[i] = 28 + Math.random() * 18;
+      rainLengths[i] = length;
+      rainDrift[i * 2] = (Math.random() - 0.5) * 0.35;
+      rainDrift[i * 2 + 1] = (Math.random() - 0.5) * 0.35;
+      const end = start.clone().addScaledVector(downWorld, length);
+      rainPositions[i * 6] = start.x; rainPositions[i * 6 + 1] = start.y; rainPositions[i * 6 + 2] = start.z;
+      rainPositions[i * 6 + 3] = end.x; rainPositions[i * 6 + 4] = end.y; rainPositions[i * 6 + 5] = end.z;
+    }
+
+    function rebuildRainDrops() {
+      const activeCamera = playerState.inRocket ? flightCamera : camera;
+      const center = new THREE.Vector3();
+      activeCamera.getWorldPosition(center);
+      const down = center.clone().normalize().multiplyScalar(-1);
+      for (let i = 0; i < rainDropCount; i++) setRainParticle(i, center, down);
+      rainGeo.attributes.position.needsUpdate = true;
+    }
+
+    function updateRainParticles(delta) {
+      const visible = weatherState === 'raining' && state.gameState === 'playing' && !state.paused && isWeatherAllowedHere();
+      weatherRainGroup.visible = visible;
+      if (!visible) return;
+      // The particle volume follows the current player/ship position, so rain does not
+      // remain anchored to the place where the storm originally began.
+      const activeCamera = playerState.inRocket ? flightCamera : camera;
+      const center = new THREE.Vector3();
+      activeCamera.getWorldPosition(center);
+      for (let i = 0; i < rainDropCount; i++) {
+        const idx = i * 6;
+        const sx = rainPositions[idx], sy = rainPositions[idx + 1], sz = rainPositions[idx + 2];
+        const ex = rainPositions[idx + 3], ey = rainPositions[idx + 4], ez = rainPositions[idx + 5];
+        const start = new THREE.Vector3(sx, sy, sz);
+        const end = new THREE.Vector3(ex, ey, ez);
+        const radialDownStart = start.clone().normalize().multiplyScalar(-1);
+        const move = rainSpeeds[i] * delta;
+        start.addScaledVector(radialDownStart, move);
+        end.addScaledVector(radialDownStart, move);
+        const radial = end.length();
+        if (radial < PLANET_RADIUS + 2 || start.distanceTo(center) > 76) {
+          const down = center.clone().normalize().multiplyScalar(-1);
+          setRainParticle(i, center, down);
+        } else {
+          rainPositions[idx] = start.x; rainPositions[idx + 1] = start.y; rainPositions[idx + 2] = start.z;
+          rainPositions[idx + 3] = end.x; rainPositions[idx + 4] = end.y; rainPositions[idx + 5] = end.z;
+        }
+      }
+      rainGeo.attributes.position.needsUpdate = true;
+    }
+
+    function updateWeatherVisuals() {
+      const building = weatherState === 'building';
+      const raining = weatherState === 'raining';
+      const clearing = weatherState === 'clearing';
+      const clearStrength = clearing ? 1 - THREE.MathUtils.clamp(weatherClearTimer / WEATHER_CLEARING_SECONDS, 0, 1) : 0;
+      const strength = building ? THREE.MathUtils.clamp(weatherBuildTimer / WEATHER_BUILDUP_SECONDS, 0, 1) : (raining ? 1 : clearStrength);
+      const weatherActive = building || raining || clearing;
+      const active = playerState.inRocket ? flightPosition : player.position;
+      const playerRadius = active.length();
+      // Weather is local to the planet's surface, not tied to where the storm was started.
+      // Anywhere below the cloud deck can receive rain; above the cloud deck it clears.
+      const underClouds = playerRadius < CLOUD_LAYER_RADIUS - 1;
+      const cloudVisibility = 1 - THREE.MathUtils.clamp((playerRadius - 150) / 150, 0, 1);
+      const cloudWeatherFade = underClouds ? 1 : 0;
+      const visibleFactor = THREE.MathUtils.clamp(cloudVisibility * cloudWeatherFade, 0, 1);
+
+      // Weather only changes cloud/rain materials. It deliberately never changes the
+      // renderer, scene background, camera, planet root, or planet materials.
+      cloudLayer.children.forEach((cluster, clusterIndex) => cluster.children.forEach(puff => {
+        const base = 0.52 + 0.24 * cloudVisibility;
+        const isWeatherExtra = clusterIndex >= BASE_CLOUD_COUNT && clusterIndex < THUNDER_CLOUD_START;
+        const stormMultiplier = isWeatherExtra ? (weatherActive ? 1 : 0) : 1;
+        puff.material.color.setHex(weatherActive ? 0x4f565f : 0xffffff);
+        puff.material.opacity = visibleFactor * base * (0.72 + strength * 0.28) * stormMultiplier;
+        puff.material.depthTest = true;
+        puff.material.depthWrite = false;
+      }));
+      cloudMat.color.setHex(weatherActive ? 0x3e454d : 0xffffff);
+      cloudMat.opacity = visibleFactor * (weatherActive ? (0.018 + 0.035 * strength) : 0.06);
+      cloudMat.depthTest = true;
+      cloudMat.depthWrite = false;
+      rainMat.opacity = (raining && isWeatherAllowedHere()) ? 0.72 : 0;
+      if (weatherControlStatus) weatherControlStatus.textContent = 'WEATHER: ' + (raining ? (weatherThunderstorm ? 'THUNDERSTORM' : 'RAINING') : building ? (weatherThunderstorm ? 'THUNDERSTORM BUILDING' : 'STORM BUILDING') : clearing ? 'CLEARING' : 'CLEAR');
+    }
+
+    function startRain(forced = false, thunderstorm = false) {
+      weatherState = 'building';
+      weatherThunderstorm = !!thunderstorm;
+      weatherBuildTimer = 0;
+      weatherRainTimer = 0;
+      weatherClearTimer = 0;
+      weatherForced = !!forced;
+      lightningTimer = 9 + Math.random() * 14;
+      lightningFlashTimer = 0;
+      lightningBoltTimer = 0;
+      if (lightningFlash) lightningFlash.style.opacity = '0';
+      rebuildRainDrops();
+      updateWeatherVisuals();
+    }
+
+    function clearWeather() {
+      // Fade storm clouds and ambience out smoothly instead of snapping straight to clear.
+      weatherState = 'clearing';
+      weatherBuildTimer = 0;
+      weatherRainTimer = 0;
+      weatherClearTimer = 0;
+      weatherForced = false;
+      weatherThunderstorm = false;
+      weatherTimer = 0;
+      lightningTimer = 0;
+      lightningFlashTimer = 0;
+      lightningBoltTimer = 0;
+      if (lightningFlash) lightningFlash.style.opacity = '0';
+      lightningBolt.visible = false;
+      weatherRainGroup.visible = false;
+      updateWeatherVisuals();
+    }
+
+    function updateWeatherControlVisibility() {
+      // Weather is opened with G; the old on-screen toggle is intentionally hidden.
+      if (weatherControlToggle) weatherControlToggle.classList.add('hidden');
+      if (weatherControlOverlay && state.gameState !== 'playing') weatherControlOverlay.classList.add('hidden');
+    }
+
+    function toggleWeatherControlMenu() {
+      const inCreative = state.gameMode === 'freeplay' || state.gameMode === 'creative';
+      if (state.gameState !== 'playing' || state.paused || !inCreative || playerState.inRocket) return;
+      if (!weatherControlOverlay) return;
+      const willOpen = weatherControlOverlay.classList.contains('hidden');
+      if (willOpen) {
+        weatherControlOverlay.classList.remove('hidden');
+        if (document.pointerLockElement === canvas) document.exitPointerLock();
+      } else {
+        weatherControlOverlay.classList.add('hidden');
+        attemptPointerLock();
+      }
+    }
+
+    // ---------- thunderstorm lightning ----------
+    const lightningBoltMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.98, fog: false, depthTest: false, depthWrite: false });
+    const lightningBolt = new THREE.Line(new THREE.BufferGeometry(), lightningBoltMaterial);
+    lightningBolt.renderOrder = 80;
+    lightningBolt.visible = false;
+    scene.add(lightningBolt);
+
+    function makeLightningStrike() {
+      if (!weatherThunderstorm || weatherState !== 'raining' || !isWeatherAllowedHere()) return;
+      const activeCamera = playerState.inRocket ? flightCamera : camera;
+      const center = new THREE.Vector3();
+      activeCamera.getWorldPosition(center);
+      const up = center.clone().normalize();
+      let tangent = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+      tangent.addScaledVector(up, -tangent.dot(up));
+      if (tangent.lengthSq() < 0.001) tangent.set(1, 0, 0);
+      tangent.normalize();
+      const tangent2 = new THREE.Vector3().crossVectors(up, tangent).normalize();
+      const angle = Math.random() * Math.PI * 2;
+      const radial = 12 + Math.random() * 24;
+      const strikeDir = up.clone().multiplyScalar(0.32)
+        .addScaledVector(tangent, Math.cos(angle) * 0.95)
+        .addScaledVector(tangent2, Math.sin(angle) * 0.95).normalize();
+      const top = center.clone().normalize().multiplyScalar(CLOUD_LAYER_RADIUS - 8).addScaledVector(strikeDir, radial);
+      const groundDir = top.clone().normalize();
+      const bottom = groundDir.clone().multiplyScalar(PLANET_RADIUS + Math.max(2, heightAt(groundDir) + 4));
+      const points = [];
+      const segments = 8;
+      for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        const point = bottom.clone().lerp(top, t);
+        if (i > 0 && i < segments) {
+          point.addScaledVector(tangent, (Math.random() - 0.5) * 5);
+          point.addScaledVector(tangent2, (Math.random() - 0.5) * 5);
+        }
+        points.push(point);
+      }
+      lightningBolt.geometry.dispose();
+      lightningBolt.geometry = new THREE.BufferGeometry().setFromPoints(points);
+      lightningBolt.visible = true;
+      lightningBoltTimer = 0.42;
+      lightningFlashTimer = 0.18;
+      if (lightningFlash) lightningFlash.style.opacity = '0.86';
+      // Reuse the existing cinematic boom as thunder. It's already in the audio pack and
+      // has the right low-end impact for a lightning strike.
+      playAudio('spaceAtmosphereBoom', 0.62, 0.94 + Math.random() * 0.12);
+    }
+
+    function updateLightning(delta) {
+      const active = weatherThunderstorm && weatherState === 'raining' && state.gameState === 'playing' && !state.paused && isWeatherAllowedHere();
+      if (!active) {
+        lightningBolt.visible = false;
+        if (lightningFlash) lightningFlash.style.opacity = '0';
+        return;
+      }
+      lightningTimer -= delta;
+      if (lightningTimer <= 0) {
+        makeLightningStrike();
+        lightningTimer = 10 + Math.random() * 22;
+      }
+      if (lightningBolt.visible) {
+        lightningBoltTimer -= delta;
+        if (lightningBoltTimer <= 0) lightningBolt.visible = false;
+      }
+      if (lightningFlashTimer > 0) {
+        lightningFlashTimer -= delta;
+        if (lightningFlash) lightningFlash.style.opacity = String(Math.max(0, lightningFlashTimer / 0.18) * 0.86);
+      } else if (lightningFlash) {
+        lightningFlash.style.opacity = '0';
+      }
+    }
+
+    function updateWeather(delta) {
+      if (state.gameState !== 'playing') { updateWeatherVisuals(); return; }
+      weatherTimer += delta;
+      if (weatherState === 'clear' && !weatherForced && weatherTimer >= WEATHER_TWO_DAYS_SECONDS) {
+        automaticRainNumber++;
+        startRain(false, automaticRainNumber % 2 === 0);
+      }
+      if (weatherState === 'building') {
+        weatherBuildTimer += delta;
+        if (weatherBuildTimer >= WEATHER_BUILDUP_SECONDS) {
+          weatherState = 'raining';
+          weatherRainTimer = 0;
+          lightningTimer = 7 + Math.random() * 15;
+          rebuildRainDrops();
+        }
+      } else if (weatherState === 'raining') {
+        weatherRainTimer += delta;
+        if (!weatherForced && weatherRainTimer >= (weatherThunderstorm ? WEATHER_THUNDERSTORM_SECONDS : WEATHER_RAIN_SECONDS)) {
+          clearWeather();
+        }
+      } else if (weatherState === 'clearing') {
+        weatherClearTimer += delta;
+        if (weatherClearTimer >= WEATHER_CLEARING_SECONDS) {
+          weatherState = 'clear';
+          weatherClearTimer = 0;
+          weatherThunderstorm = false;
+        }
+      }
+      updateWeatherVisuals();
+    }
+
+    // Creative weather controls: G opens/closes the weather menu.
+    if (weatherControlClose) weatherControlClose.addEventListener('click', () => {
+      weatherControlOverlay.classList.add('hidden');
+      attemptPointerLock();
+    });
+    if (weatherRainButton) weatherRainButton.addEventListener('click', () => {
+      startRain(true, false);
+    });
+    if (weatherThunderButton) weatherThunderButton.addEventListener('click', () => {
+      startRain(true, true);
+    });
+    if (weatherClearButton) weatherClearButton.addEventListener('click', () => {
+      clearWeather();
+    });
+
+    // Small star particles are hidden during the day and fade in at night. At high
+    // altitude they also fade in gradually, so the sky transitions naturally into space.
     // They are deliberately treated like a background layer: they do NOT use depth testing
     // or perspective size attenuation. This makes every star remain visible instead of
     // becoming sub-pixel tiny or being hidden by the giant sky sphere.
     const starPositions = [];
-    for (let i = 0; i < 1400; i++) {
-      const starDir = new THREE.Vector3(
-        Math.random() * 2 - 1,
-        Math.random() * 2 - 1,
-        Math.random() * 2 - 1
-      ).normalize();
-      const starRadius = 1400 + Math.random() * 80;
-      starPositions.push(starDir.x * starRadius, starDir.y * starRadius, starDir.z * starRadius);
+    // Use an even spherical distribution so there is no sparse "hole" in the middle
+    // of the player's view. A Fibonacci sphere gives much more uniform coverage than
+    // independently random directions, especially with a relatively small star count.
+    const STAR_COUNT = 5000;
+    for (let i = 0; i < STAR_COUNT; i++) {
+      // Use genuinely random directions and, importantly, a wide range of depths.
+      // Keeping every star on almost the same radius made the field look like a
+      // giant dotted sphere around the camera. Varying the distance makes the sky
+      // read as an open volume of space instead. The minimum stays just outside the
+      // sky sphere so depth testing still lets the planet/terrain occlude the stars.
+      const y = Math.random() * 2 - 1;
+      const radial = Math.sqrt(Math.max(0, 1 - y * y));
+      const theta = Math.random() * Math.PI * 2;
+      const starRadius = 1455 + Math.pow(Math.random(), 0.62) * 7000;
+      const x = Math.cos(theta) * radial;
+      const z = Math.sin(theta) * radial;
+      starPositions.push(x * starRadius, y * starRadius, z * starRadius);
     }
     const starGeo = new THREE.BufferGeometry();
     starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3));
@@ -529,14 +936,18 @@
       sizeAttenuation: false,
       transparent: true,
       opacity: 0,
-      // Stars are behind the terrain: depth testing lets mountains, trees, and the planet
-      // itself correctly hide stars instead of allowing them to shine through the ground.
-      // The stars still sit in front of the giant sky sphere because their radius is smaller.
+      fog: false,
+      // Keep stars white at extreme distance and let nearer terrain/objects occlude them
+      // naturally instead of drawing the stars through the planet. The star sphere is
+      // slightly closer than the sky sphere, so the sky still provides the backdrop.
       depthTest: true,
       depthWrite: false
     });
     const stars = new THREE.Points(starGeo, starMat);
-    stars.renderOrder = 1000;
+    // Render the stars after the sky sphere but before normal world geometry.
+    // Depth testing keeps stars behind the planet/terrain while their larger sky radius
+    // and camera-follow behavior keep them visible across the full FOV at any altitude.
+    stars.renderOrder = -1;
     stars.frustumCulled = false;
     scene.add(stars);
 
@@ -549,6 +960,14 @@
     // day/night cycles. Keeping this tied to the same constant means the respawn time can
     // never drift away from the actual sun/planet cycle.
     const CRYSTAL_RESPAWN_SECONDS = DAY_LENGTH_SECONDS * 2;
+
+    // Weather: automatic storms recur roughly every two in-game days (2 * 5 minutes).
+    const WEATHER_TWO_DAYS_SECONDS = DAY_LENGTH_SECONDS * 2;
+    const WEATHER_BUILDUP_SECONDS = 5;
+    const WEATHER_CLEARING_SECONDS = 5;
+    const WEATHER_RAIN_SECONDS = DAY_LENGTH_SECONDS * 0.5;
+    const WEATHER_THUNDERSTORM_SECONDS = DAY_LENGTH_SECONDS;
+    const WEATHER_CLOUD_RADIUS = CLOUD_LAYER_RADIUS;
     const CRYSTAL_PICKUP_RADIUS = 3.2;
 
 
@@ -571,9 +990,11 @@
     const DAY_SKY = new THREE.Color(0x6fb7ff);
     const SUNSET_SKY = new THREE.Color(0xf08a55);
     const NIGHT_SKY = new THREE.Color(0x050817);
+    const SPACE_SKY = new THREE.Color(0x01030a);
     const DAY_FOG = new THREE.Color(0x6fb7ff);
     const SUNSET_FOG = new THREE.Color(0xe07a55);
     const NIGHT_FOG = new THREE.Color(0x050817);
+    const SPACE_FOG = new THREE.Color(0x01030a);
 
     const tempSunDir = new THREE.Vector3();
     const tempPlayerDir = new THREE.Vector3();
@@ -586,6 +1007,7 @@
       // into darkness as it spins.
       state.planetSpinAngle += (Math.PI * 2 / DAY_LENGTH_SECONDS) * delta;
       planetSystem.rotation.y = state.planetSpinAngle;
+      cloudLayer.rotation.y += delta * 0.018;
 
       // Get the player's actual WORLD position after the planet has rotated. This makes
       // the local time-of-day calculation respond to the planet's rotation correctly.
@@ -610,16 +1032,49 @@
       // Sky: blue in daytime, orange around the horizon, nearly black at night.
       tempSkyColor.copy(NIGHT_SKY).lerp(DAY_SKY, daylight);
       if (sunset > 0) tempSkyColor.lerp(SUNSET_SKY, sunset * 0.72);
+
+      // As the rocket climbs above the upper atmosphere, gradually blend the daytime/night
+      // sky into a deep space sky. The transition starts at the old boundary (~180 units)
+      // and completes at the new Karman-line-style boundary (300 units).
+      const playerRadius = playerWorldPos.length();
+      const atmosphereBlendForStorm = THREE.MathUtils.smoothstep(playerRadius, ROCKET_ATMOSPHERE_FADE_START, ROCKET_ATMOSPHERE_RADIUS);
+      const weatherUnderClouds = playerRadius < CLOUD_LAYER_RADIUS - 1;
+      const rainDarken = weatherUnderClouds && (weatherState === 'building' || weatherState === 'raining')
+        ? (weatherThunderstorm ? 0.42 : 0.28) * (1 - atmosphereBlendForStorm)
+        : 0;
+      if (rainDarken > 0) {
+        ambientLight.intensity *= (1 - rainDarken * 0.60);
+        sunLight.intensity *= (1 - rainDarken * 0.35);
+      }
+      const atmosphereBlend = THREE.MathUtils.smoothstep(
+        playerRadius,
+        ROCKET_ATMOSPHERE_FADE_START,
+        ROCKET_ATMOSPHERE_RADIUS
+      );
+      tempSkyColor.lerp(SPACE_SKY, atmosphereBlend);
+      if (rainDarken > 0) tempSkyColor.lerp(new THREE.Color(0x4b5660), rainDarken * 1.05);
       skyMat.color.copy(tempSkyColor);
       scene.background.copy(tempSkyColor);
 
       tempFogColor.copy(NIGHT_FOG).lerp(DAY_FOG, daylight);
       if (sunset > 0) tempFogColor.lerp(SUNSET_FOG, sunset * 0.7);
+      tempFogColor.lerp(SPACE_FOG, atmosphereBlend);
       sceneFog.color.copy(tempFogColor);
 
-      // Stars are essentially invisible during the day and fully visible on the dark side.
-      starMat.opacity = THREE.MathUtils.clamp(night * 1.15, 0, 1);
-      cloudMat.opacity = THREE.MathUtils.lerp(0.01, 0.06, daylight);
+      // Stars are visible at night, but altitude also fades them in so the climb from blue
+      // sky to a dense field of bright white stars feels gradual rather than binary.
+      const nightStarOpacity = THREE.MathUtils.clamp(night * 1.15, 0, 1);
+      starMat.opacity = Math.max(nightStarOpacity, atmosphereBlend);
+      cloudMat.opacity = THREE.MathUtils.lerp(0.01, 0.06, daylight) * (1 - atmosphereBlend);
+      const cloudVisibility = THREE.MathUtils.clamp(0.15 + daylight * 0.9, 0, 1) * (1 - atmosphereBlend);
+      cloudLayer.children.forEach((cluster, clusterIndex) => {
+        const isRainExtra = clusterIndex >= BASE_CLOUD_COUNT && clusterIndex < THUNDER_CLOUD_START;
+        const isThunderExtra = clusterIndex >= THUNDER_CLOUD_START;
+        cluster.children.forEach(puff => {
+          const stormMultiplier = isThunderExtra ? ((weatherState === 'raining' && weatherThunderstorm) ? 1 : 0) : (isRainExtra ? (weatherState === 'raining' ? 1 : 0) : 1);
+          puff.material.opacity = (0.45 + 0.3 * Math.random()) * cloudVisibility * stormMultiplier;
+        });
+      });
     }
 
     // ---------- planet (terrain-deformed sphere) ----------
@@ -652,7 +1107,11 @@
     const planetMat = new THREE.MeshStandardMaterial({
       vertexColors: true, roughness: 0.95, metalness: 0.0,
     });
-    planetSystem.add(new THREE.Mesh(planetGeo, planetMat));
+    const planetMesh = new THREE.Mesh(planetGeo, planetMat);
+    planetMesh.renderOrder = 0;
+    planetMat.depthTest = true;
+    planetMat.depthWrite = true;
+    planetSystem.add(planetMesh);
 
     // ---------- water: river ----------
     const waterMat = new THREE.MeshStandardMaterial({
@@ -1351,7 +1810,9 @@
 
     const ROCKET_FUEL_CAPACITY = 100;
     const ROCKET_FUEL_TIME_MS = 5000;
-    const ROCKET_ATMOSPHERE_RADIUS = 180;
+    const ROCKET_ATMOSPHERE_RADIUS = 300;
+    const ROCKET_ATMOSPHERE_FADE_START = 180;
+
     const ROCKET_FLIGHT_SPEED = 28;
     const ROCKET_VERTICAL_SPEED = 24;
     const ROCKET_GRAVITY = GRAVITY;
@@ -2810,6 +3271,13 @@
         if (!f.output) f.output={typeId:'iron_ingot',count:1}; else f.output.count++;
         furnace.smeltStartedAt=0;
       }
+      const furnaceActiveNow = furnaces.some(f => furnaceCanSmelt(f));
+      if (furnaceActiveNow && !furnaceWasActive) {
+        playAudio('furnace', 0.12, 1.0);
+      } else if (!furnaceActiveNow && furnaceWasActive) {
+        stopAudio('furnace');
+      }
+      furnaceWasActive = furnaceActiveNow;
       if (uiState.furnaceOpen) updateFurnaceUI();
     }
 
@@ -2833,6 +3301,521 @@
       if (playerState.exhausted) color = "#eb5757";
       else if (pct < 35) color = "#f2c94c";
       staminaBarEl.style.background = color;
+    }
+
+
+    // ---------- particles ----------
+    // Lightweight procedural particles for mining/chopping impacts and player landings.
+    // The particles live in planetSystem-local space so they follow the spherical world.
+    const particleSystems = [];
+    const particleClock = new THREE.Clock();
+    let rocketParticleTimer = 0;
+    let playerDustTimer = 0;
+    let crystalSparkleTimer = 0;
+    let waterSplashTimer = 0;
+
+    function spawnImpactParticles(position, color, options = {}) {
+      const count = options.count ?? 14;
+      const life = options.life ?? 0.55;
+      const speed = options.speed ?? 2.6;
+      const size = options.size ?? 0.075;
+      const gravity = options.gravity ?? 5.5;
+      const spread = options.spread ?? 0.9;
+      const group = new THREE.Group();
+      // getParticleWorldPosition() returns a world-space position, while planetSystem
+      // (the rotating planet) expects local coordinates. Convert before attaching so
+      // mining/chopping particles appear exactly at the object instead of being rotated
+      // a second time.
+      group.position.copy(planetSystem.worldToLocal(position.clone()));
+
+      const positions = new Float32Array(count * 3);
+      const velocities = [];
+      const sizes = new Float32Array(count);
+      for (let i = 0; i < count; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 0.06;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 0.06;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 0.06;
+        const dir = new THREE.Vector3(
+          (Math.random() - 0.5) * spread,
+          Math.random() * 0.9 + 0.15,
+          (Math.random() - 0.5) * spread
+        ).normalize();
+        velocities.push(dir.multiplyScalar(speed * (0.65 + Math.random() * 0.7)));
+        sizes[i] = size * (0.65 + Math.random() * 0.7);
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const material = new THREE.PointsMaterial({
+        color,
+        size,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.95,
+        depthWrite: false,
+        fog: true
+      });
+      const points = new THREE.Points(geometry, material);
+      group.add(points);
+      planetSystem.add(group);
+
+      particleSystems.push({ group, geometry, material, velocities, age: 0, life, gravity, sizes });
+    }
+
+    function spawnWorldParticles(position, color, options = {}) {
+      const count = options.count ?? 12;
+      const life = options.life ?? 0.6;
+      const speed = options.speed ?? 1.8;
+      const size = options.size ?? 0.08;
+      const gravity = options.gravity ?? 0.8;
+      const spread = options.spread ?? 0.9;
+      const upward = options.upward ?? 0.35;
+      const group = new THREE.Group();
+      group.position.copy(position);
+      const positions = new Float32Array(count * 3);
+      const velocities = [];
+      for (let i = 0; i < count; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 0.05;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 0.05;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 0.05;
+        const dir = new THREE.Vector3(
+          (Math.random() - 0.5) * spread,
+          Math.random() * upward + 0.08,
+          (Math.random() - 0.5) * spread
+        ).normalize();
+        velocities.push(dir.multiplyScalar(speed * (0.55 + Math.random() * 0.9)));
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const material = new THREE.PointsMaterial({
+        color, size, sizeAttenuation: true, transparent: true, opacity: 0.9,
+        depthWrite: false, fog: false
+      });
+      const points = new THREE.Points(geometry, material);
+      group.add(points);
+      scene.add(group);
+      particleSystems.push({ group, geometry, material, velocities, age: 0, life, gravity, sizes: null, worldSpace: true });
+    }
+
+    function spawnRocketExhaust() {
+      if (!flightRocket || !playerState.inRocket) return;
+      const nozzleLocal = new THREE.Vector3(0, -0.92, 0);
+      const nozzleWorld = flightRocket.root.localToWorld(nozzleLocal);
+      const worldDir = new THREE.Vector3(0, -1, 0).applyQuaternion(flightRocket.root.quaternion).normalize();
+      const count = playerState.rocketInSpace ? 5 : 8;
+      const group = new THREE.Group();
+      group.position.copy(nozzleWorld);
+      const positions = new Float32Array(count * 3);
+      const velocities = [];
+      for (let i = 0; i < count; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 0.09;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 0.09;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 0.09;
+        const dir = worldDir.clone().multiplyScalar(1.2 + Math.random() * 1.5)
+          .add(new THREE.Vector3((Math.random()-0.5)*0.55, (Math.random()-0.5)*0.55, (Math.random()-0.5)*0.55));
+        velocities.push(dir);
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const material = new THREE.PointsMaterial({ color: playerState.rocketInSpace ? 0xffffff : 0xffb347, size: 0.09, sizeAttenuation: true, transparent: true, opacity: 0.9, depthWrite: false, fog: false });
+      group.add(new THREE.Points(geometry, material));
+      scene.add(group);
+      particleSystems.push({ group, geometry, material, velocities, age: 0, life: 0.22, gravity: 0.15, sizes: null, worldSpace: true });
+    }
+
+    function updateSpecialParticles(delta) {
+      const playing = state.gameState === 'playing' && !state.paused;
+
+      // Rocket exhaust: small puffs while thrusting, more vivid in atmosphere and white in space.
+      if (playing && playerState.inRocket) {
+        const anyFlightInput = typeof isRocketFlightInputActive === 'function' ? isRocketFlightInputActive() : false;
+        if (anyFlightInput) {
+          rocketParticleTimer -= delta;
+          if (rocketParticleTimer <= 0) {
+            spawnRocketExhaust();
+            rocketParticleTimer = playerState.rocketInSpace ? 0.08 : 0.055;
+          }
+        } else {
+          rocketParticleTimer = 0;
+        }
+      } else {
+        rocketParticleTimer = 0;
+      }
+
+      // Running dust. Only emits while moving on the ground and stays subtle.
+      if (playing && !playerState.inRocket) {
+        const moving = typeof isPlayerMovingForParticles === 'function' ? isPlayerMovingForParticles() : false;
+        const grounded = playerState.heightOffset <= 0.02;
+        if (moving && grounded) {
+          playerDustTimer -= delta;
+          if (playerDustTimer <= 0) {
+            const dir = player.position.clone().normalize();
+            const footPos = player.position.clone().multiplyScalar(1).addScaledVector(dir, 0.06);
+            spawnImpactParticles(footPos, 0xa9987a, { count: 5, life: 0.38, speed: 0.45, size: 0.045, gravity: 0.7, spread: 0.7 });
+            playerDustTimer = 0.16;
+          }
+        } else playerDustTimer = 0;
+
+        // Crystal sparkles when nearby, just enough to make collectible crystals readable.
+        crystalSparkleTimer -= delta;
+        if (crystalSparkleTimer <= 0) {
+          crystalSparkleTimer = 0.28;
+          const playerWorld = player.getWorldPosition(new THREE.Vector3());
+          let nearest = null, best = Infinity;
+          for (const spawn of crystalSpawns) {
+            if (spawn.collected || !spawn.root.visible) continue;
+            const pos = spawn.root.getWorldPosition(new THREE.Vector3());
+            const d = pos.distanceTo(playerWorld);
+            if (d < 10 && d < best) { best = d; nearest = pos; }
+          }
+          if (nearest) spawnWorldParticles(nearest, 0xbfeaff, { count: 2, life: 0.5, speed: 0.18, size: 0.05, gravity: -0.05, spread: 0.65, upward: 1.0 });
+        }
+
+        // Water spray near the river shoreline.
+        const localDir = player.position.clone().normalize();
+        const riverInfo = nearestRiverInfo(localDir);
+        if (riverInfo && riverInfo.angle < 0.065) {
+          waterSplashTimer -= delta;
+          if (waterSplashTimer <= 0) {
+            const riverDir = riverPoints[riverInfo.index];
+            const waterPos = riverDir.clone().multiplyScalar(PLANET_RADIUS + heightAt(riverDir) + 0.48);
+            spawnImpactParticles(waterPos, 0x9edcf5, { count: 4, life: 0.42, speed: 0.5, size: 0.045, gravity: 1.4, spread: 1.0 });
+            waterSplashTimer = 0.45 + Math.random() * 0.35;
+          }
+        } else waterSplashTimer = 0;
+      } else {
+        playerDustTimer = crystalSparkleTimer = waterSplashTimer = 0;
+      }
+    }
+
+    function isRocketFlightInputActive() {
+      if (!playerState.inRocket) return false;
+      const keys = ['KeyW','KeyA','KeyS','KeyD','Space','ShiftLeft','ShiftRight'];
+      return keys.some(k => !!systemState.keys[k]);
+    }
+
+    function isPlayerMovingForParticles() {
+      if (playerState.inRocket) return false;
+      return ['KeyW','KeyA','KeyS','KeyD'].some(k => !!systemState.keys[k]);
+    }
+
+    function spawnLandingDust(position, normal) {
+      const group = new THREE.Group();
+      group.position.copy(position);
+      const count = 22;
+      const positions = new Float32Array(count * 3);
+      const velocities = [];
+      for (let i = 0; i < count; i++) {
+        const tangent = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+        tangent.addScaledVector(normal, -tangent.dot(normal)).normalize();
+        const outward = tangent.multiplyScalar(1.4 + Math.random() * 1.9).addScaledVector(normal, 0.35 + Math.random() * 0.55);
+        velocities.push(outward);
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const material = new THREE.PointsMaterial({
+        color: 0xb7a98d,
+        size: 0.11,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.7,
+        depthWrite: false,
+        fog: true
+      });
+      const points = new THREE.Points(geometry, material);
+      group.add(points);
+      planetSystem.add(group);
+      particleSystems.push({ group, geometry, material, velocities, age: 0, life: 0.65, gravity: 1.6, sizes: new Float32Array(count) });
+    }
+
+
+
+    // ---------- final particle pass ----------
+    // Decorative world/space particles: drifting leaves, snowy flurries, launch exhaust bursts,
+    // and very subtle high-speed space dust. These are intentionally sparse to stay lightweight.
+    let leafTimer = 0;
+    let snowTimer = 0;
+    let spaceDustTimer = 0;
+    let launchBurstCooldown = 0;
+
+    function spawnLaunchBurst() {
+      if (!flightRocket) return;
+      const nozzleLocal = new THREE.Vector3(0, -0.95, 0);
+      const nozzleWorld = flightRocket.root.localToWorld(nozzleLocal);
+      const worldDir = new THREE.Vector3(0, -1, 0).applyQuaternion(flightRocket.root.quaternion).normalize();
+      const count = 52;
+      const group = new THREE.Group();
+      group.position.copy(nozzleWorld);
+      const positions = new Float32Array(count * 3);
+      const velocities = [];
+      for (let i = 0; i < count; i++) {
+        const spread = 0.22;
+        positions[i*3] = (Math.random()-0.5)*spread;
+        positions[i*3+1] = (Math.random()-0.5)*spread;
+        positions[i*3+2] = (Math.random()-0.5)*spread;
+        const dir = worldDir.clone().multiplyScalar(2.5 + Math.random()*4.5)
+          .add(new THREE.Vector3((Math.random()-0.5)*1.5, (Math.random()-0.5)*1.5, (Math.random()-0.5)*1.5));
+        velocities.push(dir);
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const material = new THREE.PointsMaterial({
+        color: 0xffc45a, size: 0.27, sizeAttenuation: true, transparent: true, opacity: 0.95,
+        depthWrite: false, fog: false
+      });
+      group.add(new THREE.Points(geometry, material));
+      scene.add(group);
+      particleSystems.push({ group, geometry, material, velocities, age: 0, life: 0.9, gravity: 0.18, sizes: null, worldSpace: true });
+    }
+
+    function spawnDriftingLeaf(position) {
+      spawnWorldParticles(position, 0x78a94f, { count: 3, life: 2.8, speed: 0.28, size: 0.15, gravity: -0.02, spread: 1.8, upward: 1.2 });
+    }
+
+    function spawnSnowFlurry(position) {
+      spawnWorldParticles(position, 0xffffff, { count: 10, life: 2.2, speed: 0.32, size: 0.14, gravity: 0.08, spread: 1.4, upward: 1.1 });
+    }
+
+    function spawnSpaceDust() {
+      if (!flightRocket || !playerState.inRocket || !playerState.rocketInSpace) return;
+      const shipPos = flightRocket.root.getWorldPosition(new THREE.Vector3());
+      const moveDir = new THREE.Vector3();
+      flightCamera.getWorldDirection(moveDir).normalize();
+      const side = new THREE.Vector3().crossVectors(moveDir, flightCamera.up).normalize();
+      const up = flightCamera.up.clone().normalize();
+      const pos = shipPos.clone()
+        .addScaledVector(moveDir, (Math.random()-0.5)*5)
+        .addScaledVector(side, (Math.random()-0.5)*10)
+        .addScaledVector(up, (Math.random()-0.5)*10);
+      const vel = moveDir.clone().multiplyScalar(5 + Math.random()*5);
+      const group = new THREE.Group();
+      group.position.copy(pos);
+      const positions = new Float32Array([0,0,0]);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const material = new THREE.PointsMaterial({ color:0xffffff, size:0.045, transparent:true, opacity:0.7, depthWrite:false, fog:false });
+      group.add(new THREE.Points(geometry, material));
+      scene.add(group);
+      particleSystems.push({ group, geometry, material, velocities:[vel], age:0, life:0.45, gravity:0, sizes:null, worldSpace:true });
+    }
+
+    function updateFinalParticles(delta) {
+      const playing = state.gameState === 'playing' && !state.paused;
+      launchBurstCooldown = Math.max(0, launchBurstCooldown - delta);
+      if (!playing) return;
+
+      // Occasional leaves near living trees.
+      if (!playerState.inRocket) {
+        // Leaves: emit near any living tree in a generous radius so the effect is actually
+        // noticeable while exploring, without covering the whole planet in particles.
+        leafTimer -= delta;
+        if (leafTimer <= 0) {
+          leafTimer = 1.0 + Math.random()*1.8;
+          const playerWorld = player.getWorldPosition(new THREE.Vector3());
+          let nearest = null, best = Infinity;
+          for (const tree of treeSpawns) {
+            if (tree.chopped || !tree.root.visible) continue;
+            const pos = tree.root.getWorldPosition(new THREE.Vector3());
+            const d = pos.distanceTo(playerWorld);
+            if (d < 24 && d < best) { best=d; nearest=pos; }
+          }
+          if (nearest) {
+            const offset = new THREE.Vector3((Math.random()-0.5)*1.8, 1.6 + Math.random()*2.0, (Math.random()-0.5)*1.8);
+            spawnDriftingLeaf(nearest.clone().add(offset));
+          }
+        }
+
+        // Snow: use a lower threshold so the effect is visible across the snowy upper
+        // slopes, even on flatter procedural peaks.
+        snowTimer -= delta;
+        if (snowTimer <= 0) {
+          snowTimer = 0.35 + Math.random()*0.65;
+          const dir = player.position.clone().normalize();
+          const h = heightAt(dir);
+          if (h >= 8.0) {
+            const pos = player.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3((Math.random()-0.5)*6, 2.0 + Math.random()*3.0, (Math.random()-0.5)*6));
+            spawnSnowFlurry(pos);
+          }
+        }
+      } else {
+        leafTimer = 0;
+        snowTimer = 0;
+        if (isRocketFlightInputActive()) {
+          const speed = FLIGHT_SPEED;
+          if (playerState.rocketInSpace && speed > 0) {
+            spaceDustTimer -= delta;
+            if (spaceDustTimer <= 0) {
+              spawnSpaceDust();
+              spaceDustTimer = 0.08;
+            }
+          } else spaceDustTimer = 0;
+        } else spaceDustTimer = 0;
+      }
+    }
+
+    function updateParticles(delta) {
+      for (let i = particleSystems.length - 1; i >= 0; i--) {
+        const system = particleSystems[i];
+        system.age += delta;
+        const posAttr = system.geometry.getAttribute('position');
+        const arr = posAttr.array;
+        for (let j = 0; j < system.velocities.length; j++) {
+          const v = system.velocities[j];
+          v.y -= system.gravity * delta;
+          arr[j * 3] += v.x * delta;
+          arr[j * 3 + 1] += v.y * delta;
+          arr[j * 3 + 2] += v.z * delta;
+        }
+        posAttr.needsUpdate = true;
+        system.material.opacity = Math.max(0, 1 - system.age / system.life);
+        if (system.age >= system.life) {
+          if (system.group.parent) system.group.parent.remove(system.group);
+          system.geometry.dispose();
+          system.material.dispose();
+          particleSystems.splice(i, 1);
+        }
+      }
+    }
+
+    function getParticleWorldPosition(root, offset = 0.15) {
+      const position = new THREE.Vector3();
+      root.getWorldPosition(position);
+      const normal = position.clone().normalize();
+      return position.addScaledVector(normal, offset);
+    }
+
+    // ---------- audio ----------
+    // Small local sound manager. All files live in /audio so the GitHub Pages build can
+    // load them without needing any external audio service.
+    const audioBank = {
+      pickaxe: new Audio('audio/pickaxe-blow.mp3'),
+      footsteps: new Audio('audio/footsteps-nature-trail.mp3'),
+      uiClick: new Audio('audio/ui-click.mp3'),
+      chop: new Audio('audio/chopping-tree-root.mp3'),
+      river: new Audio('audio/river-water.mp3'),
+      rocketThrust: new Audio('audio/rocket-thrust.mp3'),
+      rocketIdle: new Audio('audio/rocket-idle.mp3'),
+      rocketLaunch: new Audio('audio/rocket-launch.wav'),
+      spaceAtmosphereBoom: new Audio('audio/space-atmosphere-boom.mp3'),
+      crystalPickup: new Audio('audio/crystal-pickup.mp3'),
+      furnace: new Audio('audio/furnace-loop.mp3'),
+      wind: new Audio('audio/wind-loop.mp3'),
+      jumpLanding: new Audio('audio/jump-landing.mp3'),
+      land2: new Audio('audio/land2.mp3')
+    };
+    audioBank.footsteps.loop = true;
+    audioBank.river.loop = true;
+    audioBank.rocketThrust.loop = true;
+    audioBank.rocketIdle.loop = true;
+    audioBank.furnace.loop = true;
+    audioBank.wind.loop = true;
+    for (const key of Object.keys(audioBank)) audioBank[key].preload = 'auto';
+
+    function playAudio(key, volume = 1, playbackRate = 1, maxDurationMs = 0) {
+      const base = audioBank[key];
+      if (!base) return;
+      // Clone one-shot sounds so repeated impacts do not cut each other off.
+      if (key === 'pickaxe' || key === 'chop' || key === 'uiClick' || key === 'crystalPickup' || key === 'jumpLanding' || key === 'land2' || key === 'rocketLaunch' || key === 'spaceAtmosphereBoom') {
+        const sound = base.cloneNode(true);
+        sound.volume = Math.max(0, Math.min(1, volume));
+        sound.playbackRate = playbackRate;
+        sound.play().catch(() => {});
+        if (maxDurationMs > 0) {
+          setTimeout(() => {
+            try { sound.pause(); sound.currentTime = 0; } catch {}
+          }, maxDurationMs);
+        }
+        sound.addEventListener('ended', () => sound.remove(), { once: true });
+        return;
+      }
+      base.volume = Math.max(0, Math.min(1, volume));
+      base.playbackRate = playbackRate;
+      base.play().catch(() => {});
+    }
+
+    function stopAudio(key) {
+      const sound = audioBank[key];
+      if (!sound) return;
+      sound.pause();
+      sound.currentTime = 0;
+    }
+
+    // Any click on an actual UI element gets the common interface click sound. The game
+    // canvas itself is deliberately excluded so camera look/mining do not sound like UI.
+    document.addEventListener('click', (e) => {
+      if (state.gameState === 'playing' && (e.target === canvas || (e.target.closest && e.target.closest('canvas')))) return;
+      if (e.target && e.target.closest) {
+        const uiTarget = e.target.closest('button, input, select, textarea, a, .hotbarSlot, .inventorySlot, .merchantItemRow, .merchantBuyButton, .craftRecipe, .mapControl, .overlayPanel');
+        if (uiTarget || e.target.closest('#homeScreen, #pauseOverlay, #settingsModal, #inventoryOverlay, #craftingOverlay, #furnaceOverlay, #merchantOverlay, #mapOverlay')) {
+          playAudio('uiClick', 0.34);
+        }
+      }
+    }, true);
+
+    let footstepWasActive = false;
+    let nextPickaxeSoundAt = 0;
+    let nextChopSoundAt = 0;
+    let wasGroundedForAudio = true;
+    let windNextStartAt = performance.now() + 12000 + Math.random() * 12000;
+    let windStopAt = 0;
+    let riverWasNear = false;
+    let furnaceWasActive = false;
+    let rocketEngineMode = 'off';
+    let rocketLaunchPlayed = false;
+    let lastRocketSpaceState = false;
+
+    function setLoopAudioMode(key, active, volume = 0.25, playbackRate = 1) {
+      const sound = audioBank[key];
+      if (!sound) return;
+      if (active) {
+        sound.volume = Math.max(0, Math.min(1, volume));
+        sound.playbackRate = playbackRate;
+        if (sound.paused) sound.play().catch(() => {});
+      } else if (!sound.paused) {
+        sound.pause();
+        sound.currentTime = 0;
+      }
+    }
+
+    function updateAmbientAudio() {
+      const now = performance.now();
+      const weatherAudioActive = state.gameState === 'playing' && !state.paused && (weatherState === 'building' || weatherState === 'raining' || weatherState === 'clearing') && isWeatherAllowedHere();
+      if (weatherAudioActive) {
+        const clearFactor = weatherState === 'clearing' ? 1 - THREE.MathUtils.clamp(weatherClearTimer / WEATHER_CLEARING_SECONDS, 0, 1) : 1;
+        const buildFactor = weatherState === 'building' ? THREE.MathUtils.clamp(weatherBuildTimer / WEATHER_BUILDUP_SECONDS, 0, 1) : 1;
+        const volume = (weatherThunderstorm ? 0.20 : 0.15) * clearFactor * (0.35 + 0.65 * buildFactor);
+        // Reuse the existing wind recording as the temporary rain ambience.
+        setLoopAudioMode('wind', true, volume, weatherThunderstorm ? 1.02 : 1.0);
+      }
+      const playingWorld = state.gameState === 'playing' && !state.paused && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !uiState.merchantOpen && !playerState.inRocket;
+      let nearRiver = false;
+      if (playingWorld) {
+        const localDir = player.position.clone().normalize();
+        const riverInfo = nearestRiverInfo(localDir);
+        // A soft radius around the river lets the water ambience fade in before the shoreline.
+        nearRiver = !!riverInfo && riverInfo.angle < 0.085;
+      }
+      if (nearRiver && !riverWasNear) setLoopAudioMode('river', true, 0.16, 1.0);
+      else if (!nearRiver && riverWasNear) setLoopAudioMode('river', false);
+      riverWasNear = nearRiver;
+
+      if (playingWorld && !weatherAudioActive) {
+        if (!windStopAt && now >= windNextStartAt) {
+          windStopAt = now + 9000 + Math.random() * 9000;
+          setLoopAudioMode('wind', true, 0.10 + Math.random() * 0.035, 0.96 + Math.random() * 0.08);
+        }
+        if (windStopAt && now >= windStopAt) {
+          setLoopAudioMode('wind', false);
+          windStopAt = 0;
+          windNextStartAt = now + 18000 + Math.random() * 24000;
+        }
+      } else if (!weatherAudioActive) {
+        setLoopAudioMode('river', false);
+        riverWasNear = false;
+        setLoopAudioMode('wind', false);
+        windStopAt = 0;
+        windNextStartAt = now + 18000 + Math.random() * 24000;
+      }
     }
 
     // ---------- home screen, pause overlay, settings modal ----------
@@ -3252,7 +4235,7 @@
     // Dedicated spaceship controller. The rocket is the vehicle; the player object is only
     // a hidden passenger/proxy used by the rest of the game. Flight input is completely
     // separate from the walking movement state so UI/pointer-lock transitions cannot break it.
-    const flightCamera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 10000);
+    const flightCamera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000000);
     const flightPosition = new THREE.Vector3();
     const flightForward = new THREE.Vector3(0, 0, 1);
     const flightRight = new THREE.Vector3(1, 0, 0);
@@ -3485,6 +4468,8 @@
       flightForward.normalize();
       flightRight.crossVectors(flightForward, initialUp).normalize();
       clearRocketKeys();
+      rocketLaunchPlayed = false;
+      lastRocketSpaceState = flightPosition.length() >= ROCKET_ATMOSPHERE_RADIUS;
 
       scene.attach(player);
       player.position.copy(flightPosition);
@@ -3571,8 +4556,11 @@
       playerState.rocketInSpace = false;
       playerState.rocketLanded = false;
       playerState.rocketFuelTimer = 0;
+      rocketLaunchPlayed = false;
+      lastRocketSpaceState = false;
       playerState.thirdPerson = flightWasThirdPerson;
       clearRocketKeys();
+      updateRocketEngineAudio(false, false);
 
       playerBody.visible = true;
       document.body.classList.remove('rocket-flight');
@@ -3672,6 +4660,24 @@
       return false;
     }
 
+    function updateRocketEngineAudio(hasFuel, anyFlightInput) {
+      if (!playerState.inRocket || !hasFuel) {
+        if (rocketEngineMode !== 'off') {
+          setLoopAudioMode('rocketIdle', false);
+          setLoopAudioMode('rocketThrust', false);
+          rocketEngineMode = 'off';
+        }
+        return;
+      }
+      const thrusting = anyFlightInput;
+      const nextMode = thrusting ? 'thrust' : 'idle';
+      if (nextMode !== rocketEngineMode) {
+        setLoopAudioMode('rocketIdle', nextMode === 'idle', 0.11, 0.92);
+        setLoopAudioMode('rocketThrust', nextMode === 'thrust', 0.16, 0.96);
+        rocketEngineMode = nextMode;
+      }
+    }
+
     function updateRocketFlight(delta) {
       if (!playerState.inRocket || !flightPad || !flightRocket) return;
       state.paused = false;
@@ -3687,7 +4693,8 @@
       const radiusFromCenter = flightPosition.length();
       playerState.rocketInSpace = radiusFromCenter >= ROCKET_ATMOSPHERE_RADIUS;
 
-      // The 180-unit boundary only changes the HUD. There is no physical gravity.
+      // The 300-unit boundary marks the transition into space. There is still no physical gravity;
+      // it only controls the atmosphere/space state and visual transition.
       // Near the planet, horizontal movement follows the spherical surface while Space/Shift
       // changes altitude. In space, all three axes are free and no movement is auto-cancelled.
       flightMove.set(0, 0, 0);
@@ -3798,6 +4805,22 @@
       // parked over the pad and the ship settles onto the exact launch position.
       playerState.rocketLanded = false;
       const anyFlightInput = forwardInput !== 0 || rightInput !== 0 || verticalInput !== 0;
+
+      // A launch sound fires once when the player actually starts moving the fueled rocket.
+      if (hasFuel && anyFlightInput && !rocketLaunchPlayed) {
+        playAudio('rocketLaunch', 0.72, 1.0);
+        if (launchBurstCooldown <= 0) { spawnLaunchBurst(); launchBurstCooldown = 0.7; }
+        rocketLaunchPlayed = true;
+      }
+
+      // Play the cinematic boom whenever the ship crosses the atmosphere/space boundary
+      // in either direction. The 300-unit line is the gameplay state change.
+      if (playerState.rocketInSpace !== lastRocketSpaceState) {
+        playAudio('spaceAtmosphereBoom', 0.62, 1.0);
+        lastRocketSpaceState = playerState.rocketInSpace;
+      }
+
+      updateRocketEngineAudio(hasFuel, anyFlightInput);
       if (!playerState.rocketInSpace && flightPad && !anyFlightInput) {
         flightPad.root.getWorldPosition(flightPadWorld);
         const padDistance = flightPosition.distanceTo(flightPadWorld);
@@ -4182,6 +5205,7 @@
       if (!addItemToInventory(spawn.typeId, 1)) return false;
 
       spawn.collected = true;
+      playAudio('crystalPickup', 0.55, 0.98 + Math.random() * 0.06, 500);
       spawn.crystal.visible = false;
       spawn.ghost.visible = true;
       // Respawn after two complete planet rotations, exactly as before.
@@ -4288,6 +5312,7 @@
       choppingTree = true;
       choppingTreeTarget = tree;
       choppingTreeStartedAt = performance.now();
+      nextChopSoundAt = performance.now();
       const prompt = document.getElementById('crystalPrompt');
       prompt.classList.remove('hidden');
       prompt.innerHTML = '<span class="promptKey">CHOPPING</span> Chopping Tree…';
@@ -4327,6 +5352,7 @@
 
       addItemToInventory('planks', plankYield);
       useToolDurability(plankYield);
+      spawnImpactParticles(getParticleWorldPosition(tree.root, 0.7), 0x8b5a35, { count: 18, life: 0.65, speed: 2.8, size: 0.085, gravity: 5.0 });
       tree.chopped = true;
       tree.root.visible = false;
       nearbyTree = null;
@@ -4429,6 +5455,7 @@
       miningStone = true;
       miningRock = targetRock;
       miningStoneStartedAt = performance.now();
+      nextPickaxeSoundAt = performance.now();
       const prompt = document.getElementById('crystalPrompt');
       prompt.classList.remove('hidden');
       const targetName = targetRock && targetRock.oreType === 'iron_ore' ? 'Iron Ore' : (targetRock ? 'Boulder' : 'Stone');
@@ -4612,6 +5639,9 @@
         prompt.textContent = 'Inventory full — ' + minedItemName + ' was not collected';
         setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 700);
         return;
+      }
+      if (targetRock) {
+        spawnImpactParticles(getParticleWorldPosition(targetRock.root, 0.18), minedItemId === 'iron_ore' ? 0x7f8791 : 0x8d8d8d, { count: 16, life: 0.55, speed: 2.5, size: 0.075, gravity: 5.5 });
       }
       if (minedItemId === 'iron_ore') {
         targetRock.mined = true;
@@ -4877,6 +5907,8 @@
       pauseOverlay.classList.add("hidden");
       settingsModal.classList.add("hidden");
       modeChooser.classList.add("hidden");
+      if (weatherControlOverlay) weatherControlOverlay.classList.add('hidden');
+      if (weatherControlToggle) weatherControlToggle.classList.add('hidden');
       if (document.pointerLockElement === canvas) document.exitPointerLock();
       resetPlayerState();
 
@@ -4966,7 +5998,7 @@
       } else {
         // Opening the inventory intentionally releases pointer lock; that should not
         // also trigger the normal pause overlay.
-        if (!playerState.inRocket && !uiState.inventoryOpen && !economyState.merchantOpen) pauseGame();
+        if (!playerState.inRocket && !uiState.inventoryOpen && !economyState.merchantOpen && (!weatherControlOverlay || weatherControlOverlay.classList.contains('hidden'))) pauseGame();
       }
     });
 
@@ -5000,8 +6032,7 @@
     // Keep a dedicated physical-key map as a safety net. The gameplay state can be
     // cleared when opening/closing UI, so movement keys are read from this map first.
     const physicalKeys = Object.create(null);
-    const mobileKeys = Object.create(null);
-    const isPhysicalKeyDown = (code) => !!physicalKeys[code] || !!systemState.keys[code] || !!mobileKeys[code];
+    const isPhysicalKeyDown = (code) => !!physicalKeys[code] || !!systemState.keys[code];
     const clearPhysicalKeys = () => { for (const k in physicalKeys) physicalKeys[k] = false; };
 
     // Keyboard state is shared through systemState.
@@ -5009,7 +6040,7 @@
       "KeyW", "KeyA", "KeyS", "KeyD",
       "KeyQ",
       "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
-      "Space", "ShiftLeft", "ShiftRight", "KeyC", "KeyF", "KeyI", "KeyE", "KeyM",
+      "Space", "ShiftLeft", "ShiftRight", "KeyC", "KeyF", "KeyI", "KeyE", "KeyM", "KeyG",
       "Digit1", "Digit2", "Digit3", "Digit4"
     ]);
 
@@ -5032,6 +6063,15 @@
         if (tryPickupNearbyDroppedItem()) return;
         tryCollectNearbyCrystal();
         return;
+      }
+
+      if (e.code === "KeyG" && !e.repeat && state.gameState === "playing" && !state.paused && settingsModal.classList.contains("hidden")) {
+        const inCreative = state.gameMode === 'freeplay' || state.gameMode === 'creative';
+        if (inCreative && !playerState.inRocket) {
+          e.preventDefault();
+          toggleWeatherControlMenu();
+          return;
+        }
       }
 
       if (e.code === "KeyQ" && !e.repeat && state.gameState === "playing") {
@@ -5115,191 +6155,8 @@
     window.addEventListener("blur", () => {
       clearPhysicalKeys();
       for (const k in systemState.keys) systemState.keys[k] = false;
-      for (const k in mobileKeys) mobileKeys[k] = false;
       clearPhysicalKeys();
     });
-
-    // ---------- mobile controls ----------
-    const mobileControls = document.getElementById("mobileControls");
-    const mobileControlsToggle = document.getElementById("mobileControlsToggle");
-    const mobileMoreMenu = document.getElementById("mobileMoreMenu");
-    const mobileJoystick = document.getElementById("mobileJoystick");
-    const mobileJoystickKnob = document.getElementById("mobileJoystickKnob");
-    const mobileButtons = {
-      jump: document.getElementById("mobileJumpButton"),
-      sprint: document.getElementById("mobileSprintButton"),
-      flashlight: document.getElementById("mobileFlashlightButton"),
-      interact: document.getElementById("mobileInteractButton"),
-      more: document.getElementById("mobileMoreButton")
-    };
-    const MOBILE_SETTINGS_KEY = "pocketUniverseMobileControls";
-    const mobileTouchDevice = navigator.maxTouchPoints > 0 || "ontouchstart" in window;
-    let mobileEnabled = localStorage.getItem(MOBILE_SETTINGS_KEY) === null ? mobileTouchDevice : localStorage.getItem(MOBILE_SETTINGS_KEY) === "1";
-
-    function setMobileControlsEnabled(enabled) {
-      mobileEnabled = !!enabled;
-      localStorage.setItem(MOBILE_SETTINGS_KEY, mobileEnabled ? "1" : "0");
-      document.body.classList.toggle("mobile-controls-on", mobileEnabled);
-      mobileControls.classList.toggle("mobileEnabled", mobileEnabled && state.gameState === "playing");
-      mobileControls.classList.add("showLookHint");
-      mobileControls.setAttribute("aria-hidden", mobileEnabled && state.gameState === "playing" ? "false" : "true");
-      if (mobileControlsToggle) mobileControlsToggle.checked = mobileEnabled;
-      if (!mobileEnabled) {
-        for (const k in mobileKeys) mobileKeys[k] = false;
-        mobileMoreMenu.classList.add("hidden");
-        mobileMoreMenu.setAttribute("aria-hidden", "true");
-        mobileJoystickKnob.style.transform = "translate3d(0,0,0)";
-      }
-    }
-    setMobileControlsEnabled(mobileEnabled);
-    mobileControlsToggle?.addEventListener("change", () => setMobileControlsEnabled(mobileControlsToggle.checked));
-
-    function updateMobileControlsVisibility() {
-      const visible = mobileEnabled && state.gameState === "playing" && !state.paused && settingsModal.classList.contains("hidden") && !mapOpen && !economyState.merchantOpen && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen;
-      mobileControls.classList.toggle("mobileEnabled", visible);
-      mobileControls.setAttribute("aria-hidden", visible ? "false" : "true");
-      if (!visible) {
-        for (const k in mobileKeys) mobileKeys[k] = false;
-        mobileJoystickKnob.style.transform = "translate3d(0,0,0)";
-        mobileMoreMenu.classList.add("hidden");
-      }
-    }
-
-    function mobilePress(code, down) { mobileKeys[code] = !!down; }
-
-    function mobileReleaseAll() {
-      for (const k in mobileKeys) mobileKeys[k] = false;
-      mobileButtons.sprint?.classList.remove("active");
-      mobileButtons.jump?.classList.remove("active");
-    }
-
-    mobileButtons.jump?.addEventListener("pointerdown", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      if (!mobileEnabled || state.gameState !== "playing" || state.paused) return;
-      if (playerState.inRocket) mobilePress("Space", true);
-      else mobilePress("Space", true);
-      mobileButtons.jump.classList.add("active");
-    });
-    mobileButtons.jump?.addEventListener("pointerup", (e) => { e.preventDefault(); mobilePress("Space", false); mobileButtons.jump.classList.remove("active"); });
-    mobileButtons.jump?.addEventListener("pointercancel", () => { mobilePress("Space", false); mobileButtons.jump.classList.remove("active"); });
-
-    mobileButtons.sprint?.addEventListener("pointerdown", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      if (!mobileEnabled || state.gameState !== "playing" || state.paused || playerState.inRocket) return;
-      mobilePress("ShiftLeft", true); mobileButtons.sprint.classList.add("active");
-    });
-    mobileButtons.sprint?.addEventListener("pointerup", (e) => { e.preventDefault(); mobilePress("ShiftLeft", false); mobileButtons.sprint.classList.remove("active"); });
-    mobileButtons.sprint?.addEventListener("pointercancel", () => { mobilePress("ShiftLeft", false); mobileButtons.sprint.classList.remove("active"); });
-
-    mobileButtons.flashlight?.addEventListener("pointerup", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      if (!mobileEnabled || state.gameState !== "playing" || state.paused || playerState.inRocket) return;
-      setFlashlight(!playerState.flashlightOn);
-    });
-
-    mobileButtons.interact?.addEventListener("pointerup", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      if (!mobileEnabled || state.gameState !== "playing" || state.paused) return;
-      if (playerState.inRocket) { exitRocketFlight(false); return; }
-      if (uiState.inventoryOpen || economyState.merchantOpen || !settingsModal.classList.contains("hidden")) return;
-      if (openMerchant()) return;
-      if (startRocketFueling()) return;
-      if (!uiState.equippedItemType && enterRocket()) return;
-      if (uiState.equippedItemType === "furnace" && tryPlaceFurnace()) return;
-      if (uiState.equippedItemType === "launch_pad" && tryPlaceLaunchPad()) return;
-      if (uiState.equippedItemType === "rocket" && tryPlaceRocketOnNearbyPad()) return;
-      if (tryPickupNearbyDroppedItem()) return;
-      tryCollectNearbyCrystal();
-    });
-
-    mobileButtons.more?.addEventListener("pointerup", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      mobileMoreMenu.classList.toggle("hidden");
-      mobileMoreMenu.setAttribute("aria-hidden", mobileMoreMenu.classList.contains("hidden") ? "true" : "false");
-    });
-    document.getElementById("mobileMapButton")?.addEventListener("pointerup", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      mobileMoreMenu.classList.add("hidden");
-      if (playerState.inRocket && playerState.rocketInSpace) return;
-      togglePlanetMap();
-    });
-    document.getElementById("mobileInventoryButton")?.addEventListener("pointerup", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      mobileMoreMenu.classList.add("hidden");
-      if (playerState.inRocket) return;
-      toggleInventory();
-    });
-
-    // Movement joystick. Its vector is mapped directly onto the same WASD state used by the
-    // desktop movement loop, so player and rocket use the exact same camera-relative movement.
-    let mobileJoystickPointerId = null;
-    const JOYSTICK_RADIUS = 72;
-    function updateJoystickFromPoint(clientX, clientY) {
-      const r = mobileJoystick.getBoundingClientRect();
-      let x = clientX - (r.left + r.width / 2);
-      let y = clientY - (r.top + r.height / 2);
-      const len = Math.hypot(x, y);
-      if (len > JOYSTICK_RADIUS) { x *= JOYSTICK_RADIUS / len; y *= JOYSTICK_RADIUS / len; }
-      mobileJoystickKnob.style.transform = `translate3d(${x}px,${y}px,0)`;
-      const nx = x / JOYSTICK_RADIUS, ny = y / JOYSTICK_RADIUS;
-      const dead = 0.20;
-      mobilePress("KeyA", nx < -dead); mobilePress("KeyD", nx > dead);
-      mobilePress("KeyW", ny < -dead); mobilePress("KeyS", ny > dead);
-    }
-    function resetJoystick() { mobileJoystickPointerId = null; mobileJoystickKnob.style.transform = "translate3d(0,0,0)"; mobilePress("KeyW",false); mobilePress("KeyA",false); mobilePress("KeyS",false); mobilePress("KeyD",false); }
-    mobileJoystick?.addEventListener("pointerdown", (e) => {
-      e.preventDefault(); e.stopPropagation(); mobileJoystickPointerId = e.pointerId; mobileJoystick.setPointerCapture?.(e.pointerId); updateJoystickFromPoint(e.clientX,e.clientY);
-    });
-    mobileJoystick?.addEventListener("pointermove", (e) => { if (e.pointerId === mobileJoystickPointerId) { e.preventDefault(); updateJoystickFromPoint(e.clientX,e.clientY); } });
-    mobileJoystick?.addEventListener("pointerup", (e) => { if (e.pointerId === mobileJoystickPointerId) resetJoystick(); });
-    mobileJoystick?.addEventListener("pointercancel", (e) => { if (e.pointerId === mobileJoystickPointerId) resetJoystick(); });
-
-    // Touch look. A swipe on the game area rotates the same camera variables as mouse look;
-    // controls/joystick consume their own touches, so two-finger play remains possible.
-    let mobileLookPointerId = null, mobileLookX = 0, mobileLookY = 0;
-    canvas.addEventListener("pointerdown", (e) => {
-      if (!mobileEnabled || e.pointerType !== "touch" || state.gameState !== "playing" || state.paused) return;
-      if (e.target.closest && e.target.closest("button,#mobileJoystick,#mobileMoreMenu,#hotbar,#mapOverlay,#inventoryOverlay,#merchantOverlay,#settingsModal")) return;
-      mobileLookPointerId = e.pointerId; mobileLookX = e.clientX; mobileLookY = e.clientY;
-      canvas.setPointerCapture?.(e.pointerId);
-      // Start a touch hold as the mobile equivalent of holding LMB to break.
-      mouseButtonDown = true;
-      if (!playerState.inRocket && !uiState.inventoryOpen && settingsModal.classList.contains("hidden")) {
-        if (uiState.equippedItemType === "wooden_pickaxe" || uiState.equippedItemType === "stone_pickaxe" || uiState.equippedItemType === "iron_pickaxe") {
-          if (uiState.equippedItemType === "iron_pickaxe" && breakNearbySpaceObject()) return;
-          if (!breakNearbyFurnace()) mineStone();
-        } else if (uiState.equippedItemType === "axe" || uiState.equippedItemType === "wooden_axe" || uiState.equippedItemType === "stone_axe" || uiState.equippedItemType === "iron_axe") chopNearbyTree();
-      }
-    }, { passive:false });
-    canvas.addEventListener("pointermove", (e) => {
-      if (e.pointerId !== mobileLookPointerId || e.pointerType !== "touch") return;
-      const dx = e.clientX - mobileLookX, dy = e.clientY - mobileLookY; mobileLookX = e.clientX; mobileLookY = e.clientY;
-      if (Math.hypot(dx,dy) > 6) mobileControls.classList.remove("showLookHint");
-      if (playerState.inRocket) {
-        flightCameraYaw.value -= dx * 0.012;
-        flightCameraPitch.value = Math.max(-Math.PI/2, Math.min(Math.PI/2, flightCameraPitch.value - dy * 0.009));
-      } else if (playerState.thirdPerson) {
-        const up = thirdPersonCameraUp.copy(player.position).normalize();
-        thirdPersonCameraYawQuat.setFromAxisAngle(up, -dx * 0.012);
-        thirdPersonCameraForward.applyQuaternion(thirdPersonCameraYawQuat);
-        thirdPersonCameraForward.addScaledVector(up, -thirdPersonCameraForward.dot(up));
-        thirdPersonCameraForward.normalize();
-        playerState.thirdPersonOrbitPitch = Math.max(-0.35, Math.min(0.85, playerState.thirdPersonOrbitPitch - dy * 0.009));
-      } else {
-        const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), -dx * 0.012);
-        orientation.multiply(yawQuat); playerState.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, playerState.pitch - dy * 0.009));
-      }
-      if (Math.hypot(dx,dy) > 12 && !playerState.inRocket) {
-        choppingTree = false; choppingTreeStartedAt = 0; choppingTreeTarget = null; miningStone = false; miningStoneStartedAt = 0; miningRock = null;
-        systemState.breakingFurnace = false; systemState.breakingFurnaceStartedAt = 0; systemState.breakingFurnaceTarget = null;
-      }
-      e.preventDefault();
-    }, { passive:false });
-    const endMobileLook = (e) => { if (e.pointerId === mobileLookPointerId) { mobileLookPointerId = null; mouseButtonDown = false; } };
-    canvas.addEventListener("pointerup", endMobileLook); canvas.addEventListener("pointercancel", endMobileLook);
-
-    // Keep mobile controls synchronized when the game starts/pauses/opens an overlay.
-    document.addEventListener("pointerlockchange", updateMobileControlsVisibility);
 
     // ---------- main-menu planet rotation ----------
     // The menu buttons/overlay are drawn on top of the Three.js canvas, so listening
@@ -5381,9 +6238,11 @@
           choppingTree = false;
           choppingTreeStartedAt = 0;
           choppingTreeTarget = null;
+          nextChopSoundAt = 0;
           miningStone = false;
           miningStoneStartedAt = 0;
           miningRock = null;
+          nextPickaxeSoundAt = 0;
           systemState.breakingFurnace = false;
           systemState.breakingFurnaceStartedAt = 0;
           systemState.breakingFurnaceTarget = null;
@@ -5519,6 +6378,10 @@
       return false;
     }
 
+    function groundedForAudio(ps) {
+      return ps.heightOffset <= 0.02 && Math.abs(ps.verticalVelocity) < 0.4;
+    }
+
     function updatePlayer(delta) {
       let moveX = 0, moveZ = 0;
       if (isPhysicalKeyDown("KeyW") || isPhysicalKeyDown("ArrowUp")) moveZ -= 1;
@@ -5549,6 +6412,32 @@
         }
       }
       updateStaminaBar();
+
+      // Walking/sprinting uses the supplied nature-trail footsteps recording as a looping
+      // movement bed. It stops immediately when the player stops or leaves the ground.
+      const footstepActive = isMoving && groundedForAudio(playerState);
+      if (footstepActive) {
+        const sprintingNow = state.gameMode === 'freeplay'
+          ? (shiftHeld && isMoving)
+          : (shiftHeld && isMoving && !playerState.exhausted && playerState.stamina > 0);
+        if (!footstepWasActive) playAudio('footsteps', sprintingNow ? 0.42 : 0.32, sprintingNow ? 1.10 : 1.0);
+        audioBank.footsteps.volume = sprintingNow ? 0.42 : 0.32;
+        audioBank.footsteps.playbackRate = sprintingNow ? 1.10 : 1.0;
+        if (audioBank.footsteps.paused) audioBank.footsteps.play().catch(() => {});
+      } else if (footstepWasActive) {
+        stopAudio('footsteps');
+      }
+      footstepWasActive = footstepActive;
+
+      const nowAudio = performance.now();
+      if (choppingTree && nowAudio >= nextChopSoundAt) {
+        playAudio('chop', 0.56, 1.0 + Math.random() * 0.04 - 0.02);
+        nextChopSoundAt = nowAudio + 1050;
+      }
+      if (miningStone && nowAudio >= nextPickaxeSoundAt) {
+        playAudio('pickaxe', 0.52, 0.98 + Math.random() * 0.06);
+        nextPickaxeSoundAt = nowAudio + Math.max(650, getMiningTimeForTool());
+      }
 
       if (isMoving) {
         tmpMove.set(moveX, 0, moveZ).normalize();
@@ -5598,6 +6487,13 @@
       tmpDir.copy(player.position).normalize();
 
       const grounded = playerState.heightOffset <= 0;
+      if (grounded && !wasGroundedForAudio) {
+        playAudio('land2', 0.5, 0.98 + Math.random() * 0.04);
+        const landingPos = player.position.clone();
+        const landingNormal = landingPos.clone().normalize();
+        spawnLandingDust(landingPos, landingNormal);
+      }
+      wasGroundedForAudio = grounded;
       if (grounded && isPhysicalKeyDown("Space")) {
         playerState.verticalVelocity = JUMP_SPEED;
       }
@@ -5703,12 +6599,24 @@
     function animate() {
       requestAnimationFrame(animate);
       const delta = Math.min(clock.getDelta(), 0.05);
+      updateParticles(delta);
+      updateSpecialParticles(delta);
+      updateFinalParticles(delta);
+      updateRainParticles(delta);
+      updateLightning(delta);
+      if (playerState.inRocket || state.gameState !== 'playing' || state.paused) {
+        if (footstepWasActive) { stopAudio('footsteps'); footstepWasActive = false; }
+      }
       spawnPinGroup.visible = state.gameState !== "playing"; // GPS pin only shows on the main-menu view
 
       // Run the sun/day-night simulation in both game and menu so the planet preview
       // also shows the same lighting system.
       updateDayNight(delta);
+      updateWeather(delta);
+      updateWeatherControlVisibility();
       updateCrystalRespawns();
+      updateAllFurnaceSmelting();
+      updateAmbientAudio();
       if (!playerState.inRocket) {
         finishChoppingTree();
         finishMiningStone();
@@ -5724,11 +6632,21 @@
           drop.root.position.copy(pos);
         }
       }
-      updateAllFurnaceSmelting();
       updateRocketFueling();
 
-      updateMobileControlsVisibility();
       if (state.gameState === "playing") {
+        const activeCamera = playerState.inRocket ? flightCamera : camera;
+        const cameraDistanceFromOrigin = activeCamera.position.length();
+        const desiredCameraFar = Math.max(10000, cameraDistanceFromOrigin * 4 + 2000);
+        if (activeCamera.far !== desiredCameraFar) {
+          activeCamera.far = desiredCameraFar;
+          activeCamera.updateProjectionMatrix();
+        }
+        // Keep background-only layers centered on the viewer so their finite world-space
+        // radius can never leave the camera behind at extreme flight distances.
+        skyMesh.position.copy(activeCamera.position);
+        stars.position.copy(activeCamera.position);
+
         scene.fog = sceneFog;
         updateCrystalPrompt();
         flashlightStatus.classList.toggle("hidden", !playerState.flashlightOn);
@@ -5737,7 +6655,7 @@
         } else if (!state.paused) {
           updatePlayer(delta);
         }
-        renderer.render(scene, playerState.inRocket ? flightCamera : camera);
+        renderer.render(scene, activeCamera);
         if (mapOpen) {
           updateMapPlayerMarker();
           mapRenderer.render(mapScene, mapCamera);
