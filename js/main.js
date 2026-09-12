@@ -293,12 +293,194 @@
     document.body.appendChild(renderer.domElement);
     const canvas = renderer.domElement;
 
+    // ---------- planetary map renderer ----------
+    // The map is a second lightweight Three.js view so it can show the same procedural
+    // planet style as the main-menu preview without disturbing the gameplay camera.
+    const mapOverlay = document.getElementById('mapOverlay');
+    const mapViewportWrap = document.getElementById('mapViewportWrap');
+    const mapCanvas = document.getElementById('mapCanvas');
+    const mapClose = document.getElementById('mapClose');
+    const mapRenderer = new THREE.WebGLRenderer({ canvas: mapCanvas, antialias: true, alpha: true });
+    mapRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+    mapRenderer.setClearColor(0x000000, 0);
+    const mapScene = new THREE.Scene();
+    const mapCamera = new THREE.PerspectiveCamera(50, 1, 1, 3000);
+    const MAP_MIN_ZOOM = 178;
+    const MAP_MAX_ZOOM = 610;
+    let mapCameraDistance = 420;
+    let mapOrbitYaw = 0;
+    let mapOrbitPitch = 0.28;
+    let mapDragging = false;
+    let mapLastX = 0;
+    let mapLastY = 0;
+    let mapOpen = false;
+    const MAP_ROTATE_SENSITIVITY = 0.005;
+    const MAP_MAX_PITCH = Math.PI / 2 - 0.12;
+    const mapPlanetRoot = new THREE.Group();
+    const mapMarkerGroup = new THREE.Group();
+    mapScene.add(mapPlanetRoot);
+    mapScene.add(mapMarkerGroup);
+    mapScene.add(new THREE.HemisphereLight(0xfff2d8, 0x223029, 2.0));
+    const mapKey = new THREE.DirectionalLight(0xffffff, 2.2);
+    mapKey.position.set(220, 260, 180);
+    mapScene.add(mapKey);
+
+    function resizeMapRenderer() {
+      if (!mapViewportWrap) return;
+      const w = Math.max(1, mapViewportWrap.clientWidth);
+      const h = Math.max(1, mapViewportWrap.clientHeight);
+      mapCamera.aspect = w / h;
+      mapCamera.updateProjectionMatrix();
+      mapRenderer.setSize(w, h, false);
+    }
+
+    function updateMapCamera() {
+      const cosPitch = Math.cos(mapOrbitPitch);
+      mapCamera.position.set(
+        Math.sin(mapOrbitYaw) * cosPitch * mapCameraDistance,
+        Math.sin(mapOrbitPitch) * mapCameraDistance,
+        Math.cos(mapOrbitYaw) * cosPitch * mapCameraDistance
+      );
+      mapCamera.lookAt(0, 0, 0);
+    }
+
+    function createMapPlanet() {
+      // Copy the already-generated planet world so the map matches the menu's terrain.
+      // Gameplay-only player/camera and the menu GPS pin are intentionally omitted.
+      const blocked = new Set([player, spawnPinGroup]);
+      while (mapPlanetRoot.children.length) mapPlanetRoot.remove(mapPlanetRoot.children[0]);
+      for (const child of planetSystem.children) {
+        if (blocked.has(child)) continue;
+        if (child.name === 'CrystalMerchantStall') continue;
+        const clone = child.clone(true);
+        clone.traverse(obj => {
+          if (obj.isMesh) {
+            obj.castShadow = false;
+            obj.receiveShadow = false;
+          }
+        });
+        mapPlanetRoot.add(clone);
+      }
+
+      // Add clear, collectible-looking iron ore indicators on top of the planet.
+      while (mapMarkerGroup.children.length) mapMarkerGroup.remove(mapMarkerGroup.children[0]);
+      const ironMat = new THREE.MeshBasicMaterial({ color: 0xd9a84d });
+      for (const ore of ironOreSpawns) {
+        const pin = new THREE.Mesh(new THREE.SphereGeometry(1.05, 10, 10), ironMat);
+        const dir = ore.direction.clone().normalize();
+        pin.position.copy(dir).multiplyScalar(PLANET_RADIUS + heightAt(dir) + 1.5);
+        mapMarkerGroup.add(pin);
+      }
+    }
+
+    function getMapPlayerWorldPosition(out) {
+      if (playerState.inRocket) {
+        out.copy(flightPosition);
+      } else {
+        player.getWorldPosition(out);
+      }
+      return out;
+    }
+
+    const mapPlayerWorld = new THREE.Vector3();
+    const mapPlayerLocal = new THREE.Vector3();
+    function updateMapPlayerMarker() {
+      getMapPlayerWorldPosition(mapPlayerWorld);
+      mapPlayerLocal.copy(mapPlayerWorld);
+      planetSystem.worldToLocal(mapPlayerLocal);
+      const dir = mapPlayerLocal.normalize();
+      const groundRadius = PLANET_RADIUS + heightAt(dir) + 4.0;
+      mapPlayerMarker.position.copy(dir).multiplyScalar(groundRadius);
+      mapPlayerMarker.scale.setScalar(playerState.inRocket ? 1.22 : 1.0);
+    }
+
+    // Red current-position beacon. It floats just above the terrain so it remains visible
+    // even at the farthest map zoom.
+    const mapPlayerMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(2.8, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0xea4b4b })
+    );
+    mapScene.add(mapPlayerMarker);
+
+    function openPlanetMap() {
+      if (state.gameState !== 'playing' || state.paused || economyState.merchantOpen ||
+          uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen ||
+          !settingsModal.classList.contains('hidden')) return false;
+      if (playerState.inRocket && playerState.rocketInSpace) {
+        showFlightPrompt('Map unavailable outside the atmosphere.');
+        return false;
+      }
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      mapOpen = true;
+      mapOverlay.classList.remove('hidden');
+      resizeMapRenderer();
+      updateMapCamera();
+      updateMapPlayerMarker();
+      document.body.classList.add('map-open');
+      return true;
+    }
+
+    function closePlanetMap() {
+      if (!mapOpen) return;
+      mapOpen = false;
+      mapOverlay.classList.add('hidden');
+      mapDragging = false;
+      mapViewportWrap.classList.remove('dragging');
+      document.body.classList.remove('map-open');
+    }
+
+    function togglePlanetMap() {
+      if (mapOpen) closePlanetMap();
+      else openPlanetMap();
+    }
+
+    mapClose.addEventListener('click', closePlanetMap);
+    mapViewportWrap.addEventListener('pointerdown', (e) => {
+      if (!mapOpen || e.button !== 0) return;
+      mapDragging = true;
+      mapLastX = e.clientX;
+      mapLastY = e.clientY;
+      mapViewportWrap.classList.add('dragging');
+      mapViewportWrap.setPointerCapture?.(e.pointerId);
+      e.preventDefault();
+    });
+    mapViewportWrap.addEventListener('pointermove', (e) => {
+      if (!mapDragging || !mapOpen) return;
+      const dx = e.clientX - mapLastX;
+      const dy = e.clientY - mapLastY;
+      mapLastX = e.clientX;
+      mapLastY = e.clientY;
+      mapOrbitYaw -= dx * MAP_ROTATE_SENSITIVITY;
+      mapOrbitPitch += dy * MAP_ROTATE_SENSITIVITY;
+      mapOrbitPitch = Math.max(-MAP_MAX_PITCH, Math.min(MAP_MAX_PITCH, mapOrbitPitch));
+      updateMapCamera();
+    });
+    const endMapDrag = () => {
+      mapDragging = false;
+      mapViewportWrap.classList.remove('dragging');
+    };
+    mapViewportWrap.addEventListener('pointerup', endMapDrag);
+    mapViewportWrap.addEventListener('pointercancel', endMapDrag);
+    mapViewportWrap.addEventListener('wheel', (e) => {
+      if (!mapOpen) return;
+      e.preventDefault();
+      mapCameraDistance = THREE.MathUtils.clamp(
+        mapCameraDistance * Math.exp(e.deltaY * 0.0011),
+        MAP_MIN_ZOOM, MAP_MAX_ZOOM
+      );
+      updateMapCamera();
+    }, { passive:false });
+
     window.addEventListener("resize", () => {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       menuCamera.aspect = window.innerWidth / window.innerHeight;
       menuCamera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+      resizeMerchantPreview();
+      resizeMapRenderer();
     });
 
 
@@ -1433,6 +1615,86 @@
 
     const crystalStall = createCrystalStall();
 
+    // ---------- merchant UI 3D preview ----------
+    // The merchant preview is rendered in its own small scene so the in-world NPC model
+    // can be shown inside the wooden shop UI without moving or duplicating the live merchant.
+    const merchantPreviewCanvas = document.getElementById('merchantPreviewCanvas');
+    let merchantPreviewRenderer = null;
+    let merchantPreviewScene = null;
+    let merchantPreviewCamera = null;
+    let merchantPreviewModel = null;
+    let merchantPreviewFrame = document.querySelector('.merchantPreviewFrame');
+    let merchantPreviewAnimation = 0;
+
+    function setupMerchantPreview() {
+      if (!merchantPreviewCanvas || typeof THREE.WebGLRenderer !== 'function') return;
+      merchantPreviewRenderer = new THREE.WebGLRenderer({
+        canvas: merchantPreviewCanvas,
+        antialias: true,
+        alpha: true,
+      });
+      merchantPreviewRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      merchantPreviewRenderer.setClearColor(0x000000, 0);
+
+      merchantPreviewScene = new THREE.Scene();
+      merchantPreviewCamera = new THREE.PerspectiveCamera(28, 1, 0.1, 20);
+      merchantPreviewCamera.position.set(0, 1.7, 8.0);
+      merchantPreviewCamera.lookAt(0, 1.55, 0);
+
+      const hemi = new THREE.HemisphereLight(0xffe8c4, 0x2b160b, 2.3);
+      merchantPreviewScene.add(hemi);
+      const key = new THREE.DirectionalLight(0xfff1d6, 3.2);
+      key.position.set(3, 5, 4);
+      merchantPreviewScene.add(key);
+      const fill = new THREE.DirectionalLight(0xb98c62, 1.35);
+      fill.position.set(-3, 2.5, 2);
+      merchantPreviewScene.add(fill);
+
+      merchantPreviewModel = crystalStall?.userData?.merchantNPC?.clone?.(true) || null;
+      if (!merchantPreviewModel) return;
+      merchantPreviewModel.position.set(0, 0, 0);
+      merchantPreviewModel.rotation.set(0, Math.PI, 0);
+      merchantPreviewModel.scale.setScalar(1.30);
+      merchantPreviewScene.add(merchantPreviewModel);
+
+      // A subtle wooden display plinth gives the character a grounded, shop-like presentation.
+      const plinthMat = new THREE.MeshStandardMaterial({ color: 0x70431f, roughness: 0.88, metalness: 0.0 });
+      const plinth = new THREE.Mesh(new THREE.CylinderGeometry(1.08, 1.16, 0.22, 40), plinthMat);
+      plinth.position.y = 0.08;
+      merchantPreviewScene.add(plinth);
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.94, 0.035, 8, 40),
+        new THREE.MeshStandardMaterial({ color: 0xd5a15c, roughness: 0.5, metalness: 0.15 })
+      );
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = 0.20;
+      merchantPreviewScene.add(ring);
+
+      resizeMerchantPreview();
+      renderMerchantPreview();
+    }
+
+    function resizeMerchantPreview() {
+      if (!merchantPreviewRenderer || !merchantPreviewCanvas || !merchantPreviewFrame) return;
+      const width = Math.max(1, merchantPreviewFrame.clientWidth || 300);
+      const height = Math.max(1, merchantPreviewFrame.clientHeight || 360);
+      merchantPreviewRenderer.setSize(width, height, false);
+      merchantPreviewCamera.aspect = width / height;
+      merchantPreviewCamera.updateProjectionMatrix();
+    }
+
+    function renderMerchantPreview() {
+      if (!merchantPreviewRenderer || !merchantPreviewScene || !merchantPreviewCamera) return;
+      resizeMerchantPreview();
+      if (merchantPreviewModel) {
+        merchantPreviewModel.rotation.y += 0.0025;
+      }
+      merchantPreviewRenderer.render(merchantPreviewScene, merchantPreviewCamera);
+      merchantPreviewAnimation = requestAnimationFrame(renderMerchantPreview);
+    }
+
+    setupMerchantPreview();
+
     // Every spawned crystal keeps a ghost at the exact same location. When it is picked up,
     // the solid model disappears, the ghost appears, and a respawn rotation target is stored.
     const crystalSpawns = worldState.crystals;
@@ -1484,6 +1746,19 @@
 
     // ---------- player ----------
     const player = new THREE.Object3D();
+    // Third-person camera heading is kept independent from the player's facing direction.
+    // This prevents the classic feedback loop where the player turns toward movement, which
+    // turns the camera, which changes movement direction again, causing uncontrollable spinning.
+    const thirdPersonCameraForward = new THREE.Vector3(0, 0, -1);
+    const thirdPersonCameraUp = new THREE.Vector3();
+    const thirdPersonCameraRight = new THREE.Vector3();
+    const thirdPersonCameraForwardPitched = new THREE.Vector3();
+    const thirdPersonCameraTarget = new THREE.Vector3();
+    const thirdPersonCameraDesired = new THREE.Vector3();
+    const thirdPersonCameraLocalDesired = new THREE.Vector3();
+    const thirdPersonCameraPlayerLocalOffset = new THREE.Vector3();
+    const thirdPersonCameraPitchQuat = new THREE.Quaternion();
+    const thirdPersonCameraYawQuat = new THREE.Quaternion();
     const spawnDir = new THREE.Vector3(0, 1, 0);
     player.position.copy(spawnDir).multiplyScalar(PLANET_RADIUS + heightAt(spawnDir) + EYE_HEIGHT);
     planetSystem.add(player);
@@ -1502,6 +1777,9 @@
     spawnPinGroup.position.copy(spawnGroundPos);
     spawnPinGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), spawnDir);
     planetSystem.add(spawnPinGroup);
+
+    // Build the map after the procedural planet and ore spawns exist.
+    createMapPlanet();
 
     const capsuleGeo = (typeof THREE.CapsuleGeometry === "function")
       ? new THREE.CapsuleGeometry(0.45, 1.0, 4, 8)
@@ -1689,7 +1967,18 @@
 
     function toggleThirdPerson() {
       playerState.thirdPerson = !playerState.thirdPerson;
-      if (playerState.thirdPerson) { playerState.thirdPersonOrbitYaw = Math.PI; playerState.thirdPersonOrbitPitch = 0.18; }
+      if (playerState.thirdPerson) {
+        playerState.thirdPersonOrbitYaw = Math.PI;
+        playerState.thirdPersonOrbitPitch = 0.18;
+        thirdPersonCameraForward.set(0, 0, -1).applyQuaternion(orientation);
+        const up = thirdPersonCameraUp.copy(player.position).normalize();
+        thirdPersonCameraForward.addScaledVector(up, -thirdPersonCameraForward.dot(up));
+        if (thirdPersonCameraForward.lengthSq() < 0.00001) {
+          thirdPersonCameraForward.set(0, 0, -1);
+          thirdPersonCameraForward.addScaledVector(up, -thirdPersonCameraForward.dot(up));
+        }
+        thirdPersonCameraForward.normalize();
+      }
       targetCamPos.copy(playerState.thirdPerson ? CAM_THIRD : CAM_FIRST);
 
       // Layer 0 is the first-person view; layer 1 contains the player body and
@@ -2991,6 +3280,9 @@
     const FLIGHT_SPEED = 30;
     const FLIGHT_VERTICAL_SPEED = 26;
     const FLIGHT_CAMERA_SMOOTH = 10;
+    const FLIGHT_TERRAIN_CLEARANCE = 1.15;
+    const FLIGHT_PROP_COLLISION_RADIUS = 1.15;
+    const FLIGHT_TREE_COLLISION_EXTRA = 0.35;
 
     let flightPad = null;
     let flightRocket = null;
@@ -3310,6 +3602,76 @@
       return true;
     }
 
+
+    // Flight collisions are evaluated in planetSystem-local space because the whole planet
+    // rotates over time. The detached rocket lives in world space, so every candidate position
+    // is converted before sampling terrain or checking world props. Space flight stays free.
+    function isFlightPositionBlocked(worldPosition) {
+      const local = worldPosition.clone();
+      planetSystem.worldToLocal(local);
+      const dir = local.clone().normalize();
+      const radius = local.length();
+
+      // Terrain / mountains / valleys. The rocket has a small hull clearance above the real
+      // terrain surface. Do NOT clamp to a global planet radius here: valleys can be much lower
+      // than the surrounding terrain and the ship must be allowed to travel inside them.
+      const terrainRadius = PLANET_RADIUS + heightAt(dir) + FLIGHT_TERRAIN_CLEARANCE;
+      if (radius < terrainRadius) return true;
+
+      // Trees are vertical obstacles, not little points at their roots. Test the candidate in
+      // each tree's local frame so both the trunk and the canopy can block the ship.
+      for (const tree of treeSpawns) {
+        if (tree.chopped || !tree.root.visible) continue;
+
+        collisionTreeOffset.copy(local).sub(tree.root.position);
+        collisionTreeInverse.copy(tree.root.quaternion).invert();
+        collisionTreeLocal.copy(collisionTreeOffset).applyQuaternion(collisionTreeInverse);
+
+        const size = tree.size;
+        const shipRadius = FLIGHT_PROP_COLLISION_RADIUS;
+        const treeHalfHeight = 3.12 * size;
+        const trunkRadius = 0.30 * size + shipRadius;
+        const canopyRadius = 0.66 * size + shipRadius;
+
+        // Trunk: a tall capsule-like cylinder around the tree's local Y axis.
+        const trunkXZ = Math.hypot(collisionTreeLocal.x, collisionTreeLocal.z);
+        if (collisionTreeLocal.y >= -shipRadius && collisionTreeLocal.y <= 1.48 * size + shipRadius && trunkXZ < trunkRadius) {
+          return true;
+        }
+
+        // Canopy: the cone occupies the upper part of the tree, so use a generous spherical
+        // footprint there. This prevents flying straight through the visible foliage.
+        if (collisionTreeLocal.y > 0.72 * size && collisionTreeLocal.y < treeHalfHeight + shipRadius) {
+          const coneCenterY = 2.05 * size;
+          const canopyVertical = collisionTreeLocal.y - coneCenterY;
+          const canopyXZ = Math.hypot(collisionTreeLocal.x, collisionTreeLocal.z);
+          const verticalLimit = 1.18 * size + shipRadius;
+          if (Math.abs(canopyVertical) <= verticalLimit && canopyXZ < canopyRadius) return true;
+        }
+      }
+
+      // Merchant stall: block the full physical footprint and height of the actual stall,
+      // rather than relying on the old smaller gameplay box that left large parts ghost-like.
+      if (crystalStall) {
+        collisionStallOffset.copy(local).sub(crystalStall.position);
+        collisionStallInverse.copy(crystalStall.quaternion).invert();
+        collisionStallLocal.copy(collisionStallOffset).applyQuaternion(collisionStallInverse);
+
+        const shipRadius = FLIGHT_PROP_COLLISION_RADIUS;
+        const halfX = 5.05 + shipRadius;
+        const halfZ = 2.02 + shipRadius;
+        const bottom = -0.55 - shipRadius;
+        const top = 3.82 + shipRadius;
+        if (Math.abs(collisionStallLocal.x) <= halfX &&
+            Math.abs(collisionStallLocal.z) <= halfZ &&
+            collisionStallLocal.y >= bottom && collisionStallLocal.y <= top) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
     function updateRocketFlight(delta) {
       if (!playerState.inRocket || !flightPad || !flightRocket) return;
       state.paused = false;
@@ -3335,6 +3697,20 @@
       let rightInput = 0;
       let verticalInput = 0;
 
+      // WASD is camera-relative in third-person flight too. The camera's look direction
+      // is projected onto the tangent plane, giving the familiar "W goes where I look"
+      // behavior while Space/Shift remain dedicated vertical controls.
+      const cameraMoveForward = new THREE.Vector3();
+      const cameraMoveRight = new THREE.Vector3();
+      flightCamera.getWorldDirection(cameraMoveForward);
+      cameraMoveForward.addScaledVector(basis.up, -cameraMoveForward.dot(basis.up));
+      if (cameraMoveForward.lengthSq() < 0.00001) {
+        cameraMoveForward.copy(flightCameraOrbitDir)
+          .addScaledVector(basis.up, -flightCameraOrbitDir.dot(basis.up));
+      }
+      cameraMoveForward.normalize();
+      cameraMoveRight.crossVectors(cameraMoveForward, basis.up).normalize();
+
       if (rocketKeyHeld('KeyW','ArrowUp')) forwardInput += 1;
       if (rocketKeyHeld('KeyS','ArrowDown')) forwardInput -= 1;
       if (rocketKeyHeld('KeyA','ArrowLeft')) rightInput -= 1;
@@ -3346,34 +3722,69 @@
         // In atmosphere, keep the ship's altitude and move around the planet's curve when
         // pressing W/A/S/D. This avoids the old tangent-vector + surface-clamp snap-back.
         if (!playerState.rocketInSpace) {
-          const currentRadius = Math.max(flightPosition.length(), PLANET_RADIUS + 1);
+          const currentDir = flightPosition.clone().normalize();
+          const currentGroundRadius = PLANET_RADIUS + heightAt(currentDir);
+          // Preserve the ship's altitude above the local ground while moving around the sphere.
+          // This is the important valley fix: entering a lower region lowers the ship with the
+          // valley, while entering higher terrain raises it smoothly instead of ejecting it.
+          const currentAltitude = Math.max(
+            FLIGHT_TERRAIN_CLEARANCE,
+            flightPosition.length() - currentGroundRadius
+          );
+
           const horizontal = new THREE.Vector3();
-          horizontal.addScaledVector(basis.forward, forwardInput);
-          horizontal.addScaledVector(basis.right, rightInput);
+          horizontal.addScaledVector(cameraMoveForward, forwardInput);
+          horizontal.addScaledVector(cameraMoveRight, rightInput);
           if (horizontal.lengthSq() > 1) horizontal.normalize();
 
           const horizontalDistance = FLIGHT_SPEED * delta;
           if (horizontal.lengthSq() > 0.000001) {
-            const newDir = flightPosition.clone().normalize();
-            newDir.addScaledVector(horizontal, horizontalDistance / currentRadius);
+            const newDir = currentDir.clone();
+            newDir.addScaledVector(horizontal, horizontalDistance / Math.max(flightPosition.length(), PLANET_RADIUS + 1));
             newDir.normalize();
-            flightPosition.copy(newDir).multiplyScalar(currentRadius);
+
+            const desiredRadius = PLANET_RADIUS + heightAt(newDir) + currentAltitude;
+            const horizontalCandidate = newDir.multiplyScalar(desiredRadius);
+            if (!isFlightPositionBlocked(horizontalCandidate)) {
+              flightPosition.copy(horizontalCandidate);
+            } else {
+              // If a diagonal move is blocked, try each camera-relative axis separately so the
+              // pilot can slide around trees/stalls without losing altitude in a valley.
+              const tryMoveAxis = (axisDir) => {
+                if (axisDir.lengthSq() < 0.000001) return false;
+                const axisDirNorm = axisDir.clone().normalize();
+                const axisCandidateDir = currentDir.clone();
+                axisCandidateDir.addScaledVector(axisDirNorm, horizontalDistance / Math.max(flightPosition.length(), PLANET_RADIUS + 1));
+                axisCandidateDir.normalize();
+                const axisRadius = PLANET_RADIUS + heightAt(axisCandidateDir) + currentAltitude;
+                const axisCandidate = axisCandidateDir.multiplyScalar(axisRadius);
+                if (!isFlightPositionBlocked(axisCandidate)) {
+                  flightPosition.copy(axisCandidate);
+                  return true;
+                }
+                return false;
+              };
+              const forwardOnly = cameraMoveForward.clone().multiplyScalar(forwardInput);
+              const rightOnly = cameraMoveRight.clone().multiplyScalar(rightInput);
+              tryMoveAxis(forwardOnly);
+              tryMoveAxis(rightOnly);
+            }
           }
 
           if (verticalInput !== 0) {
-            flightPosition.addScaledVector(basis.up, verticalInput * FLIGHT_VERTICAL_SPEED * delta);
-          }
-
-          // Keep the ship outside terrain at all times in atmosphere.
-          const surfaceDir = flightPosition.clone().normalize();
-          const surfaceRadius = PLANET_RADIUS + heightAt(surfaceDir) + 0.72;
-          if (flightPosition.length() < surfaceRadius) {
-            flightPosition.copy(surfaceDir).multiplyScalar(surfaceRadius);
+            const verticalDistance = verticalInput * FLIGHT_VERTICAL_SPEED * delta;
+            const verticalCandidate = flightPosition.clone().addScaledVector(basis.up, verticalDistance);
+            if (!isFlightPositionBlocked(verticalCandidate)) {
+              flightPosition.copy(verticalCandidate);
+            } else if (verticalInput > 0) {
+              // Always allow upward movement even if a prop is directly overhead.
+              flightPosition.copy(verticalCandidate);
+            }
           }
         } else {
           // In space, movement is unconstrained world-space flight.
-          flightMove.addScaledVector(basis.forward, forwardInput);
-          flightMove.addScaledVector(basis.right, rightInput);
+          flightMove.addScaledVector(cameraMoveForward, forwardInput);
+          flightMove.addScaledVector(cameraMoveRight, rightInput);
           flightMove.addScaledVector(basis.up, verticalInput);
           if (flightMove.lengthSq() > 1) flightMove.normalize();
           if (flightMove.lengthSq() > 0.000001) {
@@ -4589,7 +5000,8 @@
     // Keep a dedicated physical-key map as a safety net. The gameplay state can be
     // cleared when opening/closing UI, so movement keys are read from this map first.
     const physicalKeys = Object.create(null);
-    const isPhysicalKeyDown = (code) => !!physicalKeys[code] || !!systemState.keys[code];
+    const mobileKeys = Object.create(null);
+    const isPhysicalKeyDown = (code) => !!physicalKeys[code] || !!systemState.keys[code] || !!mobileKeys[code];
     const clearPhysicalKeys = () => { for (const k in physicalKeys) physicalKeys[k] = false; };
 
     // Keyboard state is shared through systemState.
@@ -4597,7 +5009,7 @@
       "KeyW", "KeyA", "KeyS", "KeyD",
       "KeyQ",
       "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
-      "Space", "ShiftLeft", "ShiftRight", "KeyC", "KeyF", "KeyI", "KeyE",
+      "Space", "ShiftLeft", "ShiftRight", "KeyC", "KeyF", "KeyI", "KeyE", "KeyM",
       "Digit1", "Digit2", "Digit3", "Digit4"
     ]);
 
@@ -4651,7 +5063,17 @@
         return;
       }
 
+      if (e.code === "KeyM" && !e.repeat && state.gameState === "playing" && settingsModal.classList.contains("hidden")) {
+        e.preventDefault();
+        togglePlanetMap();
+        return;
+      }
+
       if (e.code === "Escape") {
+        if (mapOpen) {
+          closePlanetMap();
+          return;
+        }
         if (economyState.merchantOpen) {
           closeMerchant();
           return;
@@ -4693,8 +5115,191 @@
     window.addEventListener("blur", () => {
       clearPhysicalKeys();
       for (const k in systemState.keys) systemState.keys[k] = false;
+      for (const k in mobileKeys) mobileKeys[k] = false;
       clearPhysicalKeys();
     });
+
+    // ---------- mobile controls ----------
+    const mobileControls = document.getElementById("mobileControls");
+    const mobileControlsToggle = document.getElementById("mobileControlsToggle");
+    const mobileMoreMenu = document.getElementById("mobileMoreMenu");
+    const mobileJoystick = document.getElementById("mobileJoystick");
+    const mobileJoystickKnob = document.getElementById("mobileJoystickKnob");
+    const mobileButtons = {
+      jump: document.getElementById("mobileJumpButton"),
+      sprint: document.getElementById("mobileSprintButton"),
+      flashlight: document.getElementById("mobileFlashlightButton"),
+      interact: document.getElementById("mobileInteractButton"),
+      more: document.getElementById("mobileMoreButton")
+    };
+    const MOBILE_SETTINGS_KEY = "pocketUniverseMobileControls";
+    const mobileTouchDevice = navigator.maxTouchPoints > 0 || "ontouchstart" in window;
+    let mobileEnabled = localStorage.getItem(MOBILE_SETTINGS_KEY) === null ? mobileTouchDevice : localStorage.getItem(MOBILE_SETTINGS_KEY) === "1";
+
+    function setMobileControlsEnabled(enabled) {
+      mobileEnabled = !!enabled;
+      localStorage.setItem(MOBILE_SETTINGS_KEY, mobileEnabled ? "1" : "0");
+      document.body.classList.toggle("mobile-controls-on", mobileEnabled);
+      mobileControls.classList.toggle("mobileEnabled", mobileEnabled && state.gameState === "playing");
+      mobileControls.classList.add("showLookHint");
+      mobileControls.setAttribute("aria-hidden", mobileEnabled && state.gameState === "playing" ? "false" : "true");
+      if (mobileControlsToggle) mobileControlsToggle.checked = mobileEnabled;
+      if (!mobileEnabled) {
+        for (const k in mobileKeys) mobileKeys[k] = false;
+        mobileMoreMenu.classList.add("hidden");
+        mobileMoreMenu.setAttribute("aria-hidden", "true");
+        mobileJoystickKnob.style.transform = "translate3d(0,0,0)";
+      }
+    }
+    setMobileControlsEnabled(mobileEnabled);
+    mobileControlsToggle?.addEventListener("change", () => setMobileControlsEnabled(mobileControlsToggle.checked));
+
+    function updateMobileControlsVisibility() {
+      const visible = mobileEnabled && state.gameState === "playing" && !state.paused && settingsModal.classList.contains("hidden") && !mapOpen && !economyState.merchantOpen && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen;
+      mobileControls.classList.toggle("mobileEnabled", visible);
+      mobileControls.setAttribute("aria-hidden", visible ? "false" : "true");
+      if (!visible) {
+        for (const k in mobileKeys) mobileKeys[k] = false;
+        mobileJoystickKnob.style.transform = "translate3d(0,0,0)";
+        mobileMoreMenu.classList.add("hidden");
+      }
+    }
+
+    function mobilePress(code, down) { mobileKeys[code] = !!down; }
+
+    function mobileReleaseAll() {
+      for (const k in mobileKeys) mobileKeys[k] = false;
+      mobileButtons.sprint?.classList.remove("active");
+      mobileButtons.jump?.classList.remove("active");
+    }
+
+    mobileButtons.jump?.addEventListener("pointerdown", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (!mobileEnabled || state.gameState !== "playing" || state.paused) return;
+      if (playerState.inRocket) mobilePress("Space", true);
+      else mobilePress("Space", true);
+      mobileButtons.jump.classList.add("active");
+    });
+    mobileButtons.jump?.addEventListener("pointerup", (e) => { e.preventDefault(); mobilePress("Space", false); mobileButtons.jump.classList.remove("active"); });
+    mobileButtons.jump?.addEventListener("pointercancel", () => { mobilePress("Space", false); mobileButtons.jump.classList.remove("active"); });
+
+    mobileButtons.sprint?.addEventListener("pointerdown", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (!mobileEnabled || state.gameState !== "playing" || state.paused || playerState.inRocket) return;
+      mobilePress("ShiftLeft", true); mobileButtons.sprint.classList.add("active");
+    });
+    mobileButtons.sprint?.addEventListener("pointerup", (e) => { e.preventDefault(); mobilePress("ShiftLeft", false); mobileButtons.sprint.classList.remove("active"); });
+    mobileButtons.sprint?.addEventListener("pointercancel", () => { mobilePress("ShiftLeft", false); mobileButtons.sprint.classList.remove("active"); });
+
+    mobileButtons.flashlight?.addEventListener("pointerup", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (!mobileEnabled || state.gameState !== "playing" || state.paused || playerState.inRocket) return;
+      setFlashlight(!playerState.flashlightOn);
+    });
+
+    mobileButtons.interact?.addEventListener("pointerup", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (!mobileEnabled || state.gameState !== "playing" || state.paused) return;
+      if (playerState.inRocket) { exitRocketFlight(false); return; }
+      if (uiState.inventoryOpen || economyState.merchantOpen || !settingsModal.classList.contains("hidden")) return;
+      if (openMerchant()) return;
+      if (startRocketFueling()) return;
+      if (!uiState.equippedItemType && enterRocket()) return;
+      if (uiState.equippedItemType === "furnace" && tryPlaceFurnace()) return;
+      if (uiState.equippedItemType === "launch_pad" && tryPlaceLaunchPad()) return;
+      if (uiState.equippedItemType === "rocket" && tryPlaceRocketOnNearbyPad()) return;
+      if (tryPickupNearbyDroppedItem()) return;
+      tryCollectNearbyCrystal();
+    });
+
+    mobileButtons.more?.addEventListener("pointerup", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      mobileMoreMenu.classList.toggle("hidden");
+      mobileMoreMenu.setAttribute("aria-hidden", mobileMoreMenu.classList.contains("hidden") ? "true" : "false");
+    });
+    document.getElementById("mobileMapButton")?.addEventListener("pointerup", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      mobileMoreMenu.classList.add("hidden");
+      if (playerState.inRocket && playerState.rocketInSpace) return;
+      togglePlanetMap();
+    });
+    document.getElementById("mobileInventoryButton")?.addEventListener("pointerup", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      mobileMoreMenu.classList.add("hidden");
+      if (playerState.inRocket) return;
+      toggleInventory();
+    });
+
+    // Movement joystick. Its vector is mapped directly onto the same WASD state used by the
+    // desktop movement loop, so player and rocket use the exact same camera-relative movement.
+    let mobileJoystickPointerId = null;
+    const JOYSTICK_RADIUS = 72;
+    function updateJoystickFromPoint(clientX, clientY) {
+      const r = mobileJoystick.getBoundingClientRect();
+      let x = clientX - (r.left + r.width / 2);
+      let y = clientY - (r.top + r.height / 2);
+      const len = Math.hypot(x, y);
+      if (len > JOYSTICK_RADIUS) { x *= JOYSTICK_RADIUS / len; y *= JOYSTICK_RADIUS / len; }
+      mobileJoystickKnob.style.transform = `translate3d(${x}px,${y}px,0)`;
+      const nx = x / JOYSTICK_RADIUS, ny = y / JOYSTICK_RADIUS;
+      const dead = 0.20;
+      mobilePress("KeyA", nx < -dead); mobilePress("KeyD", nx > dead);
+      mobilePress("KeyW", ny < -dead); mobilePress("KeyS", ny > dead);
+    }
+    function resetJoystick() { mobileJoystickPointerId = null; mobileJoystickKnob.style.transform = "translate3d(0,0,0)"; mobilePress("KeyW",false); mobilePress("KeyA",false); mobilePress("KeyS",false); mobilePress("KeyD",false); }
+    mobileJoystick?.addEventListener("pointerdown", (e) => {
+      e.preventDefault(); e.stopPropagation(); mobileJoystickPointerId = e.pointerId; mobileJoystick.setPointerCapture?.(e.pointerId); updateJoystickFromPoint(e.clientX,e.clientY);
+    });
+    mobileJoystick?.addEventListener("pointermove", (e) => { if (e.pointerId === mobileJoystickPointerId) { e.preventDefault(); updateJoystickFromPoint(e.clientX,e.clientY); } });
+    mobileJoystick?.addEventListener("pointerup", (e) => { if (e.pointerId === mobileJoystickPointerId) resetJoystick(); });
+    mobileJoystick?.addEventListener("pointercancel", (e) => { if (e.pointerId === mobileJoystickPointerId) resetJoystick(); });
+
+    // Touch look. A swipe on the game area rotates the same camera variables as mouse look;
+    // controls/joystick consume their own touches, so two-finger play remains possible.
+    let mobileLookPointerId = null, mobileLookX = 0, mobileLookY = 0;
+    canvas.addEventListener("pointerdown", (e) => {
+      if (!mobileEnabled || e.pointerType !== "touch" || state.gameState !== "playing" || state.paused) return;
+      if (e.target.closest && e.target.closest("button,#mobileJoystick,#mobileMoreMenu,#hotbar,#mapOverlay,#inventoryOverlay,#merchantOverlay,#settingsModal")) return;
+      mobileLookPointerId = e.pointerId; mobileLookX = e.clientX; mobileLookY = e.clientY;
+      canvas.setPointerCapture?.(e.pointerId);
+      // Start a touch hold as the mobile equivalent of holding LMB to break.
+      mouseButtonDown = true;
+      if (!playerState.inRocket && !uiState.inventoryOpen && settingsModal.classList.contains("hidden")) {
+        if (uiState.equippedItemType === "wooden_pickaxe" || uiState.equippedItemType === "stone_pickaxe" || uiState.equippedItemType === "iron_pickaxe") {
+          if (uiState.equippedItemType === "iron_pickaxe" && breakNearbySpaceObject()) return;
+          if (!breakNearbyFurnace()) mineStone();
+        } else if (uiState.equippedItemType === "axe" || uiState.equippedItemType === "wooden_axe" || uiState.equippedItemType === "stone_axe" || uiState.equippedItemType === "iron_axe") chopNearbyTree();
+      }
+    }, { passive:false });
+    canvas.addEventListener("pointermove", (e) => {
+      if (e.pointerId !== mobileLookPointerId || e.pointerType !== "touch") return;
+      const dx = e.clientX - mobileLookX, dy = e.clientY - mobileLookY; mobileLookX = e.clientX; mobileLookY = e.clientY;
+      if (Math.hypot(dx,dy) > 6) mobileControls.classList.remove("showLookHint");
+      if (playerState.inRocket) {
+        flightCameraYaw.value -= dx * 0.012;
+        flightCameraPitch.value = Math.max(-Math.PI/2, Math.min(Math.PI/2, flightCameraPitch.value - dy * 0.009));
+      } else if (playerState.thirdPerson) {
+        const up = thirdPersonCameraUp.copy(player.position).normalize();
+        thirdPersonCameraYawQuat.setFromAxisAngle(up, -dx * 0.012);
+        thirdPersonCameraForward.applyQuaternion(thirdPersonCameraYawQuat);
+        thirdPersonCameraForward.addScaledVector(up, -thirdPersonCameraForward.dot(up));
+        thirdPersonCameraForward.normalize();
+        playerState.thirdPersonOrbitPitch = Math.max(-0.35, Math.min(0.85, playerState.thirdPersonOrbitPitch - dy * 0.009));
+      } else {
+        const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), -dx * 0.012);
+        orientation.multiply(yawQuat); playerState.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, playerState.pitch - dy * 0.009));
+      }
+      if (Math.hypot(dx,dy) > 12 && !playerState.inRocket) {
+        choppingTree = false; choppingTreeStartedAt = 0; choppingTreeTarget = null; miningStone = false; miningStoneStartedAt = 0; miningRock = null;
+        systemState.breakingFurnace = false; systemState.breakingFurnaceStartedAt = 0; systemState.breakingFurnaceTarget = null;
+      }
+      e.preventDefault();
+    }, { passive:false });
+    const endMobileLook = (e) => { if (e.pointerId === mobileLookPointerId) { mobileLookPointerId = null; mouseButtonDown = false; } };
+    canvas.addEventListener("pointerup", endMobileLook); canvas.addEventListener("pointercancel", endMobileLook);
+
+    // Keep mobile controls synchronized when the game starts/pauses/opens an overlay.
+    document.addEventListener("pointerlockchange", updateMobileControlsVisibility);
 
     // ---------- main-menu planet rotation ----------
     // The menu buttons/overlay are drawn on top of the Three.js canvas, so listening
@@ -4804,6 +5409,7 @@
 
     document.addEventListener("mousemove", (e) => {
       if (state.gameState !== "playing") return;
+      if (mapOpen) return;
       const locked = document.pointerLockElement === canvas;
       if (!locked && !isDragging) return;
 
@@ -4817,10 +5423,14 @@
       }
 
       if (playerState.thirdPerson) {
-        // In third person the mouse rotates the camera around the player, Minecraft-style.
-        // The camera yaw is deliberately kept separate from the player's facing direction;
-        // movement below uses this camera heading, so W/A/S/D always follow the view.
-        playerState.thirdPersonOrbitYaw -= dx * 1.35;
+        // Borrow the ship's camera-relative control approach: rotate a dedicated camera
+        // heading around the local planetary up vector. The heading is NOT derived from
+        // the player's facing, so turning the character never feeds back into movement.
+        const up = thirdPersonCameraUp.copy(player.position).normalize();
+        thirdPersonCameraYawQuat.setFromAxisAngle(up, -dx * 1.35);
+        thirdPersonCameraForward.applyQuaternion(thirdPersonCameraYawQuat);
+        thirdPersonCameraForward.addScaledVector(up, -thirdPersonCameraForward.dot(up));
+        thirdPersonCameraForward.normalize();
         playerState.thirdPersonOrbitPitch = Math.max(-0.35, Math.min(0.85, playerState.thirdPersonOrbitPitch - dy * 0.85));
       } else {
         const yawQuat = new THREE.Quaternion().setFromAxisAngle(
@@ -4845,6 +5455,8 @@
     const collisionStallOffset = new THREE.Vector3();
     const collisionStallLocal = new THREE.Vector3();
     const collisionStallInverse = new THREE.Quaternion();
+    const collisionTreeInverse = new THREE.Quaternion();
+    const collisionTreeLocal = new THREE.Vector3();
 
     // The player uses a small circular footprint on the planet surface.
     // Because the player and every world prop are children of planetSystem, all collision
@@ -4942,18 +5554,19 @@
         tmpMove.set(moveX, 0, moveZ).normalize();
 
         if (playerState.thirdPerson) {
-          // Third-person movement is camera-relative, like Minecraft: W moves toward
-          // the direction the camera is looking, while A/D strafe relative to that view.
-          const cameraForward = new THREE.Vector3(
-            -Math.sin(playerState.thirdPersonOrbitYaw),
-            0,
-            -Math.cos(playerState.thirdPersonOrbitYaw)
-          );
-          const cameraRight = new THREE.Vector3(
-            Math.cos(playerState.thirdPersonOrbitYaw),
-            0,
-            -Math.sin(playerState.thirdPersonOrbitYaw)
-          );
+          // Third-person movement follows the dedicated camera heading, exactly like the
+          // ship. Pitch is ignored for movement, so W/A/S/D stay tangent to the planet.
+          // Everything here is planetSystem-local, matching player.position and orientation.
+          const moveUp = tmpDir;
+          const cameraForward = thirdPersonCameraForward;
+          cameraForward.addScaledVector(moveUp, -cameraForward.dot(moveUp));
+          if (cameraForward.lengthSq() < 0.00001) {
+            cameraForward.set(0, 0, -1);
+            cameraForward.addScaledVector(moveUp, -cameraForward.dot(moveUp));
+          }
+          cameraForward.normalize();
+          const cameraRight = thirdPersonCameraRight
+            .crossVectors(cameraForward, moveUp).normalize();
           tmpWorldMove.copy(cameraRight).multiplyScalar(tmpMove.x)
             .addScaledVector(cameraForward, -tmpMove.z);
         } else {
@@ -5018,19 +5631,67 @@
 
       player.quaternion.copy(orientation);
       if (playerState.thirdPerson) {
+        // The camera is still attached to the player for first-person compatibility, but in
+        // third person we explicitly place it from a planet-local world position. This keeps
+        // the camera orbit stable while the character rotates to face its travel direction.
         const radius = 5.2;
-        const cp = Math.cos(playerState.thirdPersonOrbitPitch);
-        targetCamPos.set(
-          Math.sin(playerState.thirdPersonOrbitYaw) * cp * radius,
-          1.45 + Math.sin(playerState.thirdPersonOrbitPitch) * 2.35,
-          Math.cos(playerState.thirdPersonOrbitYaw) * cp * radius
-        );
-        camera.position.lerp(targetCamPos, Math.min(1, delta * 10));
-        // camera is a child of the player, so lookAt needs a WORLD-space target.
+        const up = thirdPersonCameraUp.copy(tmpDir);
+        const baseForward = thirdPersonCameraForward
+          .addScaledVector(up, -thirdPersonCameraForward.dot(up));
+        if (baseForward.lengthSq() < 0.00001) baseForward.set(0, 0, -1);
+        baseForward.normalize();
+        thirdPersonCameraRight.crossVectors(baseForward, up).normalize();
+
+        // When the player is on/very close to the ground, prevent the third-person camera
+        // from orbiting far enough underneath the planet to become buried in the terrain.
+        // In the air we keep the full pitch range, so jumping/flying still allows the camera
+        // to look freely around the player.
+        let allowedPitch = playerState.thirdPersonOrbitPitch;
+        const nearGround = playerState.heightOffset <= 1.0 && Math.abs(playerState.verticalVelocity) < 3.5;
+        thirdPersonCameraTarget.copy(player.position).addScaledVector(up, 1.05);
+
+        if (nearGround && allowedPitch > 0) {
+          // Test the requested pitch first. If it would place the camera below the terrain
+          // surface, binary-search the largest safe pitch. This follows the actual terrain
+          // height in the camera's direction instead of using a flat global cutoff.
+          thirdPersonCameraPitchQuat.setFromAxisAngle(thirdPersonCameraRight, allowedPitch);
+          thirdPersonCameraForwardPitched.copy(baseForward).applyQuaternion(thirdPersonCameraPitchQuat).normalize();
+          thirdPersonCameraDesired.copy(thirdPersonCameraTarget)
+            .addScaledVector(thirdPersonCameraForwardPitched, -radius);
+
+          const cameraSurfaceDir = thirdPersonCameraDesired.clone().normalize();
+          const cameraGroundRadius = PLANET_RADIUS + heightAt(cameraSurfaceDir) + 0.22;
+          if (thirdPersonCameraDesired.length() < cameraGroundRadius) {
+            let low = 0;
+            let high = allowedPitch;
+            for (let i = 0; i < 8; i++) {
+              const mid = (low + high) * 0.5;
+              thirdPersonCameraPitchQuat.setFromAxisAngle(thirdPersonCameraRight, mid);
+              thirdPersonCameraForwardPitched.copy(baseForward).applyQuaternion(thirdPersonCameraPitchQuat).normalize();
+              thirdPersonCameraDesired.copy(thirdPersonCameraTarget)
+                .addScaledVector(thirdPersonCameraForwardPitched, -radius);
+              const testDir = thirdPersonCameraDesired.clone().normalize();
+              const testGroundRadius = PLANET_RADIUS + heightAt(testDir) + 0.22;
+              if (thirdPersonCameraDesired.length() >= testGroundRadius) low = mid;
+              else high = mid;
+            }
+            allowedPitch = low;
+          }
+        }
+
+        thirdPersonCameraPitchQuat.setFromAxisAngle(thirdPersonCameraRight, allowedPitch);
+        thirdPersonCameraForwardPitched.copy(baseForward).applyQuaternion(thirdPersonCameraPitchQuat).normalize();
+
+        thirdPersonCameraDesired.copy(thirdPersonCameraTarget)
+          .addScaledVector(thirdPersonCameraForwardPitched, -radius);
+
+        // Convert the desired planet-local point to the player's local camera coordinates.
+        planetSystem.localToWorld(thirdPersonCameraDesired);
+        player.worldToLocal(thirdPersonCameraLocalDesired.copy(thirdPersonCameraDesired));
+        camera.position.lerp(thirdPersonCameraLocalDesired, Math.min(1, delta * 10));
+
         camera.updateMatrixWorld(true);
-        const worldTarget = new THREE.Vector3(0, 1.05, 0);
-        player.localToWorld(worldTarget);
-        camera.lookAt(worldTarget);
+        camera.lookAt(planetSystem.localToWorld(thirdPersonCameraTarget.clone()));
       } else {
         camera.rotation.set(playerState.pitch, 0, 0);
         camera.position.lerp(targetCamPos, Math.min(1, delta * 10));
@@ -5066,6 +5727,7 @@
       updateAllFurnaceSmelting();
       updateRocketFueling();
 
+      updateMobileControlsVisibility();
       if (state.gameState === "playing") {
         scene.fog = sceneFog;
         updateCrystalPrompt();
@@ -5076,6 +5738,10 @@
           updatePlayer(delta);
         }
         renderer.render(scene, playerState.inRocket ? flightCamera : camera);
+        if (mapOpen) {
+          updateMapPlayerMarker();
+          mapRenderer.render(mapScene, mapCamera);
+        }
       } else {
         scene.fog = null;
         flashlightStatus.classList.add("hidden"); // keep the distant home-screen view of the planet crisp, not hazy

@@ -938,74 +938,137 @@
   position: fixed; inset: 0; z-index: 90;
   display: flex; align-items: center; justify-content: center;
   padding: 20px;
-  background: rgba(0,0,0,.63);
+  background: rgba(0,0,0,.66);
   font-family: 'Segoe UI', system-ui, sans-serif;
 }
 #merchantPanel {
-  width: min(900px, 94vw);
-  max-height: min(760px, 92vh);
+  width: min(1140px, 96vw);
+  max-height: min(800px, 93vh);
+  min-height: 560px;
   overflow: hidden;
-  border-radius: 20px;
-  border: 1px solid rgba(255,255,255,.10);
-  background: linear-gradient(180deg, rgba(24,29,38,.99), rgba(10,14,20,.99));
-  color: #edf2f8;
-  box-shadow: 0 28px 100px rgba(0,0,0,.68), inset 0 1px 0 rgba(255,255,255,.04);
+  display: grid;
+  grid-template-columns: minmax(0, 1.62fr) minmax(300px, .78fr);
+  border-radius: 24px;
+  border: 2px solid rgba(92,52,24,.72);
+  background:
+    radial-gradient(circle at 15% 10%, rgba(255,235,190,.14), transparent 30%),
+    repeating-linear-gradient(2deg, rgba(68,35,14,.045) 0 2px, rgba(255,243,214,.025) 2px 5px),
+    repeating-linear-gradient(89deg, rgba(73,40,18,.08) 0 8px, rgba(255,230,187,.035) 8px 18px),
+    linear-gradient(180deg, #8a5b32 0%, #6b4324 48%, #523019 100%);
+  color: #fff7e9;
+  box-shadow: 0 28px 100px rgba(0,0,0,.72), inset 0 1px 0 rgba(255,242,213,.20), inset 0 -5px 20px rgba(34,17,7,.24);
+  transform: translateX(3vw);
 }
-#merchantNpcBubble { padding: 20px 22px 16px; border-bottom: 1px solid rgba(255,255,255,.07); }
-#merchantNpcName { font-size: 11px; font-weight: 900; letter-spacing: 1.6px; color: rgba(255,255,255,.44); }
-#merchantNpcLine { margin-top: 6px; font-size: 22px; font-weight: 700; }
-.merchantDialogueBox { padding: 26px; display: grid; gap: 12px; }
+#merchantUiColumn {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background:
+    linear-gradient(90deg, rgba(63,32,14,.14), transparent 10%, transparent 90%, rgba(63,32,14,.12)),
+    repeating-linear-gradient(1deg, rgba(255,238,200,.035) 0 3px, rgba(56,27,10,.05) 3px 6px);
+  border-right: 2px solid rgba(47,23,10,.42);
+}
+#merchantNpcBubble {
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid rgba(255,239,211,.16);
+  background: linear-gradient(180deg, rgba(30,15,7,.30), rgba(30,15,7,.08));
+  text-shadow: 0 1px 1px rgba(40,16,5,.6);
+}
+#merchantNpcName { font-size: 11px; font-weight: 900; letter-spacing: 1.8px; color: rgba(255,236,197,.70); }
+#merchantNpcLine { margin-top: 6px; font-size: 22px; font-weight: 800; color: #fff2d5; }
+.merchantDialogueBox { padding: 26px 26px 30px; display: grid; gap: 13px; }
 .merchantChoiceButton, .merchantActionButton, .merchantCloseButton, .merchantBackButton, .merchantBuyButton {
-  border: 1px solid rgba(255,255,255,.12); border-radius: 12px; background: rgba(255,255,255,.06);
-  color: #eef3f8; font: inherit; font-weight: 800; cursor: pointer; transition: .16s ease;
+  border: 1px solid rgba(255,230,190,.23); border-radius: 12px;
+  background: linear-gradient(180deg, rgba(69,35,14,.72), rgba(42,20,8,.78));
+  color: #fff3dc; font: inherit; font-weight: 800; cursor: pointer; transition: .16s ease;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 4px 12px rgba(37,15,5,.16);
 }
 .merchantChoiceButton { padding: 16px 18px; font-size: 16px; text-align: left; }
-.merchantChoiceButton:hover, .merchantActionButton:hover:not(:disabled), .merchantBuyButton:hover:not(:disabled), .merchantBackButton:hover, .merchantCloseButton:hover { background: rgba(255,255,255,.12); transform: translateY(-1px); }
-.merchantSection { padding: 18px; }
+.merchantChoiceButton:hover, .merchantActionButton:hover:not(:disabled), .merchantBuyButton:hover:not(:disabled), .merchantBackButton:hover, .merchantCloseButton:hover {
+  background: linear-gradient(180deg, rgba(103,56,22,.90), rgba(58,28,10,.90));
+  border-color: rgba(255,232,196,.42); transform: translateY(-1px);
+}
+.merchantSection { padding: 18px 20px 8px; min-height: 0; }
 .merchantSectionHeader { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:12px; }
-.merchantSectionHeader h2 { margin:0; font-size:20px; }
-.merchantSectionHeader p { margin:4px 0 0; color:rgba(220,228,238,.58); font-size:12px; }
+.merchantSectionHeader h2 { margin:0; font-size:20px; color:#fff0cf; }
+.merchantSectionHeader p { margin:4px 0 0; color:rgba(255,233,194,.62); font-size:12px; }
 .merchantBackButton { padding:9px 12px; }
-.merchantSellLayout { display:grid; grid-template-columns:minmax(0, 1.5fr) minmax(260px, .9fr); gap:14px; min-height:0; }
+.merchantSellLayout { display:grid; grid-template-columns:minmax(0, 1.5fr) minmax(220px, .9fr); gap:14px; min-height:0; }
 .merchantItemList { height:min(420px, 50vh); max-height:min(420px, 50vh); min-height:0; overflow-y:auto; overflow-x:hidden; padding-right:8px; scrollbar-gutter:stable; scrollbar-width:thin; }
-.merchantItemRow { width:100%; min-height:66px; display:grid; grid-template-columns:52px minmax(0,1fr) auto; align-items:center; gap:10px; padding:9px 10px; margin-bottom:7px; border-radius:12px; border:1px solid rgba(255,255,255,.07); background:rgba(255,255,255,.035); color:#eef3f8; text-align:left; }
+.merchantItemRow { width:100%; min-height:66px; display:grid; grid-template-columns:52px minmax(0,1fr) auto; align-items:center; gap:10px; padding:9px 10px; margin-bottom:7px; border-radius:11px; border:1px solid rgba(255,230,190,.13); background:rgba(43,21,8,.38); color:#fff3de; text-align:left; box-sizing:border-box; }
 button.merchantItemRow { cursor:pointer; }
-button.merchantItemRow:hover:not(:disabled), .merchantItemRow.selected { background:rgba(255,255,255,.09); border-color:rgba(255,255,255,.16); }
+button.merchantItemRow:hover:not(:disabled), .merchantItemRow.selected { background:rgba(127,71,29,.56); border-color:rgba(255,228,189,.30); }
 .merchantItemRow:disabled { opacity:.43; cursor:default; }
-.merchantItemIconSlot { width:44px; height:44px; display:flex; align-items:center; justify-content:center; border-radius:10px; background:rgba(0,0,0,.18); }
+.merchantItemIconSlot { width:44px; height:44px; display:flex; align-items:center; justify-content:center; border-radius:10px; background:rgba(30,13,4,.36); box-shadow:inset 0 1px 0 rgba(255,255,255,.04); }
 .merchantIcon { transform:scale(.72); }
 .merchantItemText { min-width:0; display:flex; flex-direction:column; gap:4px; }
 .merchantItemText strong { font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.merchantItemText small { font-size:10px; color:rgba(220,228,238,.55); }
-.merchantDetails { border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:16px; background:rgba(0,0,0,.14); display:flex; flex-direction:column; gap:9px; align-self:start; }
-.merchantSelectedName { font-size:18px; font-weight:800; }
-#merchantSellOwned, #merchantSellPrice { color:rgba(220,228,238,.60); font-size:12px; }
-#merchantSellQuantity { width:90px; margin-left:6px; padding:8px; border-radius:8px; border:1px solid rgba(255,255,255,.10); background:rgba(0,0,0,.2); color:#fff; }
+.merchantItemText small { font-size:10px; color:rgba(255,232,196,.56); }
+.merchantDetails { border:1px solid rgba(255,230,190,.14); border-radius:13px; padding:16px; background:rgba(37,17,7,.34); display:flex; flex-direction:column; gap:9px; align-self:start; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
+.merchantSelectedName { font-size:18px; font-weight:800; color:#fff1d4; }
+#merchantSellOwned, #merchantSellPrice { color:rgba(255,232,196,.60); font-size:12px; }
+#merchantSellQuantity { width:90px; margin-left:6px; padding:8px; border-radius:8px; border:1px solid rgba(255,230,190,.14); background:rgba(24,10,4,.42); color:#fff; }
 #merchantSellTotal { margin-top:5px; font-size:15px; font-weight:800; }
-.merchantActionButton { margin-top:6px; padding:12px 14px; background:rgba(118,164,255,.13); }
+.merchantActionButton { margin-top:6px; padding:12px 14px; background:rgba(183,132,57,.28); }
 .merchantActionButton:disabled, .merchantBuyButton:disabled { opacity:.4; cursor:not-allowed; }
 .merchantBuyRow { grid-template-columns:52px minmax(0,1fr) 78px 72px; }
-.merchantBuyQuantity { width:66px; padding:8px 6px; box-sizing:border-box; border-radius:8px; border:1px solid rgba(255,255,255,.10); background:rgba(0,0,0,.20); color:#fff; }
+.merchantBuyQuantity { width:66px; padding:8px 6px; box-sizing:border-box; border-radius:8px; border:1px solid rgba(255,230,190,.14); background:rgba(24,10,4,.42); color:#fff; }
 .merchantBuyButton { padding:9px 10px; font-size:11px; }
 .merchantBuyListStandalone { display:block; visibility:visible; opacity:1; }
 .merchantBuyVisualIcon { width:30px; height:30px; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight:900; line-height:1; }
-
 .merchantItemList::-webkit-scrollbar { width:10px; }
-.merchantItemList::-webkit-scrollbar-track { background:rgba(255,255,255,.035); border-radius:10px; }
-.merchantItemList::-webkit-scrollbar-thumb { background:rgba(255,255,255,.18); border-radius:10px; border:2px solid transparent; background-clip:padding-box; }
-.merchantItemList::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.30); border:2px solid transparent; background-clip:padding-box; }
-.merchantEmptyState { min-height:100%; display:flex; align-items:center; justify-content:center; padding:24px; color:rgba(220,228,238,.55); text-align:center; font-size:13px; }
-#merchantStatus { min-height:18px; padding:5px 18px 0; text-align:center; color:rgba(220,228,238,.65); font-size:12px; }
+.merchantItemList::-webkit-scrollbar-track { background:rgba(35,15,5,.28); border-radius:10px; }
+.merchantItemList::-webkit-scrollbar-thumb { background:rgba(255,227,187,.23); border-radius:10px; border:2px solid transparent; background-clip:padding-box; }
+.merchantItemList::-webkit-scrollbar-thumb:hover { background:rgba(255,227,187,.38); border:2px solid transparent; background-clip:padding-box; }
+.merchantEmptyState { min-height:100%; display:flex; align-items:center; justify-content:center; padding:24px; color:rgba(255,232,196,.55); text-align:center; font-size:13px; }
+#merchantStatus { min-height:18px; padding:5px 18px 0; text-align:center; color:rgba(255,231,193,.70); font-size:12px; }
 .merchantCloseButton { display:block; margin:10px auto 16px; padding:9px 16px; }
+#merchantPreviewPane {
+  min-width:0;
+  position:relative;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  padding:22px 18px 20px;
+  background:
+    radial-gradient(circle at 50% 25%, rgba(255,225,169,.18), transparent 36%),
+    linear-gradient(180deg, rgba(52,24,10,.18), rgba(30,12,4,.38));
+  box-shadow:inset 8px 0 20px rgba(38,16,6,.10);
+}
+#merchantPreviewPane::before {
+  content:'';
+  position:absolute; inset:14px;
+  border:1px solid rgba(255,231,192,.16);
+  border-radius:18px;
+  pointer-events:none;
+}
+.merchantPreviewTitle { position:relative; z-index:1; font-size:11px; font-weight:900; letter-spacing:2px; color:rgba(255,236,203,.68); }
+.merchantPreviewFrame {
+  position:relative; z-index:1; width:100%; max-width:330px; aspect-ratio: 4 / 5;
+  margin:12px auto 10px; border-radius:18px; overflow:hidden;
+  background:radial-gradient(circle at 50% 35%, rgba(255,215,156,.18), rgba(47,22,9,.60) 68%);
+  border:1px solid rgba(255,229,191,.20);
+  box-shadow:inset 0 0 35px rgba(22,8,2,.40), 0 10px 30px rgba(28,10,3,.24);
+}
+#merchantPreviewCanvas { display:block; width:100%; height:100%; }
+.merchantPreviewCaption { position:relative; z-index:1; font-size:10px; font-weight:900; letter-spacing:2px; color:rgba(255,232,195,.52); }
 .itemIcon.jerrycan { width:28px; height:34px; background:linear-gradient(180deg,#d8ba45,#b69225); border:2px solid #6b5617; border-radius:5px; transform:rotate(-4deg); position:relative; }
 .itemIcon.jerrycan::before { content:''; position:absolute; width:10px; height:9px; left:8px; top:-8px; background:#4b4f54; border-radius:2px 2px 0 0; }
 .itemIcon.jerrycan::after { content:''; position:absolute; width:6px; height:17px; left:3px; top:6px; border:2px solid #4b4f54; border-right:0; border-radius:4px 0 0 4px; }
-@media (max-width: 720px) {
-  .merchantSellLayout { grid-template-columns:1fr; }
+@media (max-width: 900px) {
+  #merchantPanel { grid-template-columns: minmax(0, 1.55fr) minmax(250px, .72fr); transform:translateX(0); }
   .merchantBuyRow { grid-template-columns:46px minmax(0,1fr) 64px 60px; }
   #merchantNpcLine { font-size:18px; }
 }
-
+@media (max-width: 720px) {
+  #merchantPanel { grid-template-columns:1fr; width:min(720px, 96vw); min-height:0; max-height:92vh; overflow:auto; }
+  #merchantUiColumn { border-right:0; }
+  #merchantPreviewPane { min-height:280px; order:-1; padding-top:18px; }
+  .merchantPreviewFrame { max-width:230px; aspect-ratio:1 / 1; margin:8px auto; }
+  .merchantSellLayout { grid-template-columns:1fr; }
+}
 
 #rocketFlightStatus {
   position:fixed;
@@ -1034,3 +1097,111 @@ body.rocket-flight #flashlightStatus { display:none; }
 body.rocket-flight #creditsDisplay { opacity:.72; }
 
 body.state-menu #creditsDisplay { display: none; }
+
+
+/* ---------- planetary map ---------- */
+#mapOverlay {
+  position:fixed; inset:0; z-index:140; display:flex; align-items:center; justify-content:center;
+  padding:26px; background:rgba(8,12,16,.72); backdrop-filter:blur(8px);
+}
+#mapOverlay.hidden { display:none; }
+#mapPanel {
+  width:min(1040px, 94vw); height:min(820px, 92vh); display:flex; flex-direction:column;
+  overflow:hidden; border:1px solid rgba(219,205,170,.30); border-radius:18px;
+  background:
+    linear-gradient(180deg,rgba(43,34,23,.96),rgba(24,29,27,.98)),
+    repeating-linear-gradient(0deg,rgba(255,255,255,.018) 0 2px,transparent 2px 7px);
+  box-shadow:0 22px 70px rgba(0,0,0,.46), inset 0 1px 0 rgba(255,247,220,.10);
+}
+#mapHeader {
+  min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:18px;
+  padding:14px 18px 13px 22px; border-bottom:1px solid rgba(215,203,174,.18);
+  background:linear-gradient(180deg,rgba(107,91,63,.30),rgba(64,54,41,.16));
+}
+#mapTitle { color:#eee5d0; font-size:18px; font-weight:950; letter-spacing:3px; text-transform:uppercase; }
+#mapSubtitle { margin-top:3px; color:rgba(235,225,205,.54); font-size:10px; font-weight:800; letter-spacing:1.5px; }
+#mapClose {
+  width:40px; height:40px; border-radius:10px; border:1px solid rgba(234,224,204,.16);
+  background:rgba(16,18,19,.34); color:#eee5d0; font-size:25px; cursor:pointer;
+}
+#mapClose:hover { background:rgba(232,219,191,.12); }
+#mapViewportWrap {
+  position:relative; flex:1; min-height:0; overflow:hidden; margin:16px; border-radius:14px;
+  border:1px solid rgba(215,203,174,.20); background:radial-gradient(circle at 50% 45%,rgba(91,106,94,.20),rgba(14,20,22,.72) 72%);
+  box-shadow:inset 0 0 50px rgba(0,0,0,.44); cursor:grab;
+}
+#mapViewportWrap.dragging { cursor:grabbing; }
+#mapCanvas { width:100%; height:100%; display:block; touch-action:none; }
+.mapCompass {
+  position:absolute; top:16px; left:50%; transform:translateX(-50%);
+  width:38px; height:38px; border:1px solid rgba(245,237,215,.28); border-radius:50%;
+  display:grid; place-items:center; color:#e9dfc8; font-size:13px; font-weight:950;
+  background:rgba(13,18,19,.62); box-shadow:0 4px 14px rgba(0,0,0,.24); pointer-events:none;
+}
+.mapCompass::after { content:''; position:absolute; bottom:-9px; width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid rgba(232,84,84,.85); }
+.mapLegend {
+  position:absolute; top:16px; left:16px; padding:10px 12px; min-width:132px; border:1px solid rgba(245,237,215,.13);
+  border-radius:10px; background:rgba(12,16,17,.66); color:rgba(239,230,209,.74); font-size:10px; font-weight:800; letter-spacing:.9px;
+  pointer-events:none; backdrop-filter:blur(4px);
+}
+.mapLegendTitle { color:#eee5d0; font-size:9px; letter-spacing:1.5px; margin-bottom:7px; }
+.mapLegendItem { display:flex; align-items:center; gap:7px; margin-top:5px; }
+.mapLegendDot { width:10px; height:10px; border-radius:50%; flex:0 0 10px; box-shadow:0 0 10px currentColor; }
+.mapLegendDot.player { background:#ea4b4b; color:#ea4b4b; }
+.mapLegendDot.iron { background:#d9a84d; color:#d9a84d; }
+.mapInstructions {
+  position:absolute; left:50%; bottom:13px; transform:translateX(-50%); white-space:nowrap;
+  padding:6px 10px; border:1px solid rgba(245,237,215,.10); border-radius:8px;
+  background:rgba(10,14,15,.64); color:rgba(237,229,211,.56); font-size:9px; font-weight:850; letter-spacing:1px; pointer-events:none;
+}
+.mapScale {
+  position:absolute; right:16px; bottom:16px; padding:7px 9px; border:1px solid rgba(245,237,215,.12); border-radius:8px;
+  background:rgba(10,14,15,.60); color:rgba(237,229,211,.44); font-size:8px; font-weight:850; letter-spacing:1.2px; pointer-events:none;
+}
+@media (max-width:720px) {
+  #mapOverlay { padding:10px; }
+  #mapPanel { width:100%; height:94vh; border-radius:14px; }
+  #mapViewportWrap { margin:10px; }
+  .mapInstructions { font-size:8px; }
+}
+
+/* ---------- mobile touch controls ---------- */
+#mobileControls { display:none; }
+#mobileControls.mobileEnabled { display:block; position:fixed; inset:0; z-index:130; pointer-events:none; font-family:'Segoe UI',system-ui,-apple-system,sans-serif; touch-action:none; user-select:none; }
+#mobileControls.mobileEnabled button,
+#mobileControls.mobileEnabled #mobileJoystick { pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; }
+#mobileActionButtons { position:absolute; left:max(14px, env(safe-area-inset-left)); bottom:max(118px, calc(92px + env(safe-area-inset-bottom))); display:grid; grid-template-columns:repeat(2, minmax(66px, 78px)); gap:9px; }
+.mobileActionButton { width:72px; height:58px; border:1px solid rgba(255,255,255,.20); border-radius:16px; background:rgba(10,15,22,.66); color:#f4f7fb; box-shadow:0 7px 20px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.08); backdrop-filter:blur(8px); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; font-size:19px; font-weight:900; line-height:1; }
+.mobileActionButton span { font-size:8px; letter-spacing:1px; color:rgba(235,242,250,.62); }
+.mobileActionButton.active { transform:scale(.94); background:rgba(255,255,255,.17); }
+#mobileMoreMenu { position:absolute; left:max(14px, env(safe-area-inset-left)); bottom:max(118px, calc(92px + env(safe-area-inset-bottom))); transform:translateY(-122px); display:flex; flex-direction:column; gap:8px; pointer-events:auto; }
+#mobileMoreMenu button { min-width:128px; height:44px; border-radius:12px; border:1px solid rgba(255,255,255,.18); background:rgba(12,17,24,.82); color:#f4f7fb; font-size:11px; font-weight:900; letter-spacing:1px; box-shadow:0 7px 18px rgba(0,0,0,.28); }
+#mobileJoystick { position:absolute; right:max(18px, env(safe-area-inset-right)); bottom:max(118px, calc(92px + env(safe-area-inset-bottom))); width:168px; height:168px; }
+#mobileJoystickBase { width:100%; height:100%; border-radius:50%; background:rgba(10,15,22,.32); border:2px solid rgba(255,255,255,.22); box-shadow:inset 0 0 35px rgba(255,255,255,.035),0 8px 24px rgba(0,0,0,.22); backdrop-filter:blur(6px); position:relative; }
+#mobileJoystickKnob { position:absolute; left:50%; top:50%; width:74px; height:74px; margin:-37px; border-radius:50%; background:rgba(255,255,255,.19); border:1px solid rgba(255,255,255,.34); box-shadow:0 5px 18px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.13); transform:translate3d(0,0,0); }
+#mobileLookHint { position:absolute; top:68px; left:50%; transform:translateX(-50%); padding:7px 10px; border-radius:10px; background:rgba(8,12,18,.45); color:rgba(255,255,255,.36); font-size:8px; font-weight:800; letter-spacing:1.4px; opacity:0; transition:opacity .2s; }
+#mobileControls.mobileEnabled.showLookHint #mobileLookHint { opacity:1; }
+body.mobile-controls-on #hotbar { pointer-events:auto; }
+body.mobile-controls-on #controlsToggle { display:flex; }
+body.mobile-controls-on #staminaWrap { bottom:calc(106px + env(safe-area-inset-bottom)); }
+body.mobile-controls-on #crystalPrompt { bottom:calc(180px + env(safe-area-inset-bottom)); }
+body.mobile-controls-on #flashlightStatus { bottom:calc(205px + env(safe-area-inset-bottom)); }
+body.mobile-controls-on #rocketFlightStatus { top:max(12px,env(safe-area-inset-top)); left:max(12px,env(safe-area-inset-left)); min-width:170px; }
+body.mobile-controls-on #hotbar .hotbarSlot { width:clamp(46px,12vw,58px); height:clamp(46px,12vw,58px); }
+body.mobile-controls-on #hotbar { bottom:max(14px,env(safe-area-inset-bottom)); gap:3px; }
+
+.mobileToggle { display:inline-flex; align-items:center; cursor:pointer; }
+.mobileToggle input { position:absolute; opacity:0; pointer-events:none; }
+.mobileToggleTrack { width:50px; height:28px; border-radius:99px; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.18); padding:3px; transition:.16s; }
+.mobileToggleThumb { display:block; width:20px; height:20px; border-radius:50%; background:#cfd6df; box-shadow:0 2px 8px rgba(0,0,0,.28); transition:.16s; }
+.mobileToggle input:checked + .mobileToggleTrack { background:rgba(73,180,255,.32); border-color:rgba(73,180,255,.52); }
+.mobileToggle input:checked + .mobileToggleTrack .mobileToggleThumb { transform:translateX(22px); background:#fff; }
+
+@media (max-width:720px) {
+  #settingsPanel { width:min(430px,92vw); max-height:88vh; padding:22px 20px 16px; }
+  #settingsContent { max-height:calc(88vh - 92px); }
+  .keyRow { gap:12px; }
+  .keyNote { max-width:150px; }
+  #homeTitle { font-size:26px; top:7vh; }
+  #planetHint { font-size:11px; bottom:27vh; width:88vw; text-align:center; }
+}

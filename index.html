@@ -23,6 +23,28 @@
 </div>
 
 <div id="crystalPrompt" class="hidden"></div>
+<div id="mapOverlay" class="hidden" aria-label="Planet map">
+  <div id="mapPanel">
+    <div id="mapHeader">
+      <div>
+        <div id="mapTitle">PLANETARY MAP</div>
+        <div id="mapSubtitle">LOCAL TERRAIN & RESOURCE SURVEY</div>
+      </div>
+      <button id="mapClose" title="Close map">×</button>
+    </div>
+    <div id="mapViewportWrap">
+      <canvas id="mapCanvas"></canvas>
+      <div class="mapCompass">N</div>
+      <div class="mapLegend">
+        <div class="mapLegendTitle">LEGEND</div>
+        <div class="mapLegendItem"><span class="mapLegendDot player"></span> YOU</div>
+        <div class="mapLegendItem"><span class="mapLegendDot iron"></span> IRON ORE</div>
+      </div>
+      <div class="mapInstructions">DRAG TO ROTATE · SCROLL TO ZOOM · M TO CLOSE</div>
+      <div class="mapScale">PLANET SURVEY</div>
+    </div>
+  </div>
+</div>
 
 <div id="inventoryOverlay" class="hidden">
   <div id="inventoryPanel">
@@ -66,38 +88,66 @@
 
 <div id="merchantOverlay" class="hidden">
   <div id="merchantPanel">
-    <div id="merchantNpcBubble">
-      <div id="merchantNpcName">MERCHANT</div>
-      <div id="merchantNpcLine">Welcome, traveler. Looking to trade?</div>
-    </div>
-    <div id="merchantDialogue" class="merchantDialogueBox">
-      <button id="merchantSellChoice" class="merchantChoiceButton">I want to sell stuff</button>
-      <button id="merchantBuyChoice" class="merchantChoiceButton">I want to buy stuff</button>
-    </div>
-    <div id="merchantSellSection" class="hidden merchantSection">
-      <div class="merchantSectionHeader"><div><h2>Sell Stuff</h2><p>Everything in your inventory has a value.</p></div><button id="merchantDialogueBack" class="merchantBackButton">← Back</button></div>
-      <div class="merchantSellLayout">
-        <div id="merchantSellList" class="merchantItemList"></div>
-        <div id="merchantSellDetails" class="merchantDetails">
-          <div class="merchantSelectedName" id="merchantSellName">Select an item</div>
-          <div id="merchantSellOwned">Click an item on the left</div>
-          <div id="merchantSellPrice">—</div>
-          <label>How many? <input id="merchantSellQuantity" type="number" min="1" value="1"></label>
-          <div id="merchantSellTotal">Total: ¢0</div>
-          <button id="merchantSellButton" class="merchantActionButton" disabled>SELL</button>
+    <div id="merchantUiColumn">
+      <div id="merchantNpcBubble">
+        <div id="merchantNpcName">MERCHANT</div>
+        <div id="merchantNpcLine">Welcome, traveler. Looking to trade?</div>
+      </div>
+      <div id="merchantDialogue" class="merchantDialogueBox">
+        <button id="merchantSellChoice" class="merchantChoiceButton">I want to sell stuff</button>
+        <button id="merchantBuyChoice" class="merchantChoiceButton">I want to buy stuff</button>
+      </div>
+      <div id="merchantSellSection" class="hidden merchantSection">
+        <div class="merchantSectionHeader"><div><h2>Sell Stuff</h2><p>Everything in your inventory has a value.</p></div><button id="merchantDialogueBack" class="merchantBackButton">← Back</button></div>
+        <div class="merchantSellLayout">
+          <div id="merchantSellList" class="merchantItemList"></div>
+          <div id="merchantSellDetails" class="merchantDetails">
+            <div class="merchantSelectedName" id="merchantSellName">Select an item</div>
+            <div id="merchantSellOwned">Click an item on the left</div>
+            <div id="merchantSellPrice">—</div>
+            <label>How many? <input id="merchantSellQuantity" type="number" min="1" value="1"></label>
+            <div id="merchantSellTotal">Total: ¢0</div>
+            <button id="merchantSellButton" class="merchantActionButton" disabled>SELL</button>
+          </div>
         </div>
       </div>
+      <div id="merchantBuySection" class="hidden merchantSection">
+        <div class="merchantSectionHeader"><div><h2>Buy Stuff</h2><p>Crystals, rocket parts, and full jerrycans are available.</p></div><button id="merchantDialogueBackBuy" class="merchantBackButton">← Back</button></div>
+        <div id="merchantBuyList" class="merchantItemList merchantBuyList"></div>
+      </div>
+      <div id="merchantStatus"></div>
+      <button id="merchantClose" class="merchantCloseButton">Close</button>
     </div>
-    <div id="merchantBuySection" class="hidden merchantSection">
-      <div class="merchantSectionHeader"><div><h2>Buy Stuff</h2><p>Crystals, rocket parts, and full jerrycans are available.</p></div><button id="merchantDialogueBackBuy" class="merchantBackButton">← Back</button></div>
-      <div id="merchantBuyList" class="merchantItemList merchantBuyList"></div>
-    </div>
-    <div id="merchantStatus"></div>
-    <button id="merchantClose" class="merchantCloseButton">Close</button>
+    <aside id="merchantPreviewPane" aria-hidden="true">
+      <div class="merchantPreviewTitle">THE MERCHANT</div>
+      <div class="merchantPreviewFrame">
+        <canvas id="merchantPreviewCanvas"></canvas>
+      </div>
+      <div class="merchantPreviewCaption">CRYSTAL TRADER</div>
+    </aside>
   </div>
 </div>
 
 <div id="controlsToggle" title="Settings">⚙</div>
+
+<!-- ---------- mobile touch controls ---------- -->
+<div id="mobileControls" class="hidden" aria-hidden="true">
+  <div id="mobileActionButtons">
+    <button class="mobileActionButton" id="mobileJumpButton" aria-label="Jump">↟<span>JUMP</span></button>
+    <button class="mobileActionButton" id="mobileSprintButton" aria-label="Sprint">⚡<span>SPRINT</span></button>
+    <button class="mobileActionButton" id="mobileFlashlightButton" aria-label="Flashlight">☼<span>LIGHT</span></button>
+    <button class="mobileActionButton" id="mobileInteractButton" aria-label="Interact">E<span>USE</span></button>
+    <button class="mobileActionButton" id="mobileMoreButton" aria-label="More controls">•••<span>MORE</span></button>
+  </div>
+  <div id="mobileMoreMenu" class="hidden">
+    <button id="mobileMapButton">MAP</button>
+    <button id="mobileInventoryButton">INVENTORY</button>
+  </div>
+  <div id="mobileLookHint" aria-hidden="true">DRAG TO LOOK</div>
+  <div id="mobileJoystick" aria-label="Move joystick">
+    <div id="mobileJoystickBase"><div id="mobileJoystickKnob"></div></div>
+  </div>
+</div>
 
 <div id="transitionFade"></div>
 
@@ -142,6 +192,10 @@
   <div id="settingsPanel">
     <button id="settingsClose" title="Close">×</button>
     <h1>Controls</h1>
+    <div class="keyRow mobileSettingRow">
+      <span class="keyLabel">Mobile controls</span>
+      <label class="mobileToggle"><input id="mobileControlsToggle" type="checkbox" /><span class="mobileToggleTrack"><span class="mobileToggleThumb"></span></span></label>
+    </div>
     <div id="settingsContent">
     <div class="keyRow">
       <span class="keyLabel">Move</span>

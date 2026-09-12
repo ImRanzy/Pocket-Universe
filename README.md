@@ -1,54 +1,12 @@
-# 🌍 Pocket Universe
+Pocket Universe — Ship Movement Rewritten
+Rebuilt only the spaceship flight logic: dedicated input, movement, spherical orientation, manual landing, fuel use, and curved third-person flight camera. The rest of the project was preserved from the working Rocket Exit SAFESPOT build.
 
-A browser-based 3D survival game built with Three.js.
+## Day 4 - Mobile controls
+Mobile controls can be enabled from the very top of Settings. Touch devices default to enabled, while the setting is remembered in the browser.
 
-## 🎮 About
-
-Pocket Universe is a survival game set on a small spherical planet.
-
-Explore the planet, gather resources, craft equipment, trade with the merchant,
-build a rocket, and eventually fly into space.
-
-## ✨ Current Features
-
-- Procedural spherical planet
-- Mountains
-- Rivers
-- Trees and vegetation
-- Day/night cycle
-- Stars
-- Player movement
-- Sprinting
-- Jumping
-- Mining
-- Woodcutting
-- Inventory and hotbar
-- Crafting
-- Furnace and smelting
-- Crystals
-- Merchant trading
-- Rocket construction
-- Spaceship flight
-- Atmospheric and space flight
-- Save system
-
-## 🚀 Day 3
-
-Day 3 focused heavily on cleaning up the original codebase and implementing
-the spaceship system.
-
-The original game was one huge ~5000-line HTML file.
-
-It has since been reorganized into separate HTML, CSS, gameplay, and state
-modules.
-
-## 🛠️ Tech
-
-- HTML
-- CSS
-- JavaScript
-- Three.js
-
-## 📌 Status
-
-Development in progress.
+- Right-side virtual joystick for camera-relative WASD movement.
+- Left-side jump, sprint, flashlight, interact, and More buttons.
+- More contains Map and Inventory; the map is disabled in space and inventory remains unavailable in the spaceship.
+- Tap a hotbar slot to select it.
+- Hold a finger on the game view to perform the same tool-breaking action as holding left mouse; dragging cancels the break and becomes camera look.
+- Drag the game view to look around.
