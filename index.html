@@ -39,6 +39,7 @@
         <div class="mapLegendTitle">LEGEND</div>
         <div class="mapLegendItem"><span class="mapLegendDot player"></span> YOU</div>
         <div class="mapLegendItem"><span class="mapLegendDot iron"></span> IRON ORE</div>
+        <div class="mapLegendItem"><span class="mapLegendDot copper"></span> COPPER ORE</div>
       </div>
       <div class="mapInstructions">DRAG TO ROTATE · SCROLL TO ZOOM · M TO CLOSE</div>
       <div class="mapScale">PLANET SURVEY</div>
@@ -51,6 +52,10 @@
     <div id="inventoryHeader">
       <h1>Inventory</h1>
       <button id="inventorySortButton" class="inventorySortButton">Sort</button><button id="inventoryCraftButton" class="inventoryCraftButton">Craft</button>
+    </div>
+    <div id="backpackStorage" class="hidden">
+      <div id="backpackStorageHeader"><span>BACKPACK STORAGE</span><button id="backpackClose" title="Hide backpack">×</button></div>
+      <div id="backpackSlots"></div>
     </div>
     <div id="inventoryHotbarHint">12 slots total • stacks hold up to 10 • click a slot to swap it with the selected hotbar slot</div>
     <div id="inventoryGrid"></div>
@@ -82,6 +87,20 @@
     <div id="craftingFooter">
       <div id="craftingStatus"></div>
       <button id="craftingNextPage" title="Next page">›</button>
+    </div>
+  </div>
+</div>
+
+<div id="freeplayInventoryOverlay" class="hidden">
+  <div id="freeplayInventoryPanel">
+    <div id="freeplayInventoryHeader">
+      <h1>Freeplay Inventory</h1>
+      <button id="freeplayInventoryClose" title="Close">×</button>
+    </div>
+    <div id="freeplayInventoryItems"></div>
+    <div id="freeplayInventoryFooter">
+      <div id="freeplayInventoryStatus"></div>
+      <button id="freeplayInventoryNextPage" title="Next page">›</button>
     </div>
   </div>
 </div>
@@ -129,17 +148,19 @@
 </div>
 
 
-<div id="weatherControlToggle" class="hidden" title="Weather controls">☁ WEATHER</div>
+<div id="weatherControlToggle" class="hidden" title="World controls">☁ WORLD</div>
 <div id="weatherControlOverlay" class="hidden">
   <div id="weatherControlPanel">
     <button id="weatherControlClose" title="Close">×</button>
     <div class="weatherControlEyebrow">CREATIVE TOOLS</div>
-    <h1>Weather Control</h1>
-    <p>Test the planet's weather instantly.</p>
+    <h1>World Control</h1>
+    <p>Control the planet's weather and time instantly.</p>
     <div id="weatherControlButtons">
       <button id="weatherRainButton">START RAIN</button>
       <button id="weatherThunderButton">START THUNDERSTORM</button>
       <button id="weatherClearButton">CLEAR WEATHER</button>
+      <button id="setDayButton">SET DAY</button>
+      <button id="setNightButton">SET NIGHT</button>
     </div>
     <div id="weatherControlStatus">WEATHER: CLEAR</div>
   </div>

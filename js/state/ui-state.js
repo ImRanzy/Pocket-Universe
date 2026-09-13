@@ -13,6 +13,8 @@
     equippedItemType: null,
     inventoryOpen: false,
     craftingOpen: false,
+    freeplayInventoryOpen: false,
+    backpackOpen: false,
     furnaceOpen: false
   });
 })();

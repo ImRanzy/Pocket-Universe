@@ -1,12 +1,12 @@
-Pocket Universe — Ship Movement Rewritten
-Rebuilt only the spaceship flight logic: dedicated input, movement, spherical orientation, manual landing, fuel use, and curved third-person flight camera. The rest of the project was preserved from the working Rocket Exit SAFESPOT build.
+# Pocket Universe — Moon Stage 3: Re-coded Speed Modes + Repeat Landing
 
-## Day 4 - Mobile controls
-Mobile controls can be enabled from the very top of Settings. Touch devices default to enabled, while the setting is remembered in the browser.
+Built directly from the known-good Moon Stage 3 re-entry/follow build, without the failed speed/takeoff/camera patches.
 
-- Right-side virtual joystick for camera-relative WASD movement.
-- Left-side jump, sprint, flashlight, interact, and More buttons.
-- More contains Map and Inventory; the map is disabled in space and inventory remains unavailable in the spaceship.
-- Tap a hotbar slot to select it.
-- Hold a finger on the game view to perform the same tool-breaking action as holding left mouse; dragging cancels the break and becomes camera look.
-- Drag the game view to look around.
+Changes:
+- 1 = Current: 30 u/s, 1% fuel every 5 seconds.
+- 2 = Boosted: 60 u/s, 1% fuel every 3 seconds.
+- 3 = WARP: 120 u/s, 1% fuel every 1.5 seconds.
+- Current mode preserves the original 30 u/s horizontal and 26 u/s vertical flight speeds.
+- Speed key handling is isolated from mouse-look, Space, Shift, and movement input.
+- Repeat Moon landings are re-armed only after the rocket moves 50 units away from the Moon after takeoff.
+- No flight camera/pointer-lock changes were made for the speed system.

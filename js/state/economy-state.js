@@ -9,6 +9,8 @@
     merchantSection: "dialogue",
     selectedSellTypeId: null,
     fuelingPad: null,
-    fuelingStartedAt: 0
+    fuelingStartedAt: 0,
+    drillRefueling: null,
+    drillRefuelingStartedAt: 0
   });
 })();

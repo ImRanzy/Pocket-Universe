@@ -366,6 +366,23 @@
     box-shadow: 10px 8px 0 #4a4e53, 5px 13px 0 #3f4348;
   }
 
+  .itemIcon.copper_ore {
+    width: 30px; height: 28px;
+    background: linear-gradient(145deg, #a9aeb3, #6f767d);
+    clip-path: polygon(18% 20%, 62% 4%, 94% 26%, 82% 78%, 48% 98%, 12% 78%);
+    box-shadow: inset 0 2px 0 rgba(255,255,255,0.20), 0 4px 10px rgba(0,0,0,0.25);
+    overflow: hidden;
+  }
+  .itemIcon.copper_ore::after {
+    content: '';
+    position: absolute;
+    width: 8px; height: 6px;
+    left: 6px; top: 8px;
+    background: #c86b32;
+    border-radius: 45% 55% 48% 52%;
+    box-shadow: 10px 8px 0 #2fb9a7, 5px 13px 0 #c86b32;
+  }
+
   .inventoryEmptyLabel {
     color: rgba(255,255,255,0.20);
     font-size: 9px;
@@ -631,6 +648,11 @@
     background:linear-gradient(180deg,#737a81,#3d4349); border:2px solid #262a2e;
     transform:skewX(-12deg); box-shadow:inset 0 2px 0 rgba(255,255,255,.16),0 3px 8px rgba(0,0,0,.25);
   }
+  .itemIcon.copper_ingot {
+    width:31px; height:17px; border-radius:4px;
+    background:linear-gradient(180deg,#e09a62,#a9572e); border:2px solid #71391f;
+    transform:skewX(-12deg); box-shadow:inset 0 2px 0 rgba(255,255,255,.18),0 3px 8px rgba(0,0,0,.25);
+  }
 
   .itemIcon.pickaxe {
     width: 36px; height: 40px;
@@ -727,27 +749,36 @@
   }
 
   #homeButtons {
-    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    display: grid;
+    grid-template-columns: auto auto;
+    grid-template-areas:
+      "play play"
+      "load settings";
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
   }
 
   #playButton {
+    grid-area: play;
     font-family: inherit;
     font-size: 18px;
     font-weight: 700;
     letter-spacing: 0.5px;
-    color: #06210f;
-    background: #3ecf6e;
-    border: none;
-    border-radius: 999px;
-    padding: 16px 44px;
+    color: #ffffff;
+    background: #1f2937;
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 14px;
+    padding: 16px 54px;
     cursor: pointer;
-    box-shadow: 0 6px 24px rgba(62,207,110,0.45);
-    transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+    box-shadow: 0 8px 0 rgba(0,0,0,0.28), 0 10px 28px rgba(0,0,0,0.28);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
   }
-  #playButton:hover { background: #4ee081; box-shadow: 0 8px 30px rgba(62,207,110,0.6); transform: translateY(-1px); }
-  #playButton:active { transform: translateY(0); }
+  #playButton:hover { background: #2a3546; transform: translateY(4px); box-shadow: 0 4px 0 rgba(0,0,0,0.28), 0 8px 22px rgba(0,0,0,0.25); }
+  #playButton:active { transform: translateY(6px); box-shadow: 0 2px 0 rgba(0,0,0,0.24), 0 5px 14px rgba(0,0,0,0.22); }
 
   #homeSettingsButton {
+    grid-area: settings;
     font-family: inherit;
     font-size: 13px;
     color: #dfe6ec;
@@ -758,9 +789,12 @@
     cursor: pointer;
     backdrop-filter: blur(4px);
   }
-  #homeSettingsButton:hover { background: rgba(10,14,22,0.75); }
+  #homeSettingsButton:hover { background: rgba(10,14,22,0.75); transform: translateY(3px); box-shadow: 0 3px 0 rgba(0,0,0,0.2); }
+  #homeSettingsButton { box-shadow: 0 6px 0 rgba(0,0,0,0.22); transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease; }
+  #homeSettingsButton:active { transform: translateY(5px); box-shadow: 0 1px 0 rgba(0,0,0,0.2); }
 
   #loadGameButton {
+    grid-area: load;
     font-family: inherit;
     font-size: 13px;
     color: #dfe6ec;
@@ -771,7 +805,9 @@
     cursor: pointer;
     backdrop-filter: blur(4px);
   }
-  #loadGameButton:hover { background: rgba(10,14,22,0.75); }
+  #loadGameButton:hover { background: rgba(10,14,22,0.75); transform: translateY(3px); box-shadow: 0 3px 0 rgba(0,0,0,0.2); }
+  #loadGameButton { box-shadow: 0 6px 0 rgba(0,0,0,0.22); transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease; }
+  #loadGameButton:active { transform: translateY(5px); box-shadow: 0 1px 0 rgba(0,0,0,0.2); }
 
   /* ---------- game mode chooser ---------- */
   #modeChooser {
@@ -916,6 +952,68 @@
     color: #dfe6ec;
   }
 
+
+
+/* ---------- freeplay inventory ---------- */
+#freeplayInventoryOverlay {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.72);
+  z-index: 56;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  transition: opacity 0.2s ease;
+}
+#freeplayInventoryPanel {
+  width: min(640px, 94vw);
+  padding: 18px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(22,27,36,0.99), rgba(10,14,20,0.99));
+  box-shadow: 0 24px 80px rgba(0,0,0,0.72), inset 0 1px 0 rgba(255,255,255,0.04);
+  color: #eef3f8;
+  backdrop-filter: blur(10px);
+}
+#freeplayInventoryHeader {
+  display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px;
+}
+#freeplayInventoryHeader h1 { font-size:21px; font-weight:700; letter-spacing:0.3px; }
+#freeplayInventoryClose {
+  width:30px; height:30px; border-radius:50%; border:1px solid rgba(255,255,255,0.10);
+  background:rgba(255,255,255,0.06); color:#dfe7ef; cursor:pointer; font-size:16px;
+}
+#freeplayInventoryClose:hover { background:rgba(255,255,255,0.13); }
+#freeplayInventoryItems {
+  display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:7px; padding:8px;
+  background:rgba(5,8,13,0.50); border:1px solid rgba(255,255,255,0.07); border-radius:12px;
+}
+.freeplayItemCard {
+  position:relative; min-width:0; aspect-ratio:1; border:1px solid rgba(255,255,255,0.08);
+  border-radius:10px; background:linear-gradient(145deg,rgba(35,42,54,0.96),rgba(18,23,31,0.96));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.035),0 4px 12px rgba(0,0,0,0.22);
+  cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px;
+  transition:border-color 0.12s ease,background 0.12s ease,transform 0.12s ease,box-shadow 0.12s ease;
+  overflow:hidden;
+}
+.freeplayItemCard:hover {
+  border-color:rgba(255,255,255,0.20); background:linear-gradient(145deg,rgba(44,52,66,0.98),rgba(22,28,38,0.98));
+  transform:translateY(-1px);
+}
+.freeplayItemCard.full { opacity:0.42; cursor:not-allowed; }
+.freeplayItemCard.full:hover { transform:none; }
+.freeplayItemName {
+  max-width:90%; text-align:center; font-size:9px; line-height:1.1; color:rgba(235,241,247,0.82);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+#freeplayInventoryFooter {
+  display:flex; align-items:center; justify-content:center; margin-top:10px; min-height:30px; position:relative;
+}
+#freeplayInventoryStatus { min-height:16px; font-size:11px; color:rgba(220,228,238,0.64); text-align:center; }
+#freeplayInventoryNextPage {
+  position:absolute; right:0; width:30px; height:30px; border-radius:8px; border:1px solid rgba(255,255,255,0.10);
+  background:rgba(255,255,255,0.05); color:#dfe7ef; cursor:pointer; font:700 14px 'Segoe UI',system-ui,sans-serif;
+}
+#freeplayInventoryNextPage:hover:not(:disabled) { background:rgba(255,255,255,0.10); }
+#freeplayInventoryNextPage:disabled { opacity:0.28; cursor:default; }
 
 /* ---------- merchant / economy ---------- */
 #creditsDisplay {
@@ -1149,6 +1247,7 @@ body.state-menu #creditsDisplay { display: none; }
 .mapLegendDot { width:10px; height:10px; border-radius:50%; flex:0 0 10px; box-shadow:0 0 10px currentColor; }
 .mapLegendDot.player { background:#ea4b4b; color:#ea4b4b; }
 .mapLegendDot.iron { background:#d9a84d; color:#d9a84d; }
+.mapLegendDot.copper { background:#32c7b5; color:#32c7b5; }
 .mapInstructions {
   position:absolute; left:50%; bottom:13px; transform:translateX(-50%); white-space:nowrap;
   padding:6px 10px; border:1px solid rgba(245,237,215,.10); border-radius:8px;
@@ -1224,3 +1323,112 @@ body.state-menu #creditsDisplay { display: none; }
 }
 
 #lightningFlash { position: fixed; inset: 0; z-index: 999; pointer-events: none; background: #ffffff; opacity: 0; transition: opacity 0.03s linear; }
+
+
+/* ---------- scythe / backpack item icons ---------- */
+.itemIcon.scythe {
+  width: 36px; height: 42px;
+}
+.itemIcon.scythe::before {
+  content: '';
+  position: absolute;
+  width: 5px; height: 34px;
+  left: 14px; top: 6px;
+  background: linear-gradient(90deg, #6f4328, #a46a3d, #5b351f);
+  border-radius: 3px;
+  transform: rotate(-10deg);
+}
+.itemIcon.scythe::after {
+  content: '';
+  position: absolute;
+  width: 24px; height: 9px;
+  left: 11px; top: 2px;
+  background: linear-gradient(135deg, #c9d0d8, #69727d);
+  border: 1px solid rgba(35,40,46,0.9);
+  border-radius: 10px 3px 10px 1px;
+  transform: rotate(-35deg);
+}
+.itemIcon.scythe.woodenTool::after { background: linear-gradient(135deg, #74482b, #4f2f1d); border-color: rgba(48,28,16,0.95); }
+.itemIcon.scythe.stoneTool::after { background: linear-gradient(135deg, #c5cbd1, #8a9299); border-color: rgba(48,53,58,0.95); }
+.itemIcon.scythe.ironTool::after { background: linear-gradient(135deg, #8e979f, #4a5056); border-color: rgba(35,40,45,0.95); }
+.itemIcon.grass_fiber {
+  width: 30px; height: 34px;
+}
+.itemIcon.grass_fiber::before {
+  content: ''; position:absolute; width:4px; height:28px; left:9px; top:3px; background:#7faf5e; border-radius:6px; transform:rotate(-18deg); box-shadow: 8px 2px 0 #6f9c52, 14px -1px 0 #87b967;
+}
+.itemIcon.woven_grass_fiber {
+  width: 34px; height: 30px; border-radius: 6px;
+  background: repeating-linear-gradient(90deg,#9b7b49 0 4px,#c0a16a 4px 7px);
+  border:2px solid rgba(70,50,27,0.75);
+  box-shadow: inset 0 2px 0 rgba(255,255,255,0.12), 0 3px 8px rgba(0,0,0,0.22);
+}
+.itemIcon.backpack {
+  width: 34px; height: 34px;
+}
+.itemIcon.backpack::before {
+  content:''; position:absolute; width:26px; height:27px; left:4px; top:5px;
+  border-radius: 12px 12px 9px 9px;
+  background: repeating-linear-gradient(90deg,#8f6e42 0 4px,#b3935e 4px 7px);
+  border:2px solid #5f4327;
+  box-shadow: inset 0 3px 0 rgba(255,255,255,0.10), 0 4px 9px rgba(0,0,0,0.25);
+}
+.itemIcon.backpack::after {
+  content:''; position:absolute; width:18px; height:5px; left:8px; top:12px;
+  border:2px solid #5f4327; border-radius:8px;
+}
+
+/* ---------- backpack storage ---------- */
+#backpackStorage {
+  margin: 0 0 14px;
+  padding: 10px;
+  border: 1px solid rgba(103,153,78,0.48);
+  border-radius: 12px;
+  background:
+    repeating-linear-gradient(0deg, rgba(126,163,88,0.11) 0 3px, rgba(54,91,46,0.10) 3px 6px),
+    repeating-linear-gradient(90deg, rgba(168,197,118,0.08) 0 3px, rgba(43,79,39,0.09) 3px 6px),
+    linear-gradient(145deg, rgba(73,116,59,0.96), rgba(35,68,38,0.98));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), inset 0 0 26px rgba(10,25,9,0.24), 0 8px 20px rgba(0,0,0,0.22);
+}
+#backpackStorage.hidden {
+  display: none;
+}
+#backpackStorageHeader {
+  display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;
+  color:#d9efc4; font-size:10px; font-weight:800; letter-spacing:1px;
+  text-shadow:0 1px 2px rgba(0,0,0,0.35);
+}
+#backpackClose {
+  width:24px; height:24px; border-radius:7px; border:1px solid rgba(205,236,180,0.24);
+  background:rgba(18,43,22,0.44); color:#eaf8df; cursor:pointer; font-size:15px;
+}
+#backpackClose:hover {
+  background:rgba(22,58,26,0.62);
+}
+#backpackSlots {
+  display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:7px;
+}
+.backpackSlot {
+  min-width:0; aspect-ratio:1;
+  border-color:rgba(205,232,170,0.18);
+  background:linear-gradient(145deg, rgba(42,79,44,0.90), rgba(25,54,30,0.92));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.05), 0 3px 10px rgba(0,0,0,0.18);
+}
+.backpackSlot:hover {
+  border-color:rgba(216,245,186,0.46);
+  background:linear-gradient(145deg, rgba(51,92,49,0.94), rgba(29,64,34,0.94));
+}
+/* ---------- copper wire / drill icons ---------- */
+.itemIcon.copper_wire { width:30px; height:30px; position:relative; background:transparent; box-sizing:border-box; }
+.itemIcon.copper_wire::before {
+  content:''; position:absolute; width:4px; height:23px; left:5px; top:4px; border-radius:3px;
+  background:#d97932; box-shadow:7px 0 0 #e28b43,14px 0 0 #cf6d2c,21px 0 0 #ed9950;
+  transform:rotate(-10deg);
+}
+.itemIcon.copper_wire::after {
+  content:''; position:absolute; width:24px; height:2px; left:3px; top:15px; border-radius:2px;
+  background:rgba(255,214,165,.55); opacity:.6; transform:rotate(-10deg);
+}
+.itemIcon.drill { width:36px; height:28px; position:relative; border-radius:6px 8px 6px 6px; background:linear-gradient(145deg,#697177,#33383d); border:2px solid #202429; box-shadow:0 4px 10px rgba(0,0,0,.3); }
+.itemIcon.drill::before { content:''; position:absolute; width:10px; height:19px; left:7px; top:19px; border-radius:3px; transform:rotate(16deg); background:#2e3337; border:2px solid #202429; }
+.itemIcon.drill::after { content:''; position:absolute; width:12px; height:8px; right:-10px; top:8px; border-radius:2px; background:#b86a35; border:2px solid #2d3033; box-shadow:9px 1px 0 -2px #aeb4b8; }\n
