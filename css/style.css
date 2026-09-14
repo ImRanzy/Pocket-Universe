@@ -705,6 +705,86 @@
   }
   #transitionFade.show { opacity: 1; }
 
+/* ---------- solar danger ---------- */
+#sunWarningOverlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 94;
+  transition: opacity 0.15s ease;
+}
+#sunWarningOverlay.active { opacity: 1; }
+#sunWarningText {
+  width: min(92vw, 900px);
+  padding: 18px 24px;
+  text-align: center;
+  color: #ff2020;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: clamp(24px, 4vw, 54px);
+  line-height: 1.08;
+  font-weight: 1000;
+  letter-spacing: 3px;
+  text-shadow: 0 0 8px rgba(255,0,0,0.95), 0 0 26px rgba(255,0,0,0.62), 0 3px 14px #000;
+  animation: sunWarningPulse 0.65s ease-in-out infinite alternate;
+}
+#sunWarningText span {
+  font-size: 0.58em;
+  letter-spacing: 2px;
+}
+@keyframes sunWarningPulse {
+  from { transform: scale(0.985); opacity: 0.86; }
+  to { transform: scale(1.015); opacity: 1; }
+}
+#sunBlackout {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 110;
+  transition: opacity 0.08s linear;
+}
+#sunBlackout.active { pointer-events: all; }
+
+/* ---------- space fuel emergency ---------- */
+#spaceFuelWarningOverlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 95;
+  transition: opacity 0.15s ease;
+}
+#spaceFuelWarningOverlay.active { opacity: 1; }
+#spaceFuelWarningText {
+  width: min(92vw, 900px);
+  padding: 18px 24px;
+  text-align: center;
+  color: #f6c85f;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: clamp(24px, 4vw, 54px);
+  line-height: 1.08;
+  font-weight: 1000;
+  letter-spacing: 3px;
+  text-shadow: 0 0 8px rgba(246,200,95,0.95), 0 0 26px rgba(246,200,95,0.55), 0 3px 14px #000;
+  animation: spaceFuelWarningPulse 0.65s ease-in-out infinite alternate;
+}
+#spaceFuelWarningText span {
+  font-size: 0.58em;
+  letter-spacing: 2px;
+}
+@keyframes spaceFuelWarningPulse {
+  from { transform: scale(0.985); opacity: 0.86; }
+  to { transform: scale(1.015); opacity: 1; }
+}
+
   /* ---------- home screen ---------- */
   #homeScreen {
     position: fixed; inset: 0;
@@ -909,15 +989,12 @@
     color: #eef2f6;
     overflow: hidden;
   }
-  #settingsContent {
-    max-height: min(610px, calc(86vh - 105px));
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding-right: 8px;
-    scrollbar-width: thin;
-    scrollbar-gutter: stable;
+  .settingsPage { width: 100%; height: 100%; }
+  .settingsPage.hidden { display: none; }
+  #settingsPanel h1 {
+    font-size: 19px; font-weight: 600; margin: 0 0 18px; color: #fff;
   }
-  #settingsPanel h1 { font-size: 19px; font-weight: 600; margin-bottom: 18px; color: #fff; }
+  #settingsHome h1 { text-align: center; }
   #settingsClose {
     position: absolute; top: 14px; right: 14px;
     width: 26px; height: 26px;
@@ -929,9 +1006,63 @@
     line-height: 1;
     cursor: pointer;
     display: flex; align-items: center; justify-content: center;
+    z-index: 2;
   }
   #settingsClose:hover { background: rgba(255,255,255,0.18); }
 
+  .settingsChoiceGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 6px;
+  }
+  .settingsChoice {
+    min-height: 54px;
+    padding: 12px 14px;
+    border-radius: 9px;
+    border: 1px solid rgba(255,255,255,0.16);
+    background: rgba(255,255,255,0.08);
+    color: #eef2f6;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+  }
+  .settingsChoice:hover {
+    background: rgba(255,255,255,0.15);
+    border-color: rgba(255,255,255,0.24);
+    transform: translateY(-1px);
+  }
+  .settingsChoice:active { transform: translateY(0); }
+  .settingsSubHeader {
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+    min-height: 48px;
+    margin-bottom: 16px;
+  }
+  .settingsSubHeader h1 { margin: 0; font-size: 19px; }
+  .settingsBack {
+    position: absolute; left: 0;
+    width: 34px; height: 34px;
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 8px;
+    background: rgba(255,255,255,0.08);
+    color: #dfe6ec;
+    cursor: pointer; font-size: 19px; line-height: 1;
+  }
+  .settingsBack:hover { background: rgba(255,255,255,0.15); }
+
+  #settingsContent,
+  #settingsUpdateLogContent {
+    max-height: min(610px, calc(86vh - 105px));
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0 8px 4px 0;
+    scrollbar-width: thin;
+    scrollbar-gutter: stable;
+  }
   .keyRow {
     display: flex; align-items: center; justify-content: space-between;
     padding: 9px 0;
@@ -946,13 +1077,35 @@
     min-width: 30px; height: 30px;
     padding: 0 8px;
     display: flex; align-items: center; justify-content: center;
-    border: 1px solid rgba(255,255,255,0.25);
-    border-radius: 5px;
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 6px;
     font-size: 13px;
     color: #dfe6ec;
+    background: rgba(255,255,255,0.08);
   }
 
+  .settingsOptionBlock {
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 10px;
+    padding: 18px 16px;
+    margin-top: 10px;
+    background: rgba(255,255,255,0.03);
+  }
+  .settingsOptionTitle { font-size: 16px; font-weight: 600; margin-bottom: 10px; color: #fff; }
+  .settingsOptionDescription { font-size: 12px; color: #8b96a3; margin-bottom: 14px; }
+  .settingsSliderRow { display: flex; align-items: center; gap: 12px; }
+  .settingsSliderRow input[type="range"] { flex: 1; accent-color: #dfe6ec; cursor: pointer; }
+  .settingsSliderRow span { min-width: 48px; text-align: right; font-size: 16px; font-weight: 600; color: #dfe6ec; }
+  .settingsRangeLabels { display:flex; justify-content:space-between; margin-top: 5px; font-size: 11px; color: #8b96a3; }
 
+  #settingsUpdateLogContent { padding-right: 10px; }
+  .updateLogDay {
+    padding: 13px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  .updateLogDay:last-child { border-bottom: none; }
+  .updateLogDay h2 { font-size: 16px; margin-bottom: 6px; color: #fff; }
+  .updateLogDay p { font-size: 13px; line-height: 1.45; color: #b9c2cc; }
 
 /* ---------- freeplay inventory ---------- */
 #freeplayInventoryOverlay {

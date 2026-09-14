@@ -1210,15 +1210,6 @@
 
     const sunWarningOverlay = document.getElementById('sunWarningOverlay');
     const sunBlackout = document.getElementById('sunBlackout');
-    const spaceFuelWarningOverlay = document.getElementById('spaceFuelWarningOverlay');
-
-    // Losing all fuel while genuinely in space is an unrecoverable state: the player
-    // cannot walk back to a planet and there is no way to refuel a dead rocket in flight.
-    // Treat it like the solar hazard so Survival can never be softlocked.
-    const SPACE_FUEL_DEATH_BLACK_TIME = 2.8;
-    const SPACE_FUEL_RETURN_FADE_TIME = 1.15;
-    let spaceFuelDangerPhase = 'clear';
-    let spaceFuelDangerTimer = 0;
 
     function getSunHazardWorldPosition(out = new THREE.Vector3()) {
       if (playerState.inRocket) {
@@ -1233,8 +1224,6 @@
       const root = rocketEntry?.root || null;
       if (rocketEntry?.pad && rocketEntry.pad.rocket === rocketEntry) rocketEntry.pad.rocket = null;
       if (flightPad?.rocket === rocketEntry) flightPad.rocket = null;
-      if (moonLandingPad?.rocket === rocketEntry) moonLandingPad.rocket = null;
-      if (cordeliaLandingPad?.rocket === rocketEntry) cordeliaLandingPad.rocket = null;
       if (root) {
         root.visible = false;
         if (root.parent) root.parent.remove(root);
@@ -1242,10 +1231,6 @@
       moonLandedRocket = null;
       moonLandingPad = null;
       moonLandingArmed = true;
-      cordeliaLandedRocket = null;
-      cordeliaLandingPad = null;
-      cordeliaLandingArmed = true;
-      cordeliaTakeoffActive = false;
       flightPad = null;
       flightRocket = null;
     }
@@ -1254,9 +1239,6 @@
       clearRocketKeys();
       updateRocketEngineAudio(false, false);
       destroyCurrentRocketForSunPenalty();
-      spaceFuelDangerPhase = 'clear';
-      spaceFuelDangerTimer = 0;
-      spaceFuelWarningOverlay.classList.remove('active');
 
       resetInventory();
       playerState.inRocket = false;
@@ -1272,7 +1254,6 @@
       moonDustTimer = 0;
       cordeliaWalking = false;
       cordeliaGravityActive = false;
-      cordeliaTakeoffActive = false;
       cordeliaDustTimer = 0;
       playerState.thirdPerson = false;
       playerState.pitch = 0;
@@ -1301,106 +1282,6 @@
       updateHotbarUI();
       refreshEquippedItem();
       setRocketFlightUI();
-    }
-
-    function recoverFromSpaceFuelExhaustion() {
-      clearRocketKeys();
-      updateRocketEngineAudio(false, false);
-      destroyCurrentRocketForSunPenalty();
-
-      resetInventory();
-      playerState.inRocket = false;
-      playerState.rocketInSpace = false;
-      playerState.rocketLanded = false;
-      playerState.rocketFuelTimer = 0;
-      playerState.heightOffset = 0;
-      playerState.verticalVelocity = 0;
-      playerState.stamina = STAMINA_MAX;
-      playerState.exhausted = false;
-      moonWalking = false;
-      moonGravityActive = false;
-      moonDustTimer = 0;
-      cordeliaWalking = false;
-      cordeliaGravityActive = false;
-      cordeliaTakeoffActive = false;
-      cordeliaDustTimer = 0;
-      playerState.thirdPerson = false;
-      playerState.pitch = 0;
-      orientation.identity();
-
-      // Return to the normal Ivis spawn and restore the same clean state used by the
-      // solar emergency. The fresh inventory contains only the starter axe.
-      planetSystem.attach(player);
-      const spawnPosition = spawnDir.clone().normalize();
-      player.position.copy(spawnPosition).multiplyScalar(PLANET_RADIUS + heightAt(spawnPosition) + EYE_HEIGHT);
-      player.quaternion.identity();
-
-      document.body.classList.remove('rocket-flight');
-      playerBody.visible = true;
-      heldCrystalFirstPerson.visible = true;
-      heldCrystalThirdPerson.visible = false;
-      flashlight.visible = false;
-      camera.layers.enable(0);
-      camera.layers.disable(1);
-      camera.position.copy(CAM_FIRST);
-      targetCamPos.copy(CAM_FIRST);
-      camera.rotation.set(0, 0, 0);
-
-      for (const k in systemState.keys) systemState.keys[k] = false;
-      clearPhysicalKeys();
-      state.paused = false;
-      updateStaminaBar();
-      updateHotbarUI();
-      refreshEquippedItem();
-      setRocketFlightUI();
-    }
-
-    function updateSpaceFuelDanger(delta) {
-      if (state.gameState !== 'playing' || state.paused) {
-        if (spaceFuelDangerPhase === 'clear') spaceFuelWarningOverlay.classList.remove('active');
-        return spaceFuelDangerPhase !== 'clear';
-      }
-
-      if (spaceFuelDangerPhase === 'blackout' || spaceFuelDangerPhase === 'returning') {
-        spaceFuelDangerTimer += delta;
-        if (spaceFuelDangerPhase === 'blackout') {
-          spaceFuelWarningOverlay.classList.remove('active');
-          sunBlackout.classList.add('active');
-          sunBlackout.style.opacity = '1';
-          if (spaceFuelDangerTimer >= SPACE_FUEL_DEATH_BLACK_TIME) {
-            recoverFromSpaceFuelExhaustion();
-            spaceFuelDangerPhase = 'returning';
-            spaceFuelDangerTimer = 0;
-          }
-        } else {
-          const t = Math.min(1, spaceFuelDangerTimer / SPACE_FUEL_RETURN_FADE_TIME);
-          sunBlackout.style.opacity = String(1 - t);
-          if (t >= 1) {
-            sunBlackout.style.opacity = '0';
-            sunBlackout.classList.remove('active');
-            spaceFuelDangerPhase = 'clear';
-            spaceFuelDangerTimer = 0;
-            attemptPointerLock();
-          }
-        }
-        return true;
-      }
-
-      const fuel = flightPad ? Math.max(0, Math.min(ROCKET_FUEL_CAPACITY, Number(flightPad.fuel) || 0)) : 0;
-      const strandedInSpace = playerState.inRocket && playerState.rocketInSpace && !playerState.rocketLanded && !!flightRocket && fuel <= 0;
-      if (!strandedInSpace) {
-        spaceFuelWarningOverlay.classList.remove('active');
-        return false;
-      }
-
-      spaceFuelWarningOverlay.classList.add('active');
-      sunBlackout.classList.remove('active');
-      sunBlackout.style.opacity = '0';
-      spaceFuelDangerPhase = 'blackout';
-      spaceFuelDangerTimer = 0;
-      clearRocketKeys();
-      updateRocketEngineAudio(false, false);
-      return true;
     }
 
     function updateSunDanger(delta) {
@@ -1583,12 +1464,6 @@
     let cordeliaLandingPad = null;
     let cordeliaLandingArmed = true;
     let cordeliaDustTimer = 0;
-    // Dedicated Cordelia takeoff state. While active, the rocket is guaranteed to move
-    // away from Cordelia before normal flight collision/landing logic is allowed to resume.
-    let cordeliaTakeoffActive = false;
-    const CORDELIA_TAKEOFF_CLEARANCE = 34;
-    const CORDELIA_TAKEOFF_RELEASE_DISTANCE = 58;
-    const CORDELIA_TAKEOFF_BOOST = 42;
     const MOON_LANDING_SURFACE_DISTANCE = 35.0;
     const MOON_LANDING_REARM_DISTANCE = 50.0;
     const MOON_PLAYER_GROUND_RADIUS = MOON_RADIUS;
@@ -3625,44 +3500,27 @@
 
     function createScytheVisual(scale = 1, headType = 'wood') {
       const group = new THREE.Group();
-
-      // Keep the handle as one continuous piece. The old blade was made from three
-      // independent boxes, so small transform changes could make it look detached.
-      const handleMat = new THREE.MeshStandardMaterial({ color: 0x8b5a32, roughness: 0.82 });
       const handle = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.048, 0.068, 1.42, 10),
-        handleMat
+        new THREE.CylinderGeometry(0.045, 0.065, 1.35, 8),
+        new THREE.MeshStandardMaterial({ color: 0x8b5a32, roughness: 0.82 })
       );
-      handle.rotation.z = -0.10;
-      handle.position.set(-0.02, -0.08, 0);
+      handle.rotation.z = -0.18;
+      handle.position.y = -0.10;
       group.add(handle);
 
-      // A short collar makes the blade/handle connection read as one solid tool.
-      const mat = makeToolHeadMaterial(headType, 0.52);
-      const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.13, 10), mat);
-      collar.rotation.z = Math.PI / 2;
-      collar.position.set(0.09, 0.62, 0);
-      group.add(collar);
-
-      // Build the blade as one continuous crescent rather than disconnected blocks.
-      // This keeps the silhouette stable in both first- and third-person views.
-      const bladeShape = new THREE.Shape();
-      bladeShape.moveTo(0.07, 0.66);
-      bladeShape.quadraticCurveTo(0.46, 0.78, 0.84, 0.64);
-      bladeShape.quadraticCurveTo(1.02, 0.57, 1.03, 0.39);
-      bladeShape.quadraticCurveTo(1.00, 0.24, 0.88, 0.10);
-      bladeShape.quadraticCurveTo(0.78, 0.00, 0.66, 0.00);
-      bladeShape.quadraticCurveTo(0.78, 0.16, 0.78, 0.31);
-      bladeShape.quadraticCurveTo(0.76, 0.47, 0.59, 0.54);
-      bladeShape.quadraticCurveTo(0.34, 0.64, 0.07, 0.57);
-      bladeShape.closePath();
-
-      const bladeGeo = new THREE.ExtrudeGeometry(bladeShape, { depth: 0.075, bevelEnabled: false });
-      bladeGeo.translate(0, 0, -0.0375);
-      const blade = new THREE.Mesh(bladeGeo, mat);
-      blade.position.set(0.02, 0, 0);
-      group.add(blade);
-
+      const mat = makeToolHeadMaterial(headType, 0.5);
+      // Three overlapping segments approximate a curved scythe blade.
+      const segments = [
+        { x: 0.18, y: 0.58, rot: -0.55, w: 0.40 },
+        { x: 0.43, y: 0.48, rot: -0.28, w: 0.34 },
+        { x: 0.64, y: 0.28, rot: 0.02, w: 0.28 }
+      ];
+      for (const seg of segments) {
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(seg.w, 0.075, 0.065), mat);
+        blade.position.set(seg.x, seg.y, 0);
+        blade.rotation.z = seg.rot;
+        group.add(blade);
+      }
       group.scale.setScalar(scale);
       return group;
     }
@@ -6364,7 +6222,6 @@
       playerState.exhausted = false;
       cordeliaWalking = true;
       cordeliaGravityActive = true;
-      cordeliaTakeoffActive = false;
       playerBody.visible = true;
       document.body.classList.remove('rocket-flight');
       heldCrystalFirstPerson.visible = !playerState.thirdPerson;
@@ -6698,49 +6555,41 @@
 
     function undockCordeliaRocketForFlight() {
       if (!flightRocket || !cordeliaLandedRocket || flightRocket !== cordeliaLandedRocket || !playerState.rocketLanded) return false;
-
-      const cordeliaCenter = cordeliaMesh.getWorldPosition(new THREE.Vector3());
-      const cordeliaWorldQuat = cordeliaMesh.getWorldQuaternion(new THREE.Quaternion());
       const worldPos = flightRocket.root.getWorldPosition(new THREE.Vector3());
       const worldQuat = flightRocket.root.getWorldQuaternion(new THREE.Quaternion());
-
-      // Detach first, preserving the exact world transform. From this point onward the rocket
-      // is a real free-flight object and is no longer a child of the moving planet.
       scene.attach(flightRocket.root);
       flightRocket.root.position.copy(worldPos);
       flightRocket.root.quaternion.copy(worldQuat);
-      flightRocket.root.visible = true;
 
-      // Work entirely in Cordelia's moving local frame to find the surface normal at the
-      // current landing location. The old implementation only nudged the rocket a few units,
-      // which could still intersect the planet collision shell on the next frame.
+      // Cordelia's flight collision shell sits a little above the visible dune surface.
+      // The parked rocket is intentionally close to the ground, so its center can start
+      // inside that shell. That made the first W/A/S/D movement get rejected by
+      // isFlightPositionBlocked(), effectively preventing takeoff from Cordelia.
+      // Nudge the ship just outside the collision shell when it actually undocks.
+      const cordeliaCenter = cordeliaMesh.getWorldPosition(new THREE.Vector3());
+      const cordeliaWorldQuat = cordeliaMesh.getWorldQuaternion(new THREE.Quaternion());
       const localNormal = worldPos.clone().sub(cordeliaCenter);
       if (localNormal.lengthSq() < 0.0001) localNormal.set(0, 1, 0);
       localNormal.applyQuaternion(cordeliaWorldQuat.clone().invert()).normalize();
       const surfaceRadius = CORDELIA_RADIUS + cordeliaHeightAt(localNormal);
-      const worldNormal = localNormal.clone().applyQuaternion(cordeliaWorldQuat).normalize();
-
-      // Start well outside both the visible terrain and the flight collision shell. This is
-      // deliberately much farther out than the normal landed position.
-      const launchWorldPos = cordeliaCenter.clone().addScaledVector(
-        worldNormal,
-        Math.max(surfaceRadius + CORDELIA_COLLISION_CLEARANCE + CORDELIA_TAKEOFF_CLEARANCE, surfaceRadius + 40)
-      );
+      // Give the ship a substantial radial clearance on takeoff. A tangent flight step
+      // follows a curved path and its straight-line chord briefly moves inward, so a tiny
+      // margin (such as the old 0.15u) could immediately re-enter Cordelia's collision shell.
+      // Starting several units above the shell makes the launch reliable while still keeping
+      // the rocket visually close to the surface.
+      const launchClearance = Math.max(8.0, CORDELIA_COLLISION_CLEARANCE + 5.0);
+      const launchRadius = surfaceRadius + launchClearance;
+      const launchWorldPos = cordeliaCenter.clone()
+        .add(localNormal.clone().applyQuaternion(cordeliaWorldQuat).multiplyScalar(launchRadius));
       flightRocket.root.position.copy(launchWorldPos);
       flightRocket.root.quaternion.copy(worldQuat);
       flightPosition.copy(launchWorldPos);
       flightRocketQuat.copy(worldQuat);
-
       playerState.rocketLanded = false;
+      cordeliaLandingArmed = false;
       playerState.rocketInSpace = true;
       cordeliaGravityActive = true;
-      cordeliaTakeoffActive = true;
-      cordeliaLandingArmed = false;
       lastRocketSpaceState = true;
-
-      // Keep the first frame of input from being lost. The normal update loop will continue
-      // moving the ship immediately, while the dedicated boost guarantees outward clearance.
-      rocketLaunchPlayed = false;
       return true;
     }
 
@@ -7057,17 +6906,15 @@
       moonMesh.getWorldPosition(moonWorldPosition);
       if (worldPosition.distanceTo(moonWorldPosition) < MOON_COLLISION_RADIUS) return true;
 
-      // Cordelia collision: during the dedicated takeoff phase the rocket is already placed
-      // safely outside the surface, so ignore this one collider until the ship reaches the
-      // release distance. That prevents the launch frame from being cancelled by a tangent
-      // chord entering the collision shell.
+      // Cordelia collision: transform the rocket into the moving/rotating planet's local frame
+      // and compare against the actual dune surface height, so the barrier follows the planet.
       cordeliaMesh.getWorldPosition(cordeliaCollisionCenter);
       cordeliaCollisionLocal.copy(worldPosition).sub(cordeliaCollisionCenter);
       cordeliaCollisionInverse.copy(cordeliaMesh.getWorldQuaternion(cordeliaCollisionQuat)).invert();
       cordeliaCollisionLocal.applyQuaternion(cordeliaCollisionInverse);
       const cordeliaDir = cordeliaCollisionLocal.clone().normalize();
       const cordeliaSurfaceRadius = CORDELIA_RADIUS + cordeliaHeightAt(cordeliaDir) + CORDELIA_COLLISION_CLEARANCE;
-      if (!cordeliaTakeoffActive && cordeliaCollisionLocal.length() < cordeliaSurfaceRadius) return true;
+      if (cordeliaCollisionLocal.length() < cordeliaSurfaceRadius) return true;
       for (const rock of cordeliaRockSpawns) {
         if (rock.mined || !rock.root.visible) continue;
         const rockLocal = cordeliaCollisionLocal.clone().sub(rock.root.position);
@@ -7272,22 +7119,7 @@
       if (rocketKeyHeld('Space')) verticalInput += 1;
       if (rocketKeyHeld('ShiftLeft','ShiftRight')) verticalInput -= 1;
 
-      // Dedicated Cordelia takeoff: always provide an outward escape vector for the first
-      // moments after undocking. This completely separates launch from the ordinary movement
-      // solver, so no surface snap can eat the launch.
-      if (hasFuel && cordeliaTakeoffActive) {
-        const cCenter = cordeliaMesh.getWorldPosition(new THREE.Vector3());
-        const outward = flightPosition.clone().sub(cCenter);
-        if (outward.lengthSq() < 0.0001) outward.set(0, 1, 0);
-        outward.normalize();
-        const takeoffDistance = CORDELIA_TAKEOFF_BOOST * selectedSpeedMode.multiplier * delta;
-        flightPosition.addScaledVector(outward, takeoffDistance);
-        const cDistance = flightPosition.distanceTo(cCenter);
-        if (cDistance >= CORDELIA_TAKEOFF_RELEASE_DISTANCE) {
-          cordeliaTakeoffActive = false;
-          cordeliaLandingArmed = true;
-        }
-      } else if (hasFuel) {
+      if (hasFuel) {
         // In atmosphere, keep the ship's altitude and move around the planet's curve when
         // pressing W/A/S/D. This avoids the old tangent-vector + surface-clamp snap-back.
         if (!playerState.rocketInSpace) {
@@ -7415,13 +7247,8 @@
 
       cordeliaMesh.getWorldPosition(cordeliaWorldPosition);
       const cordeliaDistanceNow = flightPosition.distanceTo(cordeliaWorldPosition);
-      if (cordeliaTakeoffActive) {
-        // Never allow an immediate re-landing during the dedicated escape phase.
-        cordeliaLandingArmed = false;
-      } else if (!cordeliaLandingArmed && cordeliaDistanceNow >= CORDELIA_LANDING_REARM_DISTANCE) {
-        cordeliaLandingArmed = true;
-      }
-      if (!cordeliaTakeoffActive && cordeliaLandingArmed && cordeliaGravityActive && playerState.rocketInSpace && !playerState.rocketLanded) {
+      if (!cordeliaLandingArmed && cordeliaDistanceNow >= CORDELIA_LANDING_REARM_DISTANCE) cordeliaLandingArmed = true;
+      if (cordeliaLandingArmed && cordeliaGravityActive && playerState.rocketInSpace && !playerState.rocketLanded) {
         const cordeliaLocal = flightPosition.clone().sub(cordeliaWorldPosition).applyQuaternion(cordeliaMesh.getWorldQuaternion(new THREE.Quaternion()).invert()).normalize();
         const cordeliaSurface = CORDELIA_RADIUS + cordeliaHeightAt(cordeliaLocal);
         if (Math.abs(cordeliaDistanceNow - cordeliaSurface) <= CORDELIA_LANDING_SURFACE_DISTANCE) landRocketOnCordelia();
@@ -7892,7 +7719,6 @@
       cordeliaLandedRocket = null;
       cordeliaLandingPad = null;
       cordeliaLandingArmed = true;
-      cordeliaTakeoffActive = false;
       document.body.classList.remove('rocket-flight');
       setRocketFlightUI();
       updateStaminaBar();
@@ -9652,7 +9478,6 @@
       updateAllFurnaceSmelting();
       updateAmbientAudio();
       const solarHazardLock = updateSunDanger(delta);
-      const spaceFuelHazardLock = updateSpaceFuelDanger(delta);
       updateToolSwing();
       updateHeldItemJumpAnimation();
       updateHeldItemBob(delta);
@@ -9687,14 +9512,10 @@
         skyMesh.position.copy(activeCamera.position);
         stars.position.copy(activeCamera.position);
 
-        // Atmospheric fog should not hide Ivis once the rocket is genuinely in space.
-        // The atmospheric fog ends around 1020 units, but the ship can travel many
-        // thousands of units away from Ivis. In space we render the celestial bodies
-        // against the space sky with no distance fog, so Ivis remains visible at long range.
-        scene.fog = (playerState.inRocket && playerState.rocketInSpace) ? null : sceneFog;
+        scene.fog = sceneFog;
         updateCrystalPrompt();
         flashlightStatus.classList.toggle("hidden", !playerState.flashlightOn);
-        if (!solarHazardLock && !spaceFuelHazardLock) {
+        if (!solarHazardLock) {
           if (playerState.inRocket) {
             updateRocketFlight(delta);
           } else if (moonWalking) {

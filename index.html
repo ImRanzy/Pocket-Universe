@@ -170,6 +170,9 @@
 <div id="controlsToggle" title="Settings">⚙</div>
 
 <div id="transitionFade"></div>
+<div id="sunWarningOverlay" aria-live="assertive"><div id="sunWarningText">OUTER HULL MELTING<br><span>GET AWAY FROM THE SUN</span></div></div>
+<div id="spaceFuelWarningOverlay" aria-live="assertive"><div id="spaceFuelWarningText">ROCKET OUT OF FUEL<br><span>EMERGENCY RECOVERY</span></div></div>
+<div id="sunBlackout"></div>
 
 <div id="homeScreen">
   <div id="homeTitle">POCKET UNIVERSE</div>
@@ -211,64 +214,83 @@
 <div id="settingsModal" class="hidden">
   <div id="settingsPanel">
     <button id="settingsClose" title="Close">×</button>
-    <h1>Controls</h1>
-    <div id="settingsContent">
-    <div class="keyRow">
-      <span class="keyLabel">Move</span>
-      <div class="keys"><div class="key">W</div><div class="key">A</div><div class="key">S</div><div class="key">D</div></div>
+
+    <div id="settingsHome" class="settingsPage">
+      <h1>Settings</h1>
+      <div class="settingsChoiceGrid">
+        <button class="settingsChoice" id="settingsControlsButton" title="Controls" aria-label="Controls">Controls</button>
+        <button class="settingsChoice" id="settingsSoundButton" title="Sound" aria-label="Sound">Sound</button>
+        <button class="settingsChoice" id="settingsFovButton" title="Field of View" aria-label="Field of View">FOV</button>
+        <button class="settingsChoice" id="settingsUpdateLogButton" title="Update Log" aria-label="Update Log">Update Log</button>
+      </div>
     </div>
-    <div class="keyRow">
-      <span class="keyLabel">Sprint</span>
-      <div class="key">Shift</div>
+
+    <div id="settingsControlsPage" class="settingsPage hidden">
+      <div class="settingsSubHeader">
+        <button class="settingsBack" data-settings-back title="Back">←</button>
+        <h1>Controls</h1>
+      </div>
+      <div id="settingsContent">
+        <div class="keyRow"><span class="keyLabel">Move</span><div class="keys"><div class="key">W</div><div class="key">A</div><div class="key">S</div><div class="key">D</div></div></div>
+        <div class="keyRow"><span class="keyLabel">Sprint</span><div class="key">Shift</div></div>
+        <div class="keyRow"><span class="keyLabel">Jump</span><div class="key">Space</div></div>
+        <div class="keyRow"><span class="keyLabel">Toggle view</span><div class="key">C</div></div>
+        <div class="keyRow"><span class="keyLabel">Flashlight</span><div class="key">F</div></div>
+        <div class="keyRow"><span class="keyLabel">Collect nearby crystal</span><div class="key">E</div></div>
+        <div class="keyRow"><span class="keyLabel">Chop tree with axe</span><div class="key">LMB</div></div>
+        <div class="keyRow"><span class="keyLabel">Inventory</span><div class="key">I</div></div>
+        <div class="keyRow"><span class="keyLabel">Hotbar slots</span><div class="keys"><div class="key">1</div><div class="key">2</div><div class="key">3</div><div class="key">4</div></div></div>
+        <div class="keyRow"><span class="keyLabel">Look around</span><span class="keyNote">Mouse, or hold left-click and drag</span></div>
+        <div class="keyRow"><span class="keyLabel">Spaceship move</span><div class="keys"><div class="key">W</div><div class="key">A</div><div class="key">S</div><div class="key">D</div></div></div>
+        <div class="keyRow"><span class="keyLabel">Spaceship up / down</span><div class="keys"><div class="key">Space</div><div class="key">Shift</div></div></div>
+        <div class="keyRow"><span class="keyLabel">Enter / exit spaceship</span><div class="key">E</div></div>
+        <div class="keyRow"><span class="keyLabel">Pause menu</span><div class="key">Esc</div></div>
+      </div>
     </div>
-    <div class="keyRow">
-      <span class="keyLabel">Jump</span>
-      <div class="key">Space</div>
+
+    <div id="settingsSoundPage" class="settingsPage hidden">
+      <div class="settingsSubHeader">
+        <button class="settingsBack" data-settings-back title="Back">←</button>
+        <h1>Sound</h1>
+      </div>
+      <div class="settingsOptionBlock">
+        <div class="settingsOptionTitle">Game volume</div>
+        <div class="settingsSliderRow">
+          <input id="settingsVolumeSlider" type="range" min="0" max="100" step="1" value="100" aria-label="Game volume">
+          <span id="settingsVolumeValue">100%</span>
+        </div>
+      </div>
     </div>
-    <div class="keyRow">
-      <span class="keyLabel">Toggle view</span>
-      <div class="key">C</div>
+
+    <div id="settingsFovPage" class="settingsPage hidden">
+      <div class="settingsSubHeader">
+        <button class="settingsBack" data-settings-back title="Back">←</button>
+        <h1>FOV</h1>
+      </div>
+      <div class="settingsOptionBlock">
+        <div class="settingsOptionTitle">Field of view</div>
+        <div class="settingsOptionDescription">Choose any value from 40 to 110.</div>
+        <div class="settingsSliderRow">
+          <input id="settingsFovSlider" type="range" min="40" max="110" step="1" value="70" aria-label="Field of view">
+          <span id="settingsFovValue">70</span>
+        </div>
+        <div class="settingsRangeLabels"><span>40</span><span>110</span></div>
+      </div>
     </div>
-    <div class="keyRow">
-      <span class="keyLabel">Flashlight</span>
-      <div class="key">F</div>
-    </div>
-    <div class="keyRow">
-      <span class="keyLabel">Collect nearby crystal</span>
-      <div class="key">E</div>
-    </div>
-    <div class="keyRow">
-      <span class="keyLabel">Chop tree with axe</span>
-      <div class="key">LMB</div>
-    </div>
-    <div class="keyRow">
-      <span class="keyLabel">Inventory</span>
-      <div class="key">I</div>
-    </div>
-    <div class="keyRow">
-      <span class="keyLabel">Hotbar slots</span>
-      <div class="keys"><div class="key">1</div><div class="key">2</div><div class="key">3</div><div class="key">4</div></div>
-    </div>
-    <div class="keyRow">
-      <span class="keyLabel">Look around</span>
-      <span class="keyNote">Mouse, or hold left-click and drag</span>
-    </div>
-    <div class="keyRow">
-      <span class="keyLabel">Spaceship move</span>
-      <div class="keys"><div class="key">W</div><div class="key">A</div><div class="key">S</div><div class="key">D</div></div>
-    </div>
-    <div class="keyRow">
-      <span class="keyLabel">Spaceship up / down</span>
-      <div class="keys"><div class="key">Space</div><div class="key">Shift</div></div>
-    </div>
-    <div class="keyRow">
-      <span class="keyLabel">Enter / exit spaceship</span>
-      <div class="key">E</div>
-    </div>
-    <div class="keyRow">
-      <span class="keyLabel">Pause menu</span>
-      <div class="key">Esc</div>
-    </div>
+
+    <div id="settingsUpdateLogPage" class="settingsPage hidden">
+      <div class="settingsSubHeader">
+        <button class="settingsBack" data-settings-back title="Back">←</button>
+        <h1>Update Log</h1>
+      </div>
+      <div id="settingsUpdateLogContent">
+        <section class="updateLogDay"><h2>Day 1</h2><p>Pocket Universe begins: the small spherical planet, terrain generation, player movement, jumping, sprinting, the day/night cycle, and the first world visuals.</p></section>
+        <section class="updateLogDay"><h2>Day 2</h2><p>Survival systems arrive: crystals, inventory and hotbar, crafting, tools and durability, trees and mining, the furnace, merchant, credits, and a growing set of world interactions.</p></section>
+        <section class="updateLogDay"><h2>Day 3</h2><p>The project is reorganized into a proper multi-file project. Save/load, Survival and Freeplay, the rocket, launch pad, engine and fuel systems, and full spaceflight are added.</p></section>
+        <section class="updateLogDay"><h2>Day 4</h2><p>The world gets atmosphere: weather, clouds, rain and thunderstorms, lightning, stars, space visuals, particles, ambient sounds, tool animations, the World Control menu, and more polish.</p></section>
+        <section class="updateLogDay"><h2>Day 5</h2><p>The Moon is added as a real celestial body with its own collision and gravity. The rocket can land on the Moon, the player can explore it with 2× jumping and lunar dust, and the full Moon ↔ Ivis return loop works. Rocket speed modes add Boosted and WARP travel.</p></section>
+        <section class="updateLogDay"><h2>Day 6</h2><p>Cordelia becomes fully launchable with a dedicated takeoff and escape sequence. Ivis stays visible from deep space, spaceflight now has emergency fuel-loss recovery to prevent softlocks, and the scythe gets a rebuilt curved blade. Day 6 is officially complete!</p></section>
+      </div>
     </div>
   </div>
 </div>
