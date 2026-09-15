@@ -105,6 +105,27 @@
   </div>
 </div>
 
+<div id="cosmeticOverlay" class="hidden" aria-hidden="true">
+  <div id="cosmeticPanel">
+    <div id="cosmeticTopTabs">
+      <div class="cosmeticShopTitle">SHOP</div>
+      <div id="cosmeticGemBalance"><span>◆</span><strong id="cosmeticGemAmount">0</strong></div>
+      <button id="cosmeticClose" class="cosmeticCloseButton">×</button>
+    </div>
+    <div id="cosmeticContent">
+      <section id="cosmeticShopView" class="cosmeticView">
+        <div id="cosmeticShopLeft">
+          <div class="cosmeticSectionLabel">COLOR</div>
+          <div id="cosmeticColorGrid"></div>
+          <div class="cosmeticSectionLabel hatLabel">HATS</div>
+          <div id="cosmeticHatGrid"></div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
 <div id="merchantOverlay" class="hidden">
   <div id="merchantPanel">
     <div id="merchantUiColumn">
@@ -175,6 +196,8 @@
 <div id="sunBlackout"></div>
 
 <div id="homeScreen">
+  <button id="homeCreditsButton" type="button" aria-label="Credits">CREDITS</button>
+  <div id="homeGems" aria-label="Gems"><span class="homeGemsIcon">◆</span><span id="homeGemsAmount">0</span></div>
   <div id="homeTitle">POCKET UNIVERSE</div>
   <div id="planetHint">Drag to rotate the planet and explore your spawn location</div>
   <div id="homeLoading">Loading planet…</div>
@@ -182,9 +205,80 @@
     <button id="playButton">SINGLEPLAYER</button>
     <button id="loadGameButton">LOAD GAME</button>
     <button id="homeSettingsButton">Settings</button>
+    <button id="accountButton">ACCOUNT</button>
+    <button id="homeAchievementsButton">ACHIEVEMENTS</button>
   </div>
   <!-- Hidden file picker used when loading a saved Pocket Universe JSON file. -->
   <input id="saveFileInput" type="file" accept="application/json,.json" hidden />
+</div>
+
+<div id="creditsModal" class="hidden" aria-hidden="true">
+  <div id="creditsPanel" role="dialog" aria-modal="true" aria-labelledby="creditsTitle">
+    <button id="creditsClose" class="creditsClose" type="button" title="Close">×</button>
+    <h1 id="creditsTitle">Credits</h1>
+    <div class="creditsLine">Coding - ChatGPT</div>
+    <div class="creditsLine">Playtesting and Brainstorming - Ranzy</div>
+    <div class="creditsLine">The banana skin hat - PRAJI©</div>
+    <div class="creditsSmile">:D</div>
+  </div>
+</div>
+
+<div id="achievementsModal" class="hidden" aria-hidden="true">
+  <div id="achievementsPanel" role="dialog" aria-modal="true" aria-labelledby="achievementsTitle">
+    <button id="achievementsClose" class="achievementsClose" type="button" title="Close">×</button>
+    <div class="achievementsHeader">
+      <h1 id="achievementsTitle">Achievements</h1>
+      <div id="achievementsCounter">0 / 12</div>
+    </div>
+    <p class="achievementsSubtitle">Account achievements · earned across your worlds</p>
+    <div id="achievementsList"></div>
+  </div>
+</div>
+
+<!-- Achievement unlock toast shown during Survival play. -->
+<div id="achievementToast" class="achievementToast" aria-live="polite" aria-atomic="true">
+  <div class="achievementToastIcon">🏆</div>
+  <div class="achievementToastText">
+    <div class="achievementToastLabel">ACHIEVEMENT UNLOCKED</div>
+    <div id="achievementToastName" class="achievementToastName"></div>
+  </div>
+</div>
+
+<div id="accountModal" class="hidden" aria-hidden="true">
+  <div id="accountPanel" role="dialog" aria-modal="true" aria-labelledby="accountTitle">
+    <button id="accountClose" class="accountClose" type="button" title="Close">×</button>
+    <div id="accountLoggedOut">
+      <h1 id="accountTitle">Log in</h1>
+      <p id="accountSubtitle">Log in to your Pocket Universe account.</p>
+      <div class="accountField">
+        <label for="accountEmail">Email</label>
+        <input id="accountEmail" type="email" autocomplete="email" placeholder="you@example.com">
+      </div>
+      <div id="accountUsernameField" class="accountField hiddenField">
+        <label for="accountUsername">Username</label>
+        <input id="accountUsername" type="text" autocomplete="nickname" maxlength="24" placeholder="Your explorer name">
+      </div>
+      <div class="accountField">
+        <label for="accountPassword">Password</label>
+        <input id="accountPassword" type="password" autocomplete="current-password" placeholder="••••••••">
+      </div>
+      <button id="accountSubmit" class="accountPrimary" type="button">LOG IN</button>
+      <button id="accountModeToggle" class="accountLink" type="button">Need an account? Create one</button>
+      <div id="accountStatus" class="accountStatus" aria-live="polite"></div>
+    </div>
+    <div id="accountLoggedIn" class="hidden">
+      <h1 id="accountWelcomeTitle">Account</h1>
+      <p id="accountWelcomeText">You are logged in.</p>
+      <div class="accountProfileCard">
+        <div class="accountProfileLabel">USERNAME</div>
+        <div id="accountProfileUsername" class="accountProfileValue">—</div>
+        <div class="accountProfileLabel">EMAIL</div>
+        <div id="accountProfileEmail" class="accountProfileValue">—</div>
+      </div>
+      <button id="accountLogout" class="accountPrimary" type="button">LOG OUT</button>
+      <div id="accountLoggedInStatus" class="accountStatus" aria-live="polite"></div>
+    </div>
+  </div>
 </div>
 
 <div id="modeChooser" class="hidden">
@@ -205,6 +299,7 @@
     <div id="pauseButtons">
       <button id="resumeButton">Resume</button>
       <button id="saveGameButton">Save Game</button>
+      <button id="pauseAchievementsButton">Achievements</button>
       <button id="pauseSettingsButton">Settings</button>
       <button id="pauseMenuButton">Go back to Menu</button>
     </div>
@@ -231,20 +326,28 @@
         <h1>Controls</h1>
       </div>
       <div id="settingsContent">
-        <div class="keyRow"><span class="keyLabel">Move</span><div class="keys"><div class="key">W</div><div class="key">A</div><div class="key">S</div><div class="key">D</div></div></div>
-        <div class="keyRow"><span class="keyLabel">Sprint</span><div class="key">Shift</div></div>
-        <div class="keyRow"><span class="keyLabel">Jump</span><div class="key">Space</div></div>
-        <div class="keyRow"><span class="keyLabel">Toggle view</span><div class="key">C</div></div>
-        <div class="keyRow"><span class="keyLabel">Flashlight</span><div class="key">F</div></div>
-        <div class="keyRow"><span class="keyLabel">Collect nearby crystal</span><div class="key">E</div></div>
-        <div class="keyRow"><span class="keyLabel">Chop tree with axe</span><div class="key">LMB</div></div>
-        <div class="keyRow"><span class="keyLabel">Inventory</span><div class="key">I</div></div>
-        <div class="keyRow"><span class="keyLabel">Hotbar slots</span><div class="keys"><div class="key">1</div><div class="key">2</div><div class="key">3</div><div class="key">4</div></div></div>
+        <div class="keyRow"><span class="keyLabel">Move forward</span><button class="key rebindKey" data-bind="moveForward">W</button></div>
+        <div class="keyRow"><span class="keyLabel">Move left</span><button class="key rebindKey" data-bind="moveLeft">A</button></div>
+        <div class="keyRow"><span class="keyLabel">Move backward</span><button class="key rebindKey" data-bind="moveBackward">S</button></div>
+        <div class="keyRow"><span class="keyLabel">Move right</span><button class="key rebindKey" data-bind="moveRight">D</button></div>
+        <div class="keyRow"><span class="keyLabel">Sprint / ship down</span><button class="key rebindKey" data-bind="sprint">Shift</button></div>
+        <div class="keyRow"><span class="keyLabel">Jump / ship up</span><button class="key rebindKey" data-bind="jump">Space</button></div>
+        <div class="keyRow"><span class="keyLabel">Toggle view</span><button class="key rebindKey" data-bind="toggleView">C</button></div>
+        <div class="keyRow"><span class="keyLabel">Flashlight</span><button class="key rebindKey" data-bind="flashlight">F</button></div>
+        <div class="keyRow"><span class="keyLabel">Interact / collect / enter-exit</span><button class="key rebindKey" data-bind="interact">E</button></div>
+        <div class="keyRow"><span class="keyLabel">Drop item</span><button class="key rebindKey" data-bind="drop">Q</button></div>
+        <div class="keyRow"><span class="keyLabel">Inventory</span><button class="key rebindKey" data-bind="inventory">I</button></div>
+        <div class="keyRow"><span class="keyLabel">Hotbar slot 1</span><button class="key rebindKey" data-bind="slot1">1</button></div>
+        <div class="keyRow"><span class="keyLabel">Hotbar slot 2</span><button class="key rebindKey" data-bind="slot2">2</button></div>
+        <div class="keyRow"><span class="keyLabel">Hotbar slot 3</span><button class="key rebindKey" data-bind="slot3">3</button></div>
+        <div class="keyRow"><span class="keyLabel">Hotbar slot 4</span><button class="key rebindKey" data-bind="slot4">4</button></div>
+        <div class="keyRow"><span class="keyLabel">Open map</span><button class="key rebindKey" data-bind="map">M</button></div>
+        <div class="keyRow"><span class="keyLabel">Weather menu (Freeplay)</span><button class="key rebindKey" data-bind="weather">G</button></div>
+        <div class="keyRow"><span class="keyLabel">Chop / use tool</span><button class="key rebindKey" data-bind="useTool">LMB</button></div>
         <div class="keyRow"><span class="keyLabel">Look around</span><span class="keyNote">Mouse, or hold left-click and drag</span></div>
-        <div class="keyRow"><span class="keyLabel">Spaceship move</span><div class="keys"><div class="key">W</div><div class="key">A</div><div class="key">S</div><div class="key">D</div></div></div>
-        <div class="keyRow"><span class="keyLabel">Spaceship up / down</span><div class="keys"><div class="key">Space</div><div class="key">Shift</div></div></div>
-        <div class="keyRow"><span class="keyLabel">Enter / exit spaceship</span><div class="key">E</div></div>
-        <div class="keyRow"><span class="keyLabel">Pause menu</span><div class="key">Esc</div></div>
+        <div class="keyRow"><span class="keyLabel">Spaceship controls</span><span class="keyNote">Uses the same Move / Up / Down bindings above</span></div>
+        <div class="keyRow"><span class="keyLabel">Pause menu</span><button class="key rebindKey" data-bind="pause">Esc</button></div>
+        <div id="rebindStatus" class="keyNote rebindStatus">Click a control, then press a keyboard key to bind it. Left-click can also be bound back to LMB; click again to cancel.</div>
       </div>
     </div>
 
@@ -284,12 +387,13 @@
         <h1>Update Log</h1>
       </div>
       <div id="settingsUpdateLogContent">
+        <section class="updateLogDay"><h2>Day 7</h2><p>Cordelia gets its own day/night atmosphere and the camera now works consistently across every celestial body. Moon Quartz and the Upgraded Rocket Engine arrive, with 200% fuel capacity. Accounts, achievements, account-wide Gems, rebindable controls, and LMB keybinding are added. A new orange-striped hat stall brings character customization with colors and hats, plus the Credits page. Day 7 is officially complete!</p></section>
+        <section class="updateLogDay"><h2>Day 6</h2><p>Cordelia becomes fully launchable with a dedicated takeoff and escape sequence. Ivis stays visible from deep space, spaceflight now has emergency fuel-loss recovery to prevent softlocks, and the scythe gets a rebuilt curved blade. Day 6 is officially complete!</p></section>
         <section class="updateLogDay"><h2>Day 1</h2><p>Pocket Universe begins: the small spherical planet, terrain generation, player movement, jumping, sprinting, the day/night cycle, and the first world visuals.</p></section>
         <section class="updateLogDay"><h2>Day 2</h2><p>Survival systems arrive: crystals, inventory and hotbar, crafting, tools and durability, trees and mining, the furnace, merchant, credits, and a growing set of world interactions.</p></section>
         <section class="updateLogDay"><h2>Day 3</h2><p>The project is reorganized into a proper multi-file project. Save/load, Survival and Freeplay, the rocket, launch pad, engine and fuel systems, and full spaceflight are added.</p></section>
         <section class="updateLogDay"><h2>Day 4</h2><p>The world gets atmosphere: weather, clouds, rain and thunderstorms, lightning, stars, space visuals, particles, ambient sounds, tool animations, the World Control menu, and more polish.</p></section>
         <section class="updateLogDay"><h2>Day 5</h2><p>The Moon is added as a real celestial body with its own collision and gravity. The rocket can land on the Moon, the player can explore it with 2× jumping and lunar dust, and the full Moon ↔ Ivis return loop works. Rocket speed modes add Boosted and WARP travel.</p></section>
-        <section class="updateLogDay"><h2>Day 6</h2><p>Cordelia becomes fully launchable with a dedicated takeoff and escape sequence. Ivis stays visible from deep space, spaceflight now has emergency fuel-loss recovery to prevent softlocks, and the scythe gets a rebuilt curved blade. Day 6 is officially complete!</p></section>
       </div>
     </div>
   </div>

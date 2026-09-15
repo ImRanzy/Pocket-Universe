@@ -23,6 +23,10 @@
     "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"
   ];
 
+  const SUPABASE_URL = "https://ktzhvnpbksngleegdikd.supabase.co";
+  const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hrbbTSn2zhmFaejsrJd_ig_6RMF4k7G";
+  let pocketSupabase = null;
+
   function loadScript(src) {
     return new Promise((resolve, reject) => {
       const el = document.createElement("script");
@@ -57,6 +61,14 @@
       return;
     }
     try {
+      try {
+        if (!window.supabase) await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2");
+        if (window.supabase && typeof window.supabase.createClient === "function") {
+          pocketSupabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+        }
+      } catch (supabaseError) {
+        console.warn("Supabase unavailable; account features are disabled.", supabaseError);
+      }
       runGame();
     } catch (e) {
       showFatalError("Something went wrong starting the game: " + (e && e.message ? e.message : e));
@@ -1258,6 +1270,7 @@
       spaceFuelDangerTimer = 0;
       spaceFuelWarningOverlay.classList.remove('active');
 
+      resetContinuousSurvivalAchievementRun();
       resetInventory();
       playerState.inRocket = false;
       playerState.rocketInSpace = false;
@@ -1304,10 +1317,15 @@
     }
 
     function recoverFromSpaceFuelExhaustion() {
+      awardAchievement('fuel_emergency');
+      rocketFlightElapsedSeconds = 0;
+      rocketFlightDistance = 0;
+      rocketFlightHasMoved = false;
       clearRocketKeys();
       updateRocketEngineAudio(false, false);
       destroyCurrentRocketForSunPenalty();
 
+      resetContinuousSurvivalAchievementRun();
       resetInventory();
       playerState.inRocket = false;
       playerState.rocketInSpace = false;
@@ -1386,7 +1404,7 @@
         return true;
       }
 
-      const fuel = flightPad ? Math.max(0, Math.min(ROCKET_FUEL_CAPACITY, Number(flightPad.fuel) || 0)) : 0;
+      const fuel = flightPad ? Math.max(0, Math.min(getRocketFuelCapacity(flightPad), Number(flightPad.fuel) || 0)) : 0;
       const strandedInSpace = playerState.inRocket && playerState.rocketInSpace && !playerState.rocketLanded && !!flightRocket && fuel <= 0;
       if (!strandedInSpace) {
         spaceFuelWarningOverlay.classList.remove('active');
@@ -1556,6 +1574,22 @@
 
     const moonMesh = createMoon();
     scene.add(moonMesh);
+    const moonQuartzSpawns = [];
+    function spawnMoonQuartz(dir) {
+      const group = new THREE.Group();
+      const visual = createMoonQuartzVisual(1.0 + Math.random() * 0.25);
+      group.add(visual);
+      group.position.copy(dir).multiplyScalar(MOON_RADIUS + 0.6);
+      group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      moonMesh.add(group);
+      moonQuartzSpawns.push({ root: group, visual, direction: dir.clone(), collected: false });
+    }
+    function scatterMoonQuartz(count = 60) {
+      for (let i = 0; i < count; i++) {
+        const dir = new THREE.Vector3(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize();
+        spawnMoonQuartz(dir);
+      }
+    }
     const moonOrbitTiltQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), MOON_ORBIT_TILT);
     const moonOrbitPosition = new THREE.Vector3();
     const moonWorldPosition = new THREE.Vector3();
@@ -1626,6 +1660,19 @@
       } else if (freeSpacePlaneActive && ivisDistance <= FREE_SPACE_PLANE_EXIT_DISTANCE) {
         freeSpacePlaneActive = false;
       }
+
+      // Getting within a celestial body's influence counts as discovering/reaching it.
+      // Keep these checks here so the achievement fires before a later landing event.
+      if (state.gameMode === 'survival' && currentAccountUser) {
+        moonMesh.getWorldPosition(moonWorldPosition);
+        if (position.distanceTo(moonWorldPosition) <= MOON_GRAVITY_SWITCH_DISTANCE) {
+          recordCelestialBodyVisit('moon');
+        }
+        cordeliaMesh.getWorldPosition(cordeliaWorldPosition);
+        if (position.distanceTo(cordeliaWorldPosition) <= CORDELIA_GRAVITY_SWITCH_DISTANCE) {
+          recordCelestialBodyVisit('cordelia');
+        }
+      }
     }
 
     function getActiveGravityCenter(position, out) {
@@ -1660,7 +1707,7 @@
     // celestial body, just like the Sun and Moon.
     const CORDELIA_RADIUS = 110;
     const CORDELIA_SUN_DISTANCE = 3000;
-    const CORDELIA_ORBIT_PERIOD = 260;
+    const CORDELIA_ORBIT_PERIOD = 1800; // 30 minutes per full orbit
     const CORDELIA_DUNE_HEIGHT = 13;
     const CORDELIA_COLLISION_CLEARANCE = 2.6;
     const CORDELIA_COLLISION_RADIUS = CORDELIA_RADIUS + CORDELIA_DUNE_HEIGHT + CORDELIA_COLLISION_CLEARANCE;
@@ -1723,6 +1770,67 @@
       return cordeliaMesh;
     }
 
+    // Cordelia reuses the exact Ivis atmosphere pipeline, but with its own colors.
+    // No custom atmosphere shader: sky, fog, star fade and the space transition are all
+    // handled by updateDayNight(), just like on Ivis.
+    const CORDELIA_DAY_SKY = new THREE.Color(0xe05a3a);
+    const CORDELIA_SUNSET_SKY = new THREE.Color(0xbfe8ff);
+    const CORDELIA_NIGHT_SKY = new THREE.Color(0x050817);
+    const CORDELIA_DAY_FOG = new THREE.Color(0xe05a3a);
+    const CORDELIA_SUNSET_FOG = new THREE.Color(0x9fdcff);
+    const CORDELIA_NIGHT_FOG = new THREE.Color(0x050817);
+    const cordeliaTempSkyColor = new THREE.Color();
+    const cordeliaTempFogColor = new THREE.Color();
+    const cordeliaPlayerDir = new THREE.Vector3();
+    const cordeliaSunDir = new THREE.Vector3();
+    const cordeliaCenterWorld = new THREE.Vector3();
+    const CORDELIA_ATMOSPHERE_RANGE = 300;
+    let onCordeliaAtmosphere = false;
+
+    function playerIsInCordeliaAtmosphere(worldPos) {
+      cordeliaMesh.getWorldPosition(cordeliaCenterWorld);
+      return worldPos.distanceTo(cordeliaCenterWorld) <= CORDELIA_RADIUS + CORDELIA_ATMOSPHERE_RANGE;
+    }
+
+    function getCordeliaAtmosphereState(worldPos) {
+      cordeliaMesh.getWorldPosition(cordeliaCenterWorld);
+      const radial = worldPos.clone().sub(cordeliaCenterWorld);
+      if (radial.lengthSq() < 0.000001) radial.set(0, 1, 0);
+      cordeliaPlayerDir.copy(radial).normalize();
+      cordeliaSunDir.copy(sunMesh.position).sub(cordeliaCenterWorld).normalize();
+      const inv = cordeliaMesh.quaternion.clone().invert();
+      cordeliaPlayerDir.applyQuaternion(inv).normalize();
+      cordeliaSunDir.applyQuaternion(inv).normalize();
+      return {
+        sunDot: cordeliaPlayerDir.dot(cordeliaSunDir),
+        altitude: Math.max(0, radial.length() - CORDELIA_RADIUS)
+      };
+    }
+
+    function applyCordeliaAtmosphere(worldPos) {
+      const {sunDot, altitude} = getCordeliaAtmosphereState(worldPos);
+      const daylight = THREE.MathUtils.smoothstep(sunDot, -0.48, -0.10);
+      const sunset = 1 - Math.min(1, Math.abs(sunDot) / 0.35);
+      const night = THREE.MathUtils.smoothstep(-sunDot, 0.02, 0.42);
+
+      ambientLight.intensity = THREE.MathUtils.lerp(0.08, 0.34, daylight);
+      cordeliaSunLight.intensity = THREE.MathUtils.lerp(0.03, 2.2, daylight);
+      cordeliaSunLight.color.setHex(sunset > 0.05 && daylight < 0.55 ? 0xffa58a : 0xfff0d0);
+
+      cordeliaTempSkyColor.copy(CORDELIA_NIGHT_SKY).lerp(CORDELIA_DAY_SKY, daylight);
+      if (sunset > 0) cordeliaTempSkyColor.lerp(CORDELIA_SUNSET_SKY, sunset * 0.72);
+      cordeliaTempFogColor.copy(CORDELIA_NIGHT_FOG).lerp(CORDELIA_DAY_FOG, daylight);
+      if (sunset > 0) cordeliaTempFogColor.lerp(CORDELIA_SUNSET_FOG, sunset * 0.70);
+
+      const atmosphereBlend = THREE.MathUtils.smoothstep(altitude, ROCKET_ATMOSPHERE_FADE_START, ROCKET_ATMOSPHERE_RADIUS);
+      cordeliaTempSkyColor.lerp(SPACE_SKY, atmosphereBlend);
+      cordeliaTempFogColor.lerp(SPACE_FOG, atmosphereBlend);
+      skyMat.color.copy(cordeliaTempSkyColor);
+      scene.background.copy(cordeliaTempSkyColor);
+      sceneFog.color.copy(cordeliaTempFogColor);
+      starMat.opacity = Math.max(THREE.MathUtils.clamp(night * 1.15, 0, 1), atmosphereBlend);
+      cloudMat.opacity = THREE.MathUtils.lerp(0.01, 0.06, daylight) * (1 - atmosphereBlend);
+    }
     function placeCordeliaProp(group, dir, extraHeight = 0) {
       const h = cordeliaHeightAt(dir);
       group.position.copy(dir).multiplyScalar(CORDELIA_RADIUS + h + extraHeight);
@@ -1857,7 +1965,8 @@
         .addScaledVector(cordeliaOrbitBasisA, Math.cos(cordeliaOrbitAngle) * CORDELIA_SUN_DISTANCE)
         .addScaledVector(cordeliaOrbitBasisB, Math.sin(cordeliaOrbitAngle) * CORDELIA_SUN_DISTANCE);
       cordeliaMesh.position.copy(cordeliaOrbitPosition);
-      cordeliaMesh.rotation.y += delta * 0.012;
+      // One full Cordelia rotation every 6 minutes: ~3 minutes daylight + ~3 minutes night.
+      cordeliaMesh.rotation.y += delta * (Math.PI * 2 / 360);
       cordeliaSunLight.position.copy(sunWorldForCordelia);
       cordeliaSunTarget.position.copy(cordeliaOrbitPosition);
     }
@@ -1889,10 +1998,18 @@
       planetSystem.rotation.y = state.planetSpinAngle;
       cloudLayer.rotation.y += delta * 0.018;
 
-      // Get the player's actual WORLD position after the planet has rotated. This makes
-      // the local time-of-day calculation respond to the planet's rotation correctly.
+      // Get the player's actual WORLD position after the planet has rotated.
       const playerWorldPos = new THREE.Vector3();
       player.getWorldPosition(playerWorldPos);
+
+      // Cordelia uses the same atmosphere system as Ivis, evaluated from Cordelia's
+      // own rotating surface. Return before Ivis' math can overwrite the colors.
+      if (playerIsInCordeliaAtmosphere(playerWorldPos)) {
+        onCordeliaAtmosphere = true;
+        applyCordeliaAtmosphere(playerWorldPos);
+        return;
+      }
+      onCordeliaAtmosphere = false;
       tempPlayerDir.copy(playerWorldPos).normalize();
 
       // The fixed sun's position gives us a constant direction from the planet center.
@@ -2212,7 +2329,7 @@
     function updateDrillRefueling() {
       const drill = economyState.drillRefueling;
       if (!drill) return;
-      if (!drill.root.visible || uiState.equippedItemType !== 'jerrycan' || !physicalKeys['KeyE']) {
+      if (!drill.root.visible || uiState.equippedItemType !== 'jerrycan' || !isActionDown('interact')) {
         economyState.drillRefueling = null;
         economyState.drillRefuelingStartedAt = 0;
         return;
@@ -2282,6 +2399,44 @@
       const flame = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.32, 8), new THREE.MeshStandardMaterial({ color: 0xffb84d, emissive: 0xff7a21, emissiveIntensity: 0.65, roughness: 0.55 }));
       flame.position.y = -0.39; group.add(flame);
       group.scale.setScalar(scale); return group;
+    }
+
+    function createUpgradedEngineVisual(scale = 1) {
+      const group = new THREE.Group();
+      const silver = new THREE.MeshStandardMaterial({ color: 0xb6c0c9, roughness: 0.28, metalness: 0.82 });
+      const cyan = new THREE.MeshStandardMaterial({ color: 0x57d8ff, roughness: 0.28, metalness: 0.4, emissive: 0x15556b, emissiveIntensity: 0.55 });
+      const dark = new THREE.MeshStandardMaterial({ color: 0x252b31, roughness: 0.62, metalness: 0.6 });
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.43, 0.58, 0.68, 14), silver);
+      body.position.y = 0.38; group.add(body);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.51, 0.075, 8, 20), cyan);
+      ring.rotation.x = Math.PI / 2; ring.position.y = 0.38; group.add(ring);
+      const nozzle = new THREE.Mesh(new THREE.ConeGeometry(0.30, 0.46, 14, 1, true), dark);
+      nozzle.position.y = -0.13; group.add(nozzle);
+      for (let i = 0; i < 6; i++) {
+        const wire = new THREE.Mesh(new THREE.TorusGeometry(0.33, 0.028, 6, 16, Math.PI * 0.72), cyan);
+        const a = i / 6 * Math.PI * 2;
+        wire.rotation.y = a; wire.rotation.x = Math.PI / 2; wire.position.y = 0.36; group.add(wire);
+      }
+      // Mirror the finished scythe around its vertical axis so the crescent/blade points
+      // outward from the handle in both first- and third-person views. Using a Y-axis
+      // half-turn avoids negative scaling, which can invert extrusion winding/culling.
+      group.rotation.y = Math.PI;
+      group.scale.setScalar(scale);
+      return group;
+    }
+
+    function addUpgradedEngineVisual(rocket) {
+      if (!rocket || !rocket.root) return;
+      if (rocket.upgradedEngineVisual && rocket.upgradedEngineVisual.parent) rocket.upgradedEngineVisual.parent.remove(rocket.upgradedEngineVisual);
+      const visual = createUpgradedEngineVisual(0.92);
+      visual.position.set(0, -0.12, 0);
+      rocket.root.add(visual);
+      rocket.upgradedEngineVisual = visual;
+    }
+
+    function ensureRocketEngineVisual(rocket) {
+      if (!rocket) return;
+      if (rocket.engineType === 'upgraded') addUpgradedEngineVisual(rocket);
     }
 
     // Compact rocket icon/model used by inventory and dropped-item visuals.
@@ -2389,7 +2544,7 @@
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
       group.rotateY(yaw);
       planetSystem.add(group);
-      const pad = { root: group, direction: dir.clone(), yaw, rocket: null, fuel: 0 };
+      const pad = { root: group, direction: dir.clone(), yaw, rocket: null, fuel: 0, engineType: 'standard' };
       launchPads.push(pad);
       return pad;
     }
@@ -2399,7 +2554,8 @@
       const root = createMountedRocketVisual(0.92);
       root.position.set(0, 0.18, 0);
       pad.root.add(root);
-      pad.rocket = { root, pad };
+      pad.rocket = { root, pad, engineType: pad.engineType || 'standard' };
+      if (pad.engineType === 'upgraded') addUpgradedEngineVisual(pad.rocket);
       return true;
     }
 
@@ -2439,6 +2595,7 @@
       inventorySlots[idx] = null;
       refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
       const prompt = document.getElementById('crystalPrompt');
+      awardAchievement('first_launch_pad');
       prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">PLACED</span> Launch pad placed';
       setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 700);
       return true;
@@ -2494,6 +2651,10 @@
         group.add(createFurnaceVisual(0.58));
       } else if (typeId === 'rocket_engine') {
         group.add(createRocketEngineVisual(0.62));
+      } else if (typeId === 'upgraded_engine') {
+        group.add(createUpgradedEngineVisual(0.64));
+      } else if (typeId === 'moon_quartz') {
+        group.add(createMoonQuartzVisual(0.75));
       } else if (typeId === 'rocket') {
         group.add(createRocketVisual(0.42));
       } else if (typeId === 'launch_pad') {
@@ -2931,6 +3092,8 @@
       { id: 'stone_scythe', name: 'Stone Scythe', kind: 'scythe', maxStack: 1, tool: true, stoneTool: true },
       { id: 'iron_scythe', name: 'Iron Scythe', kind: 'scythe', maxStack: 1, tool: true, ironTool: true },
       { id: 'copper_wire', name: 'Copper Wire', kind: 'copper_wire', css: '#d47a3d', maxStack: 10 },
+      { id: 'moon_quartz', name: 'Moon Quartz', kind: 'moon_quartz', css: '#e9eef7', maxStack: 10 },
+      { id: 'upgraded_engine', name: 'Upgraded Rocket Engine', kind: 'upgraded_engine', maxStack: 1 },
       { id: 'drill', name: 'Drill', kind: 'drill', maxStack: 1, tool: true },
       { id: 'planks', name: 'Planks', kind: 'planks', css: '#c88748', maxStack: 10 },
       { id: 'sticks', name: 'Sticks', kind: 'sticks', css: '#b9824c', maxStack: 10 },
@@ -2951,7 +3114,7 @@
     const itemById = Object.fromEntries(ITEM_TYPES.map(t => [t.id, t]));
     const SELL_PRICES = Object.freeze({
       ruby: 50, topaz: 40, jasper: 38, emerald: 65, diamond: 150, lapis: 55, amethyst: 85, onyx: 120,
-      axe: 20, wooden_axe: 35, wooden_pickaxe: 35, stone_axe: 55, stone_pickaxe: 55, iron_axe: 100, iron_pickaxe: 115, wooden_scythe: 35, stone_scythe: 55, iron_scythe: 100, copper_wire: 8, drill: 180,
+      axe: 20, wooden_axe: 35, wooden_pickaxe: 35, stone_axe: 55, stone_pickaxe: 55, iron_axe: 100, iron_pickaxe: 115, wooden_scythe: 35, stone_scythe: 55, iron_scythe: 100, copper_wire: 8, moon_quartz: 500, drill: 180,
       planks: 3, sticks: 2, stone: 2, iron_ore: 12, copper_ore: 14, iron_ingot: 30, copper_ingot: 36, furnace: 75, rocket_engine: 220, rocket: 500, launch_pad: 150, jerrycan: 80
     });
     const BUY_PRICES = Object.freeze({
@@ -2960,7 +3123,15 @@
     });
 
     const ROCKET_FUEL_CAPACITY = 100;
+    const UPGRADED_ROCKET_FUEL_CAPACITY = 200;
+    const ROCKET_FUEL_REFILL_AMOUNT_STANDARD = 100;
+    const ROCKET_FUEL_REFILL_AMOUNT_UPGRADED = 100;
     const ROCKET_FUEL_TIME_MS = 5000;
+    function getRocketFuelCapacity(pad) { return pad && pad.engineType === 'upgraded' ? UPGRADED_ROCKET_FUEL_CAPACITY : ROCKET_FUEL_CAPACITY; }
+    function getRocketFuelPercent(pad) {
+      const cap = getRocketFuelCapacity(pad);
+      return cap > 0 ? Math.max(0, Math.min(200, ((Number(pad?.fuel) || 0) / 100) * 100)) : 0;
+    }
     economyState.drillRefueling = null;
     economyState.drillRefuelingStartedAt = 0;
     const ROCKET_ATMOSPHERE_RADIUS = 300;
@@ -2985,6 +3156,20 @@
 
     // Build the visible model used both for world crystals and for the held item model.
     // `ghost` switches the material to a faint wireframe silhouette for collected crystals.
+    function createMoonQuartzVisual(scale = 1) {
+      const group = new THREE.Group();
+      const pale = new THREE.MeshStandardMaterial({ color: 0xe9eef7, roughness: 0.22, metalness: 0.08, emissive: 0x6f7b91, emissiveIntensity: 0.18 });
+      const glow = new THREE.MeshBasicMaterial({ color: 0xdfe9ff, transparent: true, opacity: 0.18, depthWrite: false });
+      const main = new THREE.Mesh(new THREE.OctahedronGeometry(0.34, 0), pale);
+      main.scale.set(0.85, 1.55, 0.85); main.position.y = 0.42; group.add(main);
+      const side = new THREE.Mesh(new THREE.OctahedronGeometry(0.23, 0), pale);
+      side.scale.set(0.72, 1.12, 0.72); side.position.set(0.22, 0.29, 0.04); side.rotation.z = 0.33; group.add(side);
+      const aura = new THREE.Mesh(new THREE.SphereGeometry(0.58, 12, 10), glow);
+      aura.position.y = 0.36; group.add(aura);
+      group.scale.setScalar(scale);
+      return group;
+    }
+
     function createCrystalVisual(typeId, ghost = false, scale = 1) {
       const data = crystalById[typeId];
       const group = new THREE.Group();
@@ -3038,7 +3223,7 @@
     // A permanent decorative market stall sits a short distance from the player's spawn.
     // It is part of the rotating planetSystem, so the same stall is visible in both the
     // playable world and the main-menu planet preview.
-    function createStallCrate(filledTypeId = null) {
+    function createStallCrate(filledTypeId = null, visualKind = 'crystal') {
       const crate = new THREE.Group();
       const wood = new THREE.MeshStandardMaterial({ color: 0x9b6338, roughness: 0.92 });
       const woodDark = new THREE.MeshStandardMaterial({ color: 0x674026, roughness: 0.98 });
@@ -3064,7 +3249,6 @@
         crate.add(rim);
       }
 
-      // Cross braces make the containers read clearly as wooden crates from the menu distance.
       const braceFront = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.62, 0.06), woodDark);
       braceFront.position.set(0, 0.40, -0.47);
       braceFront.rotation.z = 0.18;
@@ -3073,111 +3257,115 @@
       braceFront2.rotation.z = -0.18;
       crate.add(braceFront2);
 
-      if (filledTypeId) {
+      if (visualKind === 'crystal' && filledTypeId) {
         const crystal = createCrystalVisual(filledTypeId, false, 0.58);
         crystal.position.y = 0.72;
         crystal.rotation.y = Math.random() * Math.PI * 2;
         crate.add(crystal);
+      } else if (visualKind === 'hat' && filledTypeId) {
+        const hat = createHatVisual(filledTypeId);
+        hat.position.y = 0.70;
+        hat.rotation.y = Math.random() * Math.PI * 2;
+        hat.scale.setScalar(0.82);
+        crate.add(hat);
       }
 
       return crate;
     }
 
-    function createCrystalStall() {
-      const stall = new THREE.Group();
-      stall.name = 'CrystalMerchantStall';
-      // Collision footprint for the whole stall.  The physical model is larger than the
-      // player, so a simple oriented box keeps the player from walking through the stand.
-      stall.userData.collision = { halfX: 4.62, halfZ: 1.82, padding: 0.48 };
+    function createHatVisual(typeId, accentHex = null) {
+      const hat = new THREE.Group();
+      const black = new THREE.MeshStandardMaterial({ color: 0x101217, roughness: 0.9 });
+      const dark = new THREE.MeshStandardMaterial({ color: 0x252932, roughness: 0.86 });
+      const banana = new THREE.MeshStandardMaterial({ color: 0xf5d22f, roughness: 0.82 });
+      const bananaDark = new THREE.MeshStandardMaterial({ color: 0x8c6f11, roughness: 0.9 });
+      const colored = new THREE.MeshStandardMaterial({ color: accentHex == null ? 0x2e6fc0 : accentHex, roughness: 0.82 });
+      colored.userData.cosmeticRainbowPart = true;
+      const white = new THREE.MeshStandardMaterial({ color: 0xe9edf3, roughness: 0.86 });
 
-      const wood = new THREE.MeshStandardMaterial({ color: 0x8a5632, roughness: 0.9 });
-      const woodLight = new THREE.MeshStandardMaterial({ color: 0xb97b45, roughness: 0.88 });
-      const clothLight = new THREE.MeshStandardMaterial({ color: 0xf0dfbd, roughness: 0.95 });
-      const clothDark = new THREE.MeshStandardMaterial({ color: 0x2f78b7, roughness: 0.92 });
-      const signMat = new THREE.MeshStandardMaterial({ color: 0x6f4527, roughness: 0.92 });
-      const black = new THREE.MeshStandardMaterial({ color: 0x090a0d, roughness: 0.92 });
+      const makeBrim = (mat, radius = 0.46, depth = 0.08) => {
+        const brim = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius * 1.08, depth, 20), mat);
+        brim.position.y = 0.02;
+        return brim;
+      };
 
-      // Upright posts and top frame.
-      const postGeo = new THREE.CylinderGeometry(0.11, 0.13, 3.15, 8);
-      const postPositions = [
-        [-4.35, 1.58, -1.55], [4.35, 1.58, -1.55],
-        [-4.35, 1.58,  1.55], [4.35, 1.58,  1.55]
-      ];
-      for (const [x, y, z] of postPositions) {
-        const post = new THREE.Mesh(postGeo, wood);
-        post.position.set(x, y, z);
-        stall.add(post);
+      if (typeId === 'banana_skin_hat') {
+        // A connected banana-peel hat: three chunky curved peels share a small cap
+        // underneath, so the dark ends are attached instead of floating as rings.
+        const bananaMat = banana;
+        const darkMat = bananaDark;
+        const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.37, 0.16, 16), darkMat);
+        cap.position.y = 0.02;
+        hat.add(cap);
+
+        const bananaCurves = [
+          [new THREE.Vector3(-0.23,0.07,0.02), new THREE.Vector3(-0.38,0.28,0.02), new THREE.Vector3(-0.24,0.53,0.02), new THREE.Vector3(-0.05,0.58,0.02)],
+          [new THREE.Vector3(0.00,0.06,0.02), new THREE.Vector3(-0.02,0.32,0.02), new THREE.Vector3(0.10,0.56,0.02), new THREE.Vector3(0.24,0.63,0.02)],
+          [new THREE.Vector3(0.23,0.07,0.02), new THREE.Vector3(0.38,0.28,0.02), new THREE.Vector3(0.32,0.50,0.02), new THREE.Vector3(0.16,0.68,0.02)]
+        ];
+        bananaCurves.forEach((pts, idx) => {
+          const curve = new THREE.CatmullRomCurve3(pts);
+          const peel = new THREE.Mesh(new THREE.TubeGeometry(curve, 12, 0.105, 8, false), bananaMat);
+          peel.rotation.y = (idx - 1) * 0.10;
+          hat.add(peel);
+
+          const end = pts[pts.length - 1].clone();
+          const tip = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), darkMat);
+          tip.position.copy(end);
+          hat.add(tip);
+        });
+      } else if (typeId === 'fedora_hat') {
+        hat.add(makeBrim(accentHex == null ? black : colored, 0.48, 0.08));
+        const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.39, 0.46, 18), accentHex == null ? black : colored);
+        crown.position.y = 0.27;
+        hat.add(crown);
+        const band = new THREE.Mesh(new THREE.CylinderGeometry(0.355, 0.355, 0.075, 18), dark);
+        band.position.y = 0.18;
+        hat.add(band);
+      } else if (typeId === 'top_hat') {
+        hat.add(makeBrim(black, 0.50, 0.08));
+        const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.35, 0.68, 18), black);
+        crown.position.y = 0.40;
+        hat.add(crown);
+        const band = new THREE.Mesh(new THREE.CylinderGeometry(0.325, 0.325, 0.09, 18), dark);
+        band.position.y = 0.18;
+        hat.add(band);
+      } else if (typeId === 'baseball_hat') {
+        const cap = new THREE.Mesh(new THREE.SphereGeometry(0.46, 18, 10, 0, Math.PI * 2, 0, Math.PI * 0.58), colored);
+        cap.scale.y = 0.72;
+        cap.position.y = 0.18;
+        hat.add(cap);
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.06, 0.42), white);
+        panel.position.set(0, 0.33, -0.05);
+        panel.rotation.x = -0.12;
+        hat.add(panel);
+        const visor = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.40, 0.055, 16), colored);
+        visor.scale.z = 0.62;
+        visor.rotation.x = Math.PI / 2;
+        visor.position.set(0, 0.10, -0.43);
+        hat.add(visor);
       }
 
-      const topBeam = new THREE.Mesh(new THREE.BoxGeometry(9.05, 0.22, 3.35), wood);
-      topBeam.position.y = 3.03;
-      stall.add(topBeam);
+      hat.userData.cosmeticHatVisual = true;
+      return hat;
+    }
 
-      // Striped awning, split into broad alternating panels.
-      const awning = new THREE.Group();
-      const panelCount = 7;
-      for (let i = 0; i < panelCount; i++) {
-        const panel = new THREE.Mesh(
-          new THREE.BoxGeometry(9.05 / panelCount + 0.015, 0.12, 3.55),
-          i % 2 === 0 ? clothLight : clothDark
-        );
-        panel.position.set(-4.525 + (i + 0.5) * (9.05 / panelCount), 3.22, 0);
-        panel.rotation.x = -0.035;
-        awning.add(panel);
-      }
-      stall.add(awning);
-
-      // Front canopy valance.
-      const valance = new THREE.Mesh(new THREE.BoxGeometry(9.05, 0.48, 0.13), clothLight);
-      valance.position.set(0, 2.91, -1.69);
-      stall.add(valance);
-
-      // Wooden counter.
-      const counterLegGeo = new THREE.BoxGeometry(0.28, 1.35, 0.28);
-      for (const x of [-3.8, 3.8]) {
-        for (const z of [-1.15, 1.15]) {
-          const leg = new THREE.Mesh(counterLegGeo, wood);
-          leg.position.set(x, 0.68, z);
-          stall.add(leg);
-        }
-      }
-      const counterBase = new THREE.Mesh(new THREE.BoxGeometry(8.55, 0.18, 2.55), wood);
-      counterBase.position.y = 1.36;
-      stall.add(counterBase);
-      const counterTop = new THREE.Mesh(new THREE.BoxGeometry(8.75, 0.18, 2.72), woodLight);
-      counterTop.position.y = 1.50;
-      stall.add(counterTop);
-
-      // Eight crates: four different crystal types, four empty.
-      const stockedTypes = ['ruby', 'emerald', 'diamond', 'amethyst'];
-      const crateZ = [-0.70, 0.70];
-      const crateX = [-3.25, -1.08, 1.08, 3.25];
-      for (let row = 0; row < 2; row++) {
-        for (let col = 0; col < 4; col++) {
-          const isStocked = row === 0;
-          const typeId = isStocked ? stockedTypes[col] : null;
-          const crate = createStallCrate(typeId);
-          crate.position.set(crateX[col], 1.58, crateZ[row]);
-          crate.rotation.y = (col - 1.5) * 0.025 + (row ? -0.025 : 0.025);
-          stall.add(crate);
-        }
-      }
-
-      // A small sign on the front gives the stall some identity without adding UI interaction.
-      const sign = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.78, 0.12), signMat);
+    function addStallSign(stall, label, accentHex, signMatHex) {
+      const sign = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.78, 0.12), new THREE.MeshStandardMaterial({ color: signMatHex, roughness: 0.92 }));
       sign.position.set(0, 2.20, -1.73);
       stall.add(sign);
+
       const signTextureCanvas = document.createElement('canvas');
       signTextureCanvas.width = 512;
       signTextureCanvas.height = 128;
       const ctx = signTextureCanvas.getContext('2d');
-      ctx.fillStyle = '#6f4527';
+      ctx.fillStyle = '#' + signMatHex.toString(16).padStart(6, '0');
       ctx.fillRect(0, 0, 512, 128);
       ctx.fillStyle = '#f4ead8';
-      ctx.font = 'bold 56px Segoe UI, Arial, sans-serif';
+      ctx.font = 'bold 48px Segoe UI, Arial, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('CRYSTALS', 256, 64);
+      ctx.fillText(label, 256, 64);
       const signTexture = new THREE.CanvasTexture(signTextureCanvas);
       signTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
       const signFace = new THREE.Mesh(
@@ -3186,56 +3374,128 @@
       );
       signFace.position.set(0, 2.20, -1.795);
       stall.add(signFace);
+      return sign;
+    }
 
-      // NPC uses the same capsule body geometry as the player, recolored black, with a black fedora.
-      const npc = new THREE.Group();
-      npc.name = 'CrystalMerchantNPC';
-      const npcBodyGeo = (typeof THREE.CapsuleGeometry === 'function')
-        ? new THREE.CapsuleGeometry(0.45, 1.0, 4, 8)
-        : new THREE.CylinderGeometry(0.45, 0.45, 1.9, 8);
-      const npcBody = new THREE.Mesh(npcBodyGeo, black);
-      npcBody.position.y = 0.95;
-      npc.add(npcBody);
+    function createCrystalStall() {
+      const stall = new THREE.Group();
+      stall.name = 'CrystalMerchantStall';
+      stall.userData.collision = { halfX: 4.62, halfZ: 1.82, padding: 0.48 };
 
-      const hatBrim = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.68, 0.10, 16), black);
-      hatBrim.position.y = 1.95;
-      npc.add(hatBrim);
-      const hatCrown = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.52, 0.54, 16), black);
-      hatCrown.position.y = 2.24;
-      npc.add(hatCrown);
-      const hatBand = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.46, 0.10, 16), new THREE.MeshStandardMaterial({ color: 0x15171b, roughness: 0.8 }));
-      hatBand.position.y = 2.06;
-      npc.add(hatBand);
+      const wood = new THREE.MeshStandardMaterial({ color: 0x8a5632, roughness: 0.9 });
+      const woodLight = new THREE.MeshStandardMaterial({ color: 0xb97b45, roughness: 0.88 });
+      const clothLight = new THREE.MeshStandardMaterial({ color: 0xf0dfbd, roughness: 0.95 });
+      const clothDark = new THREE.MeshStandardMaterial({ color: 0x2f78b7, roughness: 0.92 });
+      const signMatHex = 0x6f4527;
+      const black = new THREE.MeshStandardMaterial({ color: 0x090a0d, roughness: 0.92 });
 
-      // Position the stall just beside spawn, with the NPC standing next to its right side.
-      // A slight tangent offset keeps the merchant close to the starting area without covering the GPS pin.
-      const stallDir = new THREE.Vector3(0.105, 1, 0).normalize();
-      const groundRadius = PLANET_RADIUS + heightAt(stallDir);
-      stall.position.copy(stallDir).multiplyScalar(groundRadius + 0.02);
-      stall.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), stallDir);
+      const postGeo = new THREE.CylinderGeometry(0.11, 0.13, 3.15, 8);
+      const postPositions = [[-4.35,1.58,-1.55],[4.35,1.58,-1.55],[-4.35,1.58,1.55],[4.35,1.58,1.55]];
+      for (const [x,y,z] of postPositions) { const post = new THREE.Mesh(postGeo, wood); post.position.set(x,y,z); stall.add(post); }
+      const topBeam = new THREE.Mesh(new THREE.BoxGeometry(9.05,0.22,3.35), wood); topBeam.position.y=3.03; stall.add(topBeam);
 
-      // Face the stall directly toward the spawn area while keeping its base level with
-      // the spherical ground. Local +Y stays aligned to the surface normal.
-      const spawnReferenceDir = new THREE.Vector3(0, 1, 0);
-      const spawnTangent = spawnReferenceDir.clone().sub(stallDir.clone().multiplyScalar(spawnReferenceDir.dot(stallDir))).normalize();
-      const stallRight = new THREE.Vector3().crossVectors(spawnTangent, stallDir).normalize();
-      const stallBasis = new THREE.Matrix4().makeBasis(stallRight, stallDir, spawnTangent.clone().negate());
-      stall.quaternion.setFromRotationMatrix(stallBasis);
+      const awning = new THREE.Group();
+      const panelCount = 7;
+      for (let i=0;i<panelCount;i++) {
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(9.05/panelCount+0.015,0.12,3.55), i%2===0?clothLight:clothDark);
+        panel.position.set(-4.525+(i+0.5)*(9.05/panelCount),3.22,0); panel.rotation.x=-0.035; awning.add(panel);
+      }
+      stall.add(awning);
+      const valance = new THREE.Mesh(new THREE.BoxGeometry(9.05,0.48,0.13), clothLight); valance.position.set(0,2.91,-1.69); stall.add(valance);
+
+      const counterLegGeo = new THREE.BoxGeometry(0.28,1.35,0.28);
+      for (const x of [-3.8,3.8]) for (const z of [-1.15,1.15]) { const leg=new THREE.Mesh(counterLegGeo,wood); leg.position.set(x,0.68,z); stall.add(leg); }
+      const counterBase = new THREE.Mesh(new THREE.BoxGeometry(8.55,0.18,2.55), wood); counterBase.position.y=1.36; stall.add(counterBase);
+      const counterTop = new THREE.Mesh(new THREE.BoxGeometry(8.75,0.18,2.72), woodLight); counterTop.position.y=1.50; stall.add(counterTop);
+
+      const stockedTypes = ['ruby','emerald','diamond','amethyst'];
+      const crateZ=[-0.70,0.70], crateX=[-3.25,-1.08,1.08,3.25];
+      for (let row=0;row<2;row++) for (let col=0;col<4;col++) {
+        const crate = createStallCrate(row===0?stockedTypes[col]:null, 'crystal');
+        crate.position.set(crateX[col],1.58,crateZ[row]); crate.rotation.y=(col-1.5)*0.025+(row?-0.025:0.025); stall.add(crate);
+      }
+      addStallSign(stall,'CRYSTALS',0x2f78b7,signMatHex);
+
+      const npc = new THREE.Group(); npc.name='CrystalMerchantNPC';
+      const npcBodyGeo = typeof THREE.CapsuleGeometry==='function'?new THREE.CapsuleGeometry(0.45,1.0,4,8):new THREE.CylinderGeometry(0.45,0.45,1.9,8);
+      const npcBody = new THREE.Mesh(npcBodyGeo,black); npcBody.position.y=0.95; npc.add(npcBody);
+      const hatBrim = new THREE.Mesh(new THREE.CylinderGeometry(0.62,0.68,0.10,16),black); hatBrim.position.y=1.95; npc.add(hatBrim);
+      const hatCrown = new THREE.Mesh(new THREE.CylinderGeometry(0.44,0.52,0.54,16),black); hatCrown.position.y=2.24; npc.add(hatCrown);
+      const hatBand = new THREE.Mesh(new THREE.CylinderGeometry(0.46,0.46,0.10,16),new THREE.MeshStandardMaterial({color:0x15171b,roughness:0.8})); hatBand.position.y=2.06; npc.add(hatBand);
+
+      const stallDir = new THREE.Vector3(0.105,1,0).normalize();
+      const groundRadius=PLANET_RADIUS+heightAt(stallDir); stall.position.copy(stallDir).multiplyScalar(groundRadius+0.02);
+      const spawnTangent=new THREE.Vector3(0,1,0).sub(stallDir.clone().multiplyScalar(stallDir.y)).normalize();
+      const stallRight=new THREE.Vector3().crossVectors(spawnTangent,stallDir).normalize();
+      stall.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(stallRight,stallDir,spawnTangent.clone().negate()));
       planetSystem.add(stall);
-
-      const npcLocal = new THREE.Vector3(5.55, 0.02, -0.30);
-      npc.position.copy(npcLocal);
-      npc.scale.setScalar(0.76);
-      stall.add(npc);
-
-      // Keep a direct reference so the interaction system can reliably find the merchant.
-      stall.userData.merchantNPC = npc;
-
+      npc.position.set(5.55,0.02,-0.30); npc.scale.setScalar(0.76); stall.add(npc);
+      stall.userData.merchantNPC=npc;
       return stall;
+    }
+
+    function createHatStall() {
+      const stall = new THREE.Group();
+      stall.name = 'HatMerchantStall';
+      stall.userData.collision = { halfX: 4.62, halfZ: 1.82, padding: 0.48 };
+
+      const wood = new THREE.MeshStandardMaterial({ color: 0x8a5632, roughness: 0.9 });
+      const woodLight = new THREE.MeshStandardMaterial({ color: 0xb97b45, roughness: 0.88 });
+      const clothLight = new THREE.MeshStandardMaterial({ color: 0xf0dfbd, roughness: 0.95 });
+      const clothDark = new THREE.MeshStandardMaterial({ color: 0xf28a2e, roughness: 0.92 });
+      const npcOrange = new THREE.MeshStandardMaterial({ color: 0xf07824, roughness: 0.9 });
+      const hatGreen = new THREE.MeshStandardMaterial({ color: 0x2e9b48, roughness: 0.86 });
+
+      const postGeo=new THREE.CylinderGeometry(0.11,0.13,3.15,8);
+      for (const [x,y,z] of [[-4.35,1.58,-1.55],[4.35,1.58,-1.55],[-4.35,1.58,1.55],[4.35,1.58,1.55]]) { const post=new THREE.Mesh(postGeo,wood); post.position.set(x,y,z); stall.add(post); }
+      const topBeam=new THREE.Mesh(new THREE.BoxGeometry(9.05,0.22,3.35),wood); topBeam.position.y=3.03; stall.add(topBeam);
+      const awning=new THREE.Group();
+      for(let i=0;i<7;i++){ const panel=new THREE.Mesh(new THREE.BoxGeometry(9.05/7+0.015,0.12,3.55),i%2===0?clothLight:clothDark); panel.position.set(-4.525+(i+0.5)*(9.05/7),3.22,0); panel.rotation.x=-0.035; awning.add(panel); }
+      stall.add(awning);
+      const valance=new THREE.Mesh(new THREE.BoxGeometry(9.05,0.48,0.13),clothLight); valance.position.set(0,2.91,-1.69); stall.add(valance);
+      const counterLegGeo=new THREE.BoxGeometry(0.28,1.35,0.28);
+      for(const x of [-3.8,3.8]) for(const z of [-1.15,1.15]){const leg=new THREE.Mesh(counterLegGeo,wood);leg.position.set(x,0.68,z);stall.add(leg);}
+      const counterBase=new THREE.Mesh(new THREE.BoxGeometry(8.55,0.18,2.55),wood);counterBase.position.y=1.36;stall.add(counterBase);
+      const counterTop=new THREE.Mesh(new THREE.BoxGeometry(8.75,0.18,2.72),woodLight);counterTop.position.y=1.50;stall.add(counterTop);
+
+      const stockedTypes=['banana_skin_hat','fedora_hat','top_hat','baseball_hat'];
+      const crateZ=[-0.70,0.70], crateX=[-3.25,-1.08,1.08,3.25];
+      for(let row=0;row<2;row++) for(let col=0;col<4;col++){
+        const crate=createStallCrate(row===0?stockedTypes[col]:null,'hat');
+        crate.position.set(crateX[col],1.58,crateZ[row]); crate.rotation.y=(col-1.5)*0.025+(row?-0.025:0.025); stall.add(crate);
+      }
+      // Give the hat stall its own visual sign, but do not wire any interaction to it.
+      addStallSign(stall,'HATS',0xf28a2e,0x7a3e1c);
+
+      const npc=new THREE.Group(); npc.name='HatStallNPC';
+      const npcBodyGeo=typeof THREE.CapsuleGeometry==='function'?new THREE.CapsuleGeometry(0.45,1.0,4,8):new THREE.CylinderGeometry(0.45,0.45,1.9,8);
+      const npcBody=new THREE.Mesh(npcBodyGeo,npcOrange); npcBody.position.y=0.95; npc.add(npcBody);
+      const hatBrim=new THREE.Mesh(new THREE.CylinderGeometry(0.62,0.68,0.10,16),hatGreen); hatBrim.position.y=1.95; npc.add(hatBrim);
+      const hatCrown=new THREE.Mesh(new THREE.CylinderGeometry(0.44,0.52,0.54,16),hatGreen); hatCrown.position.y=2.24; npc.add(hatCrown);
+      const hatBand=new THREE.Mesh(new THREE.CylinderGeometry(0.46,0.46,0.10,16),new THREE.MeshStandardMaterial({color:0x237538,roughness:0.82})); hatBand.position.y=2.06; npc.add(hatBand);
+
+      const baseDir=stallDirForHatStall();
+      const groundRadius=PLANET_RADIUS+heightAt(baseDir);
+      stall.position.copy(baseDir).multiplyScalar(groundRadius+0.02);
+      const spawnTangent=new THREE.Vector3(0,1,0).sub(baseDir.clone().multiplyScalar(baseDir.y)).normalize();
+      const stallRight=new THREE.Vector3().crossVectors(spawnTangent,baseDir).normalize();
+      stall.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(stallRight,baseDir,spawnTangent.clone().negate()));
+      planetSystem.add(stall);
+      npc.position.set(5.55,0.02,-0.30); npc.scale.setScalar(0.76); stall.add(npc);
+      stall.userData.merchantNPC=npc;
+      return stall;
+    }
+
+    function stallDirForHatStall() {
+      const base = new THREE.Vector3(0.105,1,0).normalize();
+      const tangent = new THREE.Vector3(1,0,0).sub(base.clone().multiplyScalar(base.x)).normalize();
+      const angle = 0.17; // ~10–11 world units of separation at the planet's surface
+      return base.clone().multiplyScalar(Math.cos(angle)).add(tangent.multiplyScalar(Math.sin(angle))).normalize();
     }
 
 
     const crystalStall = createCrystalStall();
+    const hatStall = createHatStall();
 
     // ---------- merchant UI 3D preview ----------
     // The merchant preview is rendered in its own small scene so the in-world NPC model
@@ -3317,6 +3577,79 @@
 
     setupMerchantPreview();
 
+    // ---------- character customization UI ----------
+    const cosmeticOverlay = document.getElementById('cosmeticOverlay');
+    const cosmeticShopView = document.getElementById('cosmeticShopView');
+    const cosmeticColorGrid = document.getElementById('cosmeticColorGrid');
+    const cosmeticHatGrid = document.getElementById('cosmeticHatGrid');
+    const cosmeticClose = document.getElementById('cosmeticClose');
+    const cosmeticGemAmount = document.getElementById('cosmeticGemAmount');
+
+    // The customization menu intentionally has no 3D preview.
+    // The game character itself is updated live; the shop UI is kept focused on colors/hats.
+    function ensureCosmeticPreview(){ }
+    function updateCosmeticPreview(){
+      if(cosmeticGemAmount) cosmeticGemAmount.textContent=String(accountGems);
+    }
+    function renderCosmeticShop(){
+      if(!cosmeticColorGrid||!cosmeticHatGrid)return;
+      cosmeticGemAmount.textContent=String(accountGems);
+      cosmeticColorGrid.replaceChildren(); cosmeticHatGrid.replaceChildren();
+      for(const color of COSMETIC_COLORS){
+        const b=document.createElement('button'); b.type='button'; b.className='cosmeticColorCard'+(accountCosmetics.ownedColors.includes(color.id)?' owned':'')+(accountCosmetics.equippedColor===color.id?' equipped':'');
+        const sw=document.createElement('span'); sw.className='cosmeticColorSwatch'+(color.rainbow?' cosmeticRainbowSwatch':''); if(!color.rainbow) sw.style.background='#'+color.hex.toString(16).padStart(6,'0');
+        const title=document.createElement('span'); title.className='cosmeticCardTitle'; title.textContent=color.name;
+        const sub=document.createElement('span'); sub.className='cosmeticCardSub'; sub.textContent=accountCosmetics.ownedColors.includes(color.id)?(accountCosmetics.equippedColor===color.id?'EQUIPPED':'Click to equip'):'Buy this color';
+        const price=document.createElement('span'); price.className='cosmeticPrice'; price.textContent=color.free?'FREE':'◆ '+(color.cost||0);
+        b.append(sw,title,price,sub); b.onclick=()=>purchaseOrEquipColor(color.id); cosmeticColorGrid.appendChild(b);
+      }
+      for(const hat of COSMETIC_HATS){
+        if(hat.colored){
+          for(const color of COSMETIC_COLORS){
+            const id=cosmeticHatKey(hat.id,color.id); const owned=accountCosmetics.ownedHats.includes(id); const equipped=accountCosmetics.equippedHat===id; const b=makeCosmeticHatCard(hat,color,id,owned,equipped); cosmeticHatGrid.appendChild(b);
+          }
+        }else{
+          const id=hat.id; const owned=accountCosmetics.ownedHats.includes(id); const equipped=accountCosmetics.equippedHat===id; cosmeticHatGrid.appendChild(makeCosmeticHatCard(hat,null,id,owned,equipped));
+        }
+      }
+    }
+    function makeCosmeticHatCard(hat,color,id,owned,equipped){
+      const b=document.createElement('button'); b.type='button'; b.className='cosmeticHatCard'+(owned?' owned':'')+(equipped?' equipped':'');
+      const p=document.createElement('span'); p.className='cosmeticHatPreview'; p.textContent=hat.id==='banana_skin_hat'?'🍌':hat.id==='top_hat'?'🎩':'◆';
+      if(color) p.style.color='#'+color.hex.toString(16).padStart(6,'0');
+      const title=document.createElement('span'); title.className='cosmeticCardTitle'; title.textContent=hat.name+(color?' · '+color.name:'');
+      const sub=document.createElement('span'); sub.className='cosmeticCardSub'; sub.textContent=owned?(equipped?'EQUIPPED':'Click to equip'):'Click to buy';
+      const price=document.createElement('span'); price.className='cosmeticPrice'; price.textContent=owned?'OWNED':'◆ '+hat.cost;
+      b.append(p,title,price,sub); b.onclick=()=>purchaseOrEquipHat(id); return b;
+    }
+    function purchaseOrEquipColor(colorId){
+      if(accountCosmetics.ownedColors.includes(colorId)){ equipCosmeticColor(colorId); return; }
+      const color=cosmeticColorById[colorId]; if(!currentAccountUser){ alert('Log in to use account cosmetics.'); return; }
+      if(accountGems<(color.cost||0)){ return; }
+      accountGems-=color.cost||0; accountCosmetics.ownedColors.push(colorId); equipCosmeticColor(colorId); persistAchievementState();
+    }
+    function equipCosmeticColor(colorId){ if(!accountCosmetics.ownedColors.includes(colorId))return; accountCosmetics.equippedColor=colorId; applyPlayerCosmetics(); persistAchievementState(); updateHomeGemsAndCosmeticsUI(); }
+    function purchaseOrEquipHat(hatId){
+      if(accountCosmetics.ownedHats.includes(hatId)){ equipCosmeticHat(hatId); return; }
+      const [baseId,colorId]=String(hatId).split(':'); const hat=cosmeticHatById[baseId]; if(!hat||!currentAccountUser)return;
+      if(accountGems<hat.cost)return; accountGems-=hat.cost; accountCosmetics.ownedHats.push(hatId); equipCosmeticHat(hatId); persistAchievementState();
+    }
+    function equipCosmeticHat(hatId){ accountCosmetics.equippedHat = accountCosmetics.equippedHat===hatId ? null : hatId; applyPlayerCosmetics(); persistAchievementState(); updateHomeGemsAndCosmeticsUI(); }
+    function openCosmeticShop(){
+      if(!currentAccountUser){ openAccount(); return true; }
+      cosmeticShopOpen=true; state.paused=true; if(document.pointerLockElement===canvas)document.exitPointerLock();
+      cosmeticOverlay.classList.remove('hidden'); cosmeticOverlay.setAttribute('aria-hidden','false'); ensureCosmeticPreview(); renderCosmeticShop(); updateCosmeticPreview();
+      return true;
+    }
+    function closeCosmeticShop(){ cosmeticShopOpen=false; cosmeticOverlay.classList.add('hidden'); cosmeticOverlay.setAttribute('aria-hidden','true'); if(state.gameState==='playing'){state.paused=false;attemptPointerLock();} }
+    const findNearbyHatMerchant=()=>{
+      const merchant=hatStall?.userData?.merchantNPC; if(!merchant||!hatStall)return null;
+      const world=new THREE.Vector3(); merchant.getWorldPosition(world); const local=planetSystem.worldToLocal(world); return player.position.distanceTo(local)<=7.5?merchant:null;
+    };
+    function openNearbyHatShop(){ if(cosmeticShopOpen||state.gameState!=='playing')return false; if(!findNearbyHatMerchant())return false; return openCosmeticShop(); }
+    cosmeticClose.addEventListener('click',closeCosmeticShop);
+    cosmeticOverlay.addEventListener('click',e=>{if(e.target===cosmeticOverlay)closeCosmeticShop();});
+
     // Every spawned crystal keeps a ghost at the exact same location. When it is picked up,
     // the solid model disappears, the ghost appears, and a respawn rotation target is stored.
     const crystalSpawns = worldState.crystals;
@@ -3367,6 +3700,8 @@
         placed++;
       }
     }
+
+    scatterMoonQuartz(60);
 
     // ---------- player ----------
     const player = new THREE.Object3D();
@@ -3874,10 +4209,9 @@
         return;
       }
 
-      const moving = (isPhysicalKeyDown('KeyW') || isPhysicalKeyDown('KeyS') || isPhysicalKeyDown('KeyA') || isPhysicalKeyDown('KeyD') ||
-        isPhysicalKeyDown('ArrowUp') || isPhysicalKeyDown('ArrowDown') || isPhysicalKeyDown('ArrowLeft') || isPhysicalKeyDown('ArrowRight'));
+      const moving = isActionDown('moveForward') || isActionDown('moveBackward') || isActionDown('moveLeft') || isActionDown('moveRight');
       const grounded = playerState.heightOffset <= 0.02 && Math.abs(playerState.verticalVelocity) < 0.45;
-      const sprinting = isPhysicalKeyDown('ShiftLeft') || isPhysicalKeyDown('ShiftRight');
+      const sprinting = isActionDown('sprint');
       const wantsBob = moving && grounded;
       const targetStrength = wantsBob ? (sprinting ? 1.0 : 0.62) : 0;
       heldItemBobAnim.strength = THREE.MathUtils.damp(heldItemBobAnim.strength, targetStrength, 16, delta);
@@ -4631,6 +4965,18 @@
         output: { typeId: 'iron_scythe', count: 1 }
       },
       {
+        id: 'copper_wire',
+        name: 'Copper Wire',
+        ingredients: [{ typeId: 'copper_ingot', count: 1 }],
+        output: { typeId: 'copper_wire', count: 3 }
+      },
+      {
+        id: 'upgraded_engine',
+        name: 'Upgraded Rocket Engine',
+        ingredients: [{ typeId: 'moon_quartz', count: 2 }, { typeId: 'rocket_engine', count: 1 }, { typeId: 'copper_wire', count: 3 }],
+        output: { typeId: 'upgraded_engine', count: 1 }
+      },
+      {
         id: 'woven_grass_fiber',
         name: 'Woven Grass Fiber',
         ingredients: [{ typeId: 'grass_fiber', count: 6 }],
@@ -4730,6 +5076,10 @@
       addItemToInventory(recipe.output.typeId, recipe.output.count, craftedItem.tool ? getToolMaxDurability(craftedItem) : null);
 
       const outputName = itemById[recipe.output.typeId].name;
+      if (itemById[recipe.output.typeId] && itemById[recipe.output.typeId].tool) awardAchievement('first_tool');
+      if (recipe.output.typeId === 'rocket') awardAchievement('first_rocket');
+      if (/^stone_/.test(recipe.output.typeId) && itemById[recipe.output.typeId] && itemById[recipe.output.typeId].tool) awardAchievement('first_stone_tool');
+      if (recipe.output.typeId === 'furnace') awardAchievement('first_furnace');
       craftingStatusEl.textContent = 'Crafted ' + recipe.output.count + ' × ' + outputName + '.';
       updateCraftingUI();
       updateInventoryUI();
@@ -5012,6 +5362,7 @@
         const f=furnace.inventory;
         f.fuel.count--; if (f.fuel.count<=0) f.fuel=null;
         const resultType = f.input.typeId==='copper_ore' ? 'copper_ingot' : 'iron_ingot';
+        if (resultType === 'iron_ingot') awardAchievement('first_iron_ingot');
         f.input.count--; if (f.input.count<=0) f.input=null;
         if (!f.output) f.output={typeId:resultType,count:1}; else f.output.count++;
         furnace.smeltStartedAt=0;
@@ -5028,6 +5379,7 @@
 
     function openFurnace(furnace) {
       if (!furnace || state.gameState!=='playing') return;
+      awardAchievement('use_furnace');
       activeFurnace=furnace; uiState.furnaceOpen=true; state.paused=true; furnaceSelectedSlot='fuel';
       document.getElementById('furnaceOverlay').classList.remove('hidden');
       if (document.pointerLockElement===canvas) document.exitPointerLock();
@@ -5235,13 +5587,12 @@
 
     function isRocketFlightInputActive() {
       if (!playerState.inRocket) return false;
-      const keys = ['KeyW','KeyA','KeyS','KeyD','Space','ShiftLeft','ShiftRight'];
-      return keys.some(k => !!systemState.keys[k]);
+      return ['moveForward','moveBackward','moveLeft','moveRight','jump','sprint'].some(action => isActionDown(action));
     }
 
     function isPlayerMovingForParticles() {
       if (playerState.inRocket) return false;
-      return ['KeyW','KeyA','KeyS','KeyD'].some(k => !!systemState.keys[k]);
+      return ['moveForward','moveBackward','moveLeft','moveRight'].some(action => isActionDown(action));
     }
 
     function spawnLandingDust(position, normal) {
@@ -5448,7 +5799,9 @@
       rain: new Audio('audio/rain.mp3'),
       jumpLanding: new Audio('audio/jump-landing.mp3'),
       land2: new Audio('audio/land2.mp3'),
-      drill: new Audio('audio/drill.mp3')
+      drill: new Audio('audio/drill.mp3'),
+      achievement: new Audio('audio/achievement-unlock.mp3'),
+      moonQuartzPickup: new Audio('audio/moon-quartz-pickup.mp3')
     };
     audioBank.footsteps.loop = true;
     audioBank.river.loop = true;
@@ -5463,7 +5816,7 @@
       const base = audioBank[key];
       if (!base) return;
       // Clone one-shot sounds so repeated impacts do not cut each other off.
-      if (key === 'pickaxe' || key === 'chop' || key === 'uiClick' || key === 'crystalPickup' || key === 'jumpLanding' || key === 'land2' || key === 'rocketLaunch' || key === 'spaceAtmosphereBoom' || key === 'drill') {
+      if (key === 'pickaxe' || key === 'chop' || key === 'uiClick' || key === 'crystalPickup' || key === 'moonQuartzPickup' || key === 'jumpLanding' || key === 'land2' || key === 'rocketLaunch' || key === 'spaceAtmosphereBoom' || key === 'drill' || key === 'achievement') {
         const sound = base.cloneNode(true);
         sound.volume = Math.max(0, Math.min(1, volume * settingsMasterVolume));
         sound.playbackRate = playbackRate;
@@ -5590,6 +5943,643 @@
     const playButton = document.getElementById("playButton");
     const homeSettingsButton = document.getElementById("homeSettingsButton");
     const loadGameButton = document.getElementById("loadGameButton");
+
+    // ---------- achievements (account-wide, stored with the Supabase account) ----------
+    // Gems are awarded from the achievement difficulty score discussed for each advancement.
+    // Scores 1-4 earn 5 gems; 5-100 map to tier rewards 10-100.
+    function achievementGemReward(difficulty) {
+      const score = Math.max(1, Math.min(100, Number(difficulty) || 1));
+      return score < 5 ? 5 : Math.min(100, Math.ceil(score / 10) * 10);
+    }
+    const ACHIEVEMENT_DIFFICULTIES = {
+      spawn_ivis:1, first_crystal:2, all_crystals:18, first_tree:3, first_tool:5, first_stone_tool:8,
+      first_iron_ingot:15, first_furnace:10, use_furnace:12, buy_merchant:6, sell_merchant:6, first_100_credits:22,
+      far_from_home:17, reach_moon:28, land_moon:35, return_moon:40, reach_cordelia:45, land_cordelia:52,
+      return_cordelia:58, catalogued:63, away_from_home:48, total_flight_distance:55, first_rocket:30,
+      first_launch_pad:24, fuel_rocket:38, launch_first_space:32, voyager:62, long_spaceflight_land:72,
+      takeoff_100:68, low_fuel_return:76, safe_flight:66, fuel_emergency:58, full_day_night:43, first_night:20,
+      stone_20:14, iron_20:25, credits_1000:70, low_durability:34, tough_nut:64, space_10min:88, mir_station:98
+    };
+
+    const ACHIEVEMENTS = [
+      { id: 'spawn_ivis', name: 'Welcome Home!', requirement: 'Spawn on Ivis for the first time.', icon: '⌂' },
+      { id: 'first_crystal', name: 'Ooh, Shiny!', requirement: 'Collect your first crystal.', icon: '◆' },
+      { id: 'all_crystals', name: 'Collectionist', requirement: 'Collect one of every crystal type.', icon: '✦' },
+      { id: 'first_tree', name: 'Off with the stump!', requirement: 'Chop your first tree.', icon: '♣' },
+      { id: 'first_tool', name: 'Handy!', requirement: 'Craft your first tool.', icon: '⚒' },
+      { id: 'first_stone_tool', name: 'Upgrade!', requirement: 'Craft your first stone tool.', icon: '◆' },
+      { id: 'first_iron_ingot', name: 'This one will last!', requirement: 'Smelt your first iron ingot.', icon: '▣' },
+      { id: 'first_furnace', name: 'Burner 100', requirement: 'Craft your first furnace.', icon: '▤' },
+      { id: 'use_furnace', name: 'ITS BURNING!!!', requirement: 'Use a furnace for the first time.', icon: '🔥' },
+      { id: 'buy_merchant', name: 'Thanks for scamming me!', requirement: 'Buy something from the merchant.', icon: '¢' },
+      { id: 'sell_merchant', name: 'Ill take that off yer hands!', requirement: 'Sell something to the merchant.', icon: '↗' },
+      { id: 'first_100_credits', name: 'Business booming!', requirement: 'Earn your first 100 Credits.', icon: '100' },
+      { id: 'far_from_home', name: 'Far from home', requirement: 'Travel 1000 units away from Ivis.', icon: '⇢' },
+      { id: 'reach_moon', name: 'Artemis II', requirement: 'Reach the Moon for the first time.', icon: '☾' },
+      { id: 'land_moon', name: 'One small step for a man', requirement: 'Land on the Moon safely.', icon: '◐' },
+      { id: 'return_moon', name: 'Back home!', requirement: 'Return from the Moon to Ivis.', icon: '⌂' },
+      { id: 'reach_cordelia', name: 'An alien world', requirement: 'Reach Cordelia for the first time.', icon: '◉' },
+      { id: 'land_cordelia', name: 'Sandy!', requirement: 'Land on Cordelia safely.', icon: '≈' },
+      { id: 'return_cordelia', name: 'East, West, Home is best!', requirement: 'Return from Cordelia.', icon: '⌂' },
+      { id: 'catalogued', name: 'Catalogued', requirement: 'Visit every currently available celestial body.', icon: '✧' },
+      { id: 'away_from_home', name: 'Земля в иллюминаторе', requirement: 'Spend 5 minutes away from Ivis.', icon: '◎' },
+      { id: 'total_flight_distance', name: 'That mile counter!', requirement: 'Travel 10000 units across all flights combined.', icon: '↝' },
+      { id: 'first_rocket', name: 'Space X', requirement: 'Build your first rocket.', icon: '🚀' },
+      { id: 'first_launch_pad', name: 'I hope it wont fall over!', requirement: 'Place your first launchpad.', icon: '▰' },
+      { id: 'fuel_rocket', name: 'Expensive Boom!', requirement: 'Fuel a rocket completely.', icon: '⛽' },
+      { id: 'launch_first_space', name: 'TAKEOFF!', requirement: 'Launch into space for the first time.', icon: '↑' },
+      { id: 'voyager', name: 'Voyager', requirement: 'Fly 3000 units in a single flight.', icon: '➜' },
+      { id: 'long_spaceflight_land', name: 'Back Home (safely!)', requirement: 'Successfully land after a 5 minute spaceflight.', icon: '⌂' },
+      { id: 'takeoff_100', name: 'Takeoff 100', requirement: 'Take off from every planet/moon that allows it.', icon: '✈' },
+      { id: 'low_fuel_return', name: 'Survived by a whisker', requirement: 'Return to Ivis with under 10% fuel remaining.', icon: '10%' },
+      { id: 'safe_flight', name: 'Better then Space X!', requirement: 'Complete a flight without crashing.', icon: '✓' },
+      { id: 'fuel_emergency', name: 'Dont worry it happens to the worst of us!', requirement: 'Run out of fuel in space and trigger emergency recovery.', icon: '!' },
+      { id: 'full_day_night', name: 'Day and Night', requirement: 'Survive your first full day/night cycle.', icon: '◒' },
+      { id: 'first_night', name: "You didn't die!", requirement: 'Survive your first night.', icon: '☾' },
+      { id: 'stone_20', name: 'Каменщик', requirement: 'Mine 20 stone.', icon: '20' },
+      { id: 'iron_20', name: 'Iron ore, Best ore', requirement: 'Mine 20 iron.', icon: 'Fe' },
+      { id: 'credits_1000', name: 'Leave some for the rest of us!', requirement: 'Reach 1000 Credits.', icon: '¢' },
+      { id: 'low_durability', name: 'You still use that?', requirement: 'Keep an item/tool until its durability is under 5.', icon: '!' },
+      { id: 'tough_nut', name: 'Tough nut to Crack', requirement: 'Complete 20 minutes of gameplay without dying/recovering.', icon: '20m' },
+      { id: 'space_10min', name: 'Planning on going back anytime soon?', requirement: 'Spend 10 minutes in space.', icon: '10m' },
+      { id: 'mir_station', name: 'Mir station is jealous', requirement: 'Travel 10000 units from Ivis in one trip and make it back.', icon: '???', secret: true },
+    ];
+    for (const achievement of ACHIEVEMENTS) {
+      achievement.difficulty = ACHIEVEMENT_DIFFICULTIES[achievement.id] || 1;
+      achievement.gems = achievementGemReward(achievement.difficulty);
+    }
+    const achievementsModal = document.getElementById('achievementsModal');
+    const achievementsPanel = document.getElementById('achievementsPanel');
+    const achievementsClose = document.getElementById('achievementsClose');
+    const achievementsList = document.getElementById('achievementsList');
+    const achievementsCounter = document.getElementById('achievementsCounter');
+    const homeAchievementsButton = document.getElementById('homeAchievementsButton');
+    const homeGems = document.getElementById('homeGems');
+    const homeGemsAmount = document.getElementById('homeGemsAmount');
+    const pauseAchievementsButton = document.getElementById('pauseAchievementsButton');
+    let currentAccountUser = null;
+    let accountAchievements = {};
+    let accountGems = 0;
+    // ---------- character customization / hat shop ----------
+    const COSMETIC_COLORS = [
+      { id:'red', name:'Red', hex:0xe34a4a, free:true },
+      { id:'orange', name:'Orange', hex:0xf28a2e, free:true },
+      { id:'yellow', name:'Yellow', hex:0xf3d447, free:true },
+      { id:'green', name:'Green', hex:0x48b75a, free:true },
+      { id:'blue', name:'Blue', hex:0x4e83d8, free:true },
+      { id:'purple', name:'Purple', hex:0x9b6be8, free:true },
+      { id:'pink', name:'Pink', hex:0xf18bb7, cost:5 },
+      { id:'black', name:'Black', hex:0x17191f, cost:5 },
+      { id:'white', name:'White', hex:0xf1f3f6, cost:5 },
+      { id:'gray', name:'Gray', hex:0x858c96, cost:5 },
+      { id:'lime', name:'Lime', hex:0x9ad83f, cost:5 },
+      { id:'teal', name:'Teal', hex:0x2db9ad, cost:5 },
+      { id:'light_blue', name:'Light Blue', hex:0x71c8f4, cost:5 },
+      { id:'rainbow', name:'Rainbow', hex:0xffffff, cost:10, rainbow:true },
+    ];
+    const COSMETIC_HATS = [
+      { id:'banana_skin_hat', name:'Banana Hat', cost:15, fixed:true },
+      { id:'fedora_hat', name:'Fedora Hat', cost:15, colored:true },
+      { id:'top_hat', name:'Top-Hat', cost:20, fixed:true },
+      { id:'baseball_hat', name:'Baseball Cap', cost:15, colored:true },
+    ];
+    const cosmeticColorById = Object.fromEntries(COSMETIC_COLORS.map(c => [c.id, c]));
+    const cosmeticHatById = Object.fromEntries(COSMETIC_HATS.map(h => [h.id, h]));
+    const FREE_COSMETIC_COLOR_IDS = COSMETIC_COLORS.filter(c => c.free).map(c => c.id);
+    const DEFAULT_COSMETIC_STATE = {
+      ownedColors: [...FREE_COSMETIC_COLOR_IDS],
+      ownedHats: [],
+      equippedColor: 'red',
+      equippedHat: null,
+    };
+    let accountCosmetics = structuredClone(DEFAULT_COSMETIC_STATE);
+    let cosmeticShopOpen = false;
+    let rainbowCosmeticTime = 0;
+    let accountAchievementProgress = {
+      crystals: [],
+      celestialBodies: ['ivis'],
+      totalFlightDistance: 0,
+      awayFromIvisSeconds: 0,
+      takeoffBodies: [],
+      stoneMined: 0,
+      ironMined: 0,
+      spaceSeconds: 0
+    };
+    let survivalRunSeconds = 0;
+    let survivalRunSawNight = false;
+    let rocketFlightMaxIvisDistance = 0;
+    let achievementWriteChain = Promise.resolve();
+
+    const ACHIEVEMENT_FAR_DISTANCE = 1000;
+    const ACHIEVEMENT_AWAY_DISTANCE = 300;
+    const ACHIEVEMENT_AWAY_TIME = 5 * 60;
+    const ACHIEVEMENT_TOTAL_FLIGHT_DISTANCE = 10000;
+    const flightAchievementFrameStart = new THREE.Vector3();
+    let achievementTelemetrySaveTimer = 0;
+    let rocketFlightElapsedSeconds = 0;
+    let rocketFlightDistance = 0;
+    let rocketFlightOriginBody = 'ivis';
+    let rocketFlightHasMoved = false;
+
+    function sanitizeAchievementState(raw) {
+      const out = {};
+      if (raw && typeof raw === 'object') {
+        for (const a of ACHIEVEMENTS) if (raw[a.id]) out[a.id] = true;
+      }
+      return out;
+    }
+    function sanitizeAccountGems(raw) {
+      return Math.max(0, Math.floor(Number(raw) || 0));
+    }
+    function sanitizeCosmeticState(raw) {
+      const state = {
+        ownedColors: [...FREE_COSMETIC_COLOR_IDS],
+        ownedHats: [],
+        equippedColor: 'red',
+        equippedHat: null,
+      };
+      if (raw && typeof raw === 'object') {
+        if (Array.isArray(raw.ownedColors)) state.ownedColors.push(...raw.ownedColors.filter(id => cosmeticColorById[id]));
+        if (Array.isArray(raw.ownedHats)) state.ownedHats.push(...raw.ownedHats.filter(id => {
+          if (cosmeticHatById[id]) return true;
+          const parts = String(id).split(':');
+          return parts.length === 2 && cosmeticHatById[parts[0]] && cosmeticColorById[parts[1]] && cosmeticHatById[parts[0]].colored;
+        }));
+        if (cosmeticColorById[raw.equippedColor]) state.equippedColor = raw.equippedColor;
+        if (raw.equippedHat == null || cosmeticHatById[raw.equippedHat] || (typeof raw.equippedHat === 'string' && raw.equippedHat.includes(':'))) state.equippedHat = raw.equippedHat || null;
+      }
+      state.ownedColors = [...new Set(state.ownedColors)];
+      state.ownedHats = [...new Set(state.ownedHats)];
+      if (!state.ownedColors.includes(state.equippedColor)) state.equippedColor = 'red';
+      if (state.equippedHat && !state.ownedHats.includes(state.equippedHat)) state.equippedHat = null;
+      return state;
+    }
+    function cosmeticHatDisplay(hatId) {
+      const [baseId, colorId] = String(hatId).split(':');
+      const hat = cosmeticHatById[baseId];
+      const color = colorId ? cosmeticColorById[colorId] : null;
+      return hat ? (hat.name + (color ? ' · ' + color.name : '')) : hatId;
+    }
+    function cosmeticColorHex(colorId) {
+      return cosmeticColorById[colorId]?.hex ?? 0xe0763c;
+    }
+    function cosmeticHatKey(baseId, colorId=null) {
+      return colorId ? baseId + ':' + colorId : baseId;
+    }
+    function getEquippedHatVisualSpec() {
+      if (!accountCosmetics.equippedHat) return null;
+      const [baseId, colorId] = String(accountCosmetics.equippedHat).split(':');
+      return { baseId, colorId: colorId || accountCosmetics.equippedColor };
+    }
+    function applyRainbowHatColors(root, phase) {
+      if (!root) return;
+      const hue = ((phase % (Math.PI * 2)) / (Math.PI * 2) + 1) % 1;
+      root.traverse(obj => {
+        const mat = obj && obj.material;
+        if (!mat || !mat.userData || !mat.userData.cosmeticRainbowPart || !mat.color) return;
+        mat.color.setHSL((hue + (obj.id % 7) * 0.045) % 1, 0.82, 0.56);
+      });
+    }
+    function applyPlayerCosmetics() {
+      if (typeof playerBody === 'undefined' || !playerBody) return;
+      playerBody.material.color.setHex(cosmeticColorHex(accountCosmetics.equippedColor));
+      while (playerBody.children.length) playerBody.remove(playerBody.children[playerBody.children.length-1]);
+      const spec = getEquippedHatVisualSpec();
+      if (spec) {
+        const hat = createHatVisual(spec.baseId, cosmeticColorHex(spec.colorId));
+        hat.position.set(0, 0.72, 0);
+        hat.rotation.y = 0;
+        hat.scale.setScalar(1.05);
+        hat.layers.set(1);
+        playerBody.add(hat);
+        if(spec.colorId === 'rainbow') applyRainbowHatColors(hat, rainbowCosmeticTime);
+      }
+    }
+    function cosmeticMetadataSnapshot() {
+      return {
+        ownedColors: [...accountCosmetics.ownedColors],
+        ownedHats: [...accountCosmetics.ownedHats],
+        equippedColor: accountCosmetics.equippedColor,
+        equippedHat: accountCosmetics.equippedHat
+      };
+    }
+    function updateHomeGemsAndCosmeticsUI() {
+      renderAccountGems();
+      renderCosmeticShop();
+      updateCosmeticPreview();
+    }
+    function renderAccountGems() {
+      if (!homeGems || !homeGemsAmount) return;
+      homeGemsAmount.textContent = String(accountGems);
+      homeGems.classList.toggle('hidden', !currentAccountUser);
+    }
+    function sanitizeAchievementProgress(raw) {
+      const crystals = Array.isArray(raw && raw.crystals) ? raw.crystals.filter(id => crystalById && crystalById[id]) : [];
+      const celestialBodies = Array.isArray(raw && raw.celestialBodies)
+        ? raw.celestialBodies.filter(id => ['ivis', 'moon', 'cordelia'].includes(id))
+        : [];
+      if (!celestialBodies.includes('ivis')) celestialBodies.push('ivis');
+      return {
+        crystals: [...new Set(crystals)],
+        celestialBodies: [...new Set(celestialBodies)],
+        totalFlightDistance: Math.max(0, Number(raw && raw.totalFlightDistance) || 0),
+        awayFromIvisSeconds: Math.max(0, Number(raw && raw.awayFromIvisSeconds) || 0),
+        takeoffBodies: [...new Set(Array.isArray(raw && raw.takeoffBodies) ? raw.takeoffBodies.filter(id => ['ivis', 'moon', 'cordelia'].includes(id)) : [])],
+        stoneMined: Math.max(0, Math.floor(Number(raw && raw.stoneMined) || 0)),
+        ironMined: Math.max(0, Math.floor(Number(raw && raw.ironMined) || 0)),
+        spaceSeconds: Math.max(0, Number(raw && raw.spaceSeconds) || 0)
+      };
+    }
+    function renderAchievements() {
+      if (!achievementsList) return;
+      const unlockedCount = ACHIEVEMENTS.reduce((n, a) => n + (accountAchievements[a.id] ? 1 : 0), 0);
+      achievementsCounter.textContent = unlockedCount + ' / ' + ACHIEVEMENTS.length;
+      achievementsList.replaceChildren();
+      for (const achievement of ACHIEVEMENTS) {
+        const unlocked = !!accountAchievements[achievement.id];
+        const card = document.createElement('div');
+        card.className = 'achievementCard ' + (unlocked ? 'unlocked' : 'locked');
+        const displayRequirement = achievement.secret && !unlocked
+          ? 'This advancement needs something to get it!'
+          : achievement.requirement;
+        card.title = currentAccountUser
+          ? displayRequirement
+          : 'Log in to earn account achievements. ' + displayRequirement;
+        const icon = document.createElement('div');
+        icon.className = 'achievementIcon';
+        icon.textContent = achievement.icon;
+        const info = document.createElement('div');
+        info.className = 'achievementInfo';
+        const name = document.createElement('div');
+        name.className = 'achievementName';
+        name.textContent = achievement.name;
+        const requirement = document.createElement('div');
+        requirement.className = 'achievementRequirement';
+        requirement.textContent = displayRequirement;
+        info.append(name, requirement);
+        const reward = document.createElement('div');
+        reward.className = 'achievementReward';
+        reward.innerHTML = '<span class="achievementRewardIcon">◆</span> ' + achievement.gems + ' GEMS';
+        reward.title = achievement.gems + ' gems';
+        const status = document.createElement('div');
+        status.className = 'achievementState';
+        status.textContent = unlocked ? 'UNLOCKED' : 'LOCKED';
+        card.append(icon, info, reward, status);
+        achievementsList.appendChild(card);
+      }
+    }
+    function openAchievements() {
+      renderAchievements();
+      // Never allow the achievements overlay to coexist with the gameplay pointer lock.
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      achievementsModal.classList.remove('hidden');
+      achievementsModal.setAttribute('aria-hidden', 'false');
+      document.body.classList.add('achievements-open');
+    }
+    function closeAchievements() {
+      achievementsModal.classList.add('hidden');
+      achievementsModal.setAttribute('aria-hidden', 'true');
+      document.body.classList.remove('achievements-open');
+    }
+    function hydrateAccountAchievementState(user) {
+      currentAccountUser = user || null;
+      accountAchievements = sanitizeAchievementState(user && user.user_metadata && user.user_metadata.pocketUniverseAchievements);
+      const rawGems = user && user.user_metadata ? user.user_metadata.pocketUniverseGems : undefined;
+      if (rawGems === undefined && user) {
+        // One-time migration for accounts that already had achievements before gems existed.
+        accountGems = ACHIEVEMENTS.reduce((sum, achievement) => sum + (accountAchievements[achievement.id] ? achievement.gems : 0), 0);
+        const metadata = { ...(user.user_metadata || {}) };
+        metadata.pocketUniverseGems = accountGems;
+        if (pocketSupabase) pocketSupabase.auth.updateUser({ data: metadata }).catch(error => console.warn('Could not initialize account gems', error));
+      } else {
+        accountGems = sanitizeAccountGems(rawGems);
+      }
+      renderAccountGems();
+      accountAchievementProgress = sanitizeAchievementProgress(user && user.user_metadata && user.user_metadata.pocketUniverseAchievementProgress);
+      accountCosmetics = sanitizeCosmeticState(user && user.user_metadata && user.user_metadata.pocketUniverseCosmetics);
+      applyPlayerCosmetics();
+      renderAchievements();
+      updateHomeGemsAndCosmeticsUI();
+    }
+    function persistAchievementState() {
+      if (!pocketSupabase || !currentAccountUser) return Promise.resolve(false);
+      const user = currentAccountUser;
+      const metadata = { ...(user.user_metadata || {}) };
+      metadata.pocketUniverseAchievements = { ...accountAchievements };
+      metadata.pocketUniverseGems = accountGems;
+      metadata.pocketUniverseAchievementProgress = {
+        crystals: [...accountAchievementProgress.crystals],
+        celestialBodies: [...accountAchievementProgress.celestialBodies],
+        totalFlightDistance: accountAchievementProgress.totalFlightDistance,
+        awayFromIvisSeconds: accountAchievementProgress.awayFromIvisSeconds,
+        takeoffBodies: [...accountAchievementProgress.takeoffBodies],
+        stoneMined: accountAchievementProgress.stoneMined,
+        ironMined: accountAchievementProgress.ironMined,
+        spaceSeconds: accountAchievementProgress.spaceSeconds
+      };
+      metadata.pocketUniverseCosmetics = cosmeticMetadataSnapshot();
+      achievementWriteChain = achievementWriteChain.then(async () => {
+        const { data, error } = await pocketSupabase.auth.updateUser({ data: metadata });
+        if (error) throw error;
+        if (data && data.user) currentAccountUser = data.user;
+        return true;
+      }).catch(error => {
+        console.warn('Could not save achievement progress', error);
+        return false;
+      });
+      return achievementWriteChain;
+    }
+    const achievementToast = document.getElementById('achievementToast');
+    const achievementToastName = document.getElementById('achievementToastName');
+    let achievementToastQueue = [];
+    let achievementToastBusy = false;
+
+    function showAchievementToast(achievement) {
+      if (!achievementToast || !achievementToastName) return;
+      achievementToastQueue.push(achievement);
+      if (!achievementToastBusy) processAchievementToastQueue();
+    }
+
+    async function processAchievementToastQueue() {
+      if (achievementToastBusy || !achievementToast || !achievementToastName) return;
+      const next = achievementToastQueue.shift();
+      if (!next) return;
+      achievementToastBusy = true;
+      achievementToast.classList.remove('hide', 'show');
+      // Restart the CSS animation even when two achievements are earned close together.
+      void achievementToast.offsetWidth;
+      achievementToastName.textContent = next.name;
+      achievementToast.classList.add('show');
+      playAudio('achievement', 0.72);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      achievementToast.classList.remove('show');
+      void achievementToast.offsetWidth;
+      achievementToast.classList.add('hide');
+      await new Promise(resolve => setTimeout(resolve, 450));
+      achievementToast.classList.remove('hide');
+      achievementToastBusy = false;
+      if (achievementToastQueue.length) processAchievementToastQueue();
+    }
+
+    function awardAchievement(id) {
+      // Achievements are deliberately Survival-only. Freeplay can never unlock or progress them.
+      if (state.gameMode !== 'survival') return false;
+      if (!currentAccountUser || !ACHIEVEMENTS.some(a => a.id === id) || accountAchievements[id]) return false;
+      const achievement = ACHIEVEMENTS.find(a => a.id === id);
+      accountAchievements[id] = true;
+      accountGems += achievement.gems;
+      renderAchievements();
+      renderAccountGems();
+      persistAchievementState();
+      showAchievementToast(achievement);
+      return true;
+    }
+    function recordCrystalAchievement(typeId) {
+      if (!currentAccountUser || state.gameMode !== 'survival') return;
+      if (!accountAchievementProgress.crystals.includes(typeId)) {
+        accountAchievementProgress.crystals.push(typeId);
+        persistAchievementState();
+      }
+      awardAchievement('first_crystal');
+      if (accountAchievementProgress.crystals.length >= CRYSTAL_TYPES.length) awardAchievement('all_crystals');
+    }
+
+    function recordCelestialBodyVisit(bodyId) {
+      if (!currentAccountUser || state.gameMode !== 'survival') return;
+      if (!accountAchievementProgress.celestialBodies.includes(bodyId)) {
+        accountAchievementProgress.celestialBodies.push(bodyId);
+        persistAchievementState();
+      }
+      if (bodyId === 'moon') awardAchievement('reach_moon');
+      if (bodyId === 'cordelia') awardAchievement('reach_cordelia');
+      if (accountAchievementProgress.celestialBodies.includes('ivis') &&
+          accountAchievementProgress.celestialBodies.includes('moon') &&
+          accountAchievementProgress.celestialBodies.includes('cordelia')) {
+        awardAchievement('catalogued');
+      }
+    }
+
+    function recordRocketTakeoff(bodyId) {
+      if (!currentAccountUser || state.gameMode !== 'survival') return;
+      if (bodyId && !accountAchievementProgress.takeoffBodies.includes(bodyId)) {
+        accountAchievementProgress.takeoffBodies.push(bodyId);
+        persistAchievementState();
+      }
+      if (['ivis', 'moon', 'cordelia'].every(id => accountAchievementProgress.takeoffBodies.includes(id))) {
+        awardAchievement('takeoff_100');
+      }
+      rocketFlightElapsedSeconds = 0;
+      rocketFlightDistance = 0;
+      rocketFlightOriginBody = bodyId || 'ivis';
+      rocketFlightHasMoved = false;
+      rocketFlightMaxIvisDistance = 0;
+    }
+
+    function recordFlightAchievementProgress(distanceThisFrame, delta, currentWorldDistance) {
+      if (!currentAccountUser || state.gameMode !== 'survival') return;
+      let changed = false;
+      if (playerState.inRocket && !playerState.rocketLanded) {
+        rocketFlightElapsedSeconds += Math.max(0, delta);
+        if (distanceThisFrame > 0.0001) {
+          rocketFlightDistance += distanceThisFrame;
+          rocketFlightHasMoved = true;
+          accountAchievementProgress.totalFlightDistance += distanceThisFrame;
+          changed = true;
+          if (accountAchievementProgress.totalFlightDistance >= ACHIEVEMENT_TOTAL_FLIGHT_DISTANCE) {
+            awardAchievement('total_flight_distance');
+          }
+          if (rocketFlightDistance >= 3000) awardAchievement('voyager');
+        }
+      }
+      if (currentWorldDistance >= ACHIEVEMENT_FAR_DISTANCE) awardAchievement('far_from_home');
+      if (changed && Math.random() < 0.08) persistAchievementState();
+    }
+    // Achievement UI is completely isolated from the menu planet drag system.
+    function stopAchievementPointerEvent(e) {
+      e.stopPropagation();
+    }
+    homeAchievementsButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+    homeAchievementsButton.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); openAchievements(); });
+    pauseAchievementsButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+    pauseAchievementsButton.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); openAchievements(); });
+    achievementsClose.addEventListener('pointerdown', stopAchievementPointerEvent);
+    achievementsClose.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); closeAchievements(); });
+    achievementsPanel.addEventListener('pointerdown', stopAchievementPointerEvent);
+    achievementsPanel.addEventListener('pointermove', stopAchievementPointerEvent);
+    achievementsPanel.addEventListener('pointerup', stopAchievementPointerEvent);
+    achievementsPanel.addEventListener('click', stopAchievementPointerEvent);
+    achievementsModal.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+    });
+    achievementsModal.addEventListener('pointermove', (e) => e.stopPropagation());
+    achievementsModal.addEventListener('pointerup', (e) => e.stopPropagation());
+    achievementsModal.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (e.target === achievementsModal) closeAchievements();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (!achievementsModal.classList.contains('hidden') && e.key === 'Escape') { e.preventDefault(); closeAchievements(); }
+    });
+    renderAchievements();
+
+    // ---------- account dialog (isolated from the menu preview) ----------
+    const homeCreditsButton = document.getElementById("homeCreditsButton");
+    const creditsModal = document.getElementById("creditsModal");
+    const creditsPanel = document.getElementById("creditsPanel");
+    const creditsClose = document.getElementById("creditsClose");
+
+    function openCredits() {
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      creditsModal.classList.remove("hidden");
+      creditsModal.setAttribute("aria-hidden", "false");
+    }
+    function closeCredits() {
+      creditsModal.classList.add("hidden");
+      creditsModal.setAttribute("aria-hidden", "true");
+    }
+    homeCreditsButton.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openCredits(); });
+    creditsClose.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); closeCredits(); });
+    creditsPanel.addEventListener("click", (e) => e.stopPropagation());
+    creditsModal.addEventListener("click", (e) => { if (e.target === creditsModal) closeCredits(); });
+    document.addEventListener("keydown", (e) => { if (!creditsModal.classList.contains("hidden") && e.key === "Escape") { e.preventDefault(); closeCredits(); } });
+
+    const accountButton = document.getElementById("accountButton");
+    const accountModal = document.getElementById("accountModal");
+    const accountPanel = document.getElementById("accountPanel");
+    const accountClose = document.getElementById("accountClose");
+    const accountLoggedOut = document.getElementById("accountLoggedOut");
+    const accountLoggedIn = document.getElementById("accountLoggedIn");
+    const accountTitle = document.getElementById("accountTitle");
+    const accountSubtitle = document.getElementById("accountSubtitle");
+    const accountEmail = document.getElementById("accountEmail");
+    const accountUsername = document.getElementById("accountUsername");
+    const accountPassword = document.getElementById("accountPassword");
+    const accountSubmit = document.getElementById("accountSubmit");
+    const accountModeToggle = document.getElementById("accountModeToggle");
+    const accountStatus = document.getElementById("accountStatus");
+    const accountProfileUsername = document.getElementById("accountProfileUsername");
+    const accountProfileEmail = document.getElementById("accountProfileEmail");
+    const accountLogout = document.getElementById("accountLogout");
+    const accountLoggedInStatus = document.getElementById("accountLoggedInStatus");
+    let accountSignupMode = false;
+
+    function setAccountStatus(message, kind = "") {
+      accountStatus.textContent = message || "";
+      accountStatus.className = "accountStatus" + (kind ? " " + kind : "");
+    }
+    function setAccountLoggedInStatus(message, kind = "") {
+      accountLoggedInStatus.textContent = message || "";
+      accountLoggedInStatus.className = "accountStatus" + (kind ? " " + kind : "");
+    }
+    function renderAccountMode() {
+      accountPanel.classList.toggle("accountSignup", accountSignupMode);
+      accountTitle.textContent = accountSignupMode ? "Create account" : "Log in";
+      accountSubtitle.textContent = accountSignupMode ? "Create your Pocket Universe account." : "Log in to your Pocket Universe account.";
+      accountSubmit.textContent = accountSignupMode ? "CREATE ACCOUNT" : "LOG IN";
+      accountModeToggle.textContent = accountSignupMode ? "Already have an account? Log in" : "Need an account? Create one";
+      accountPassword.autocomplete = accountSignupMode ? "new-password" : "current-password";
+      setAccountStatus("");
+    }
+    async function refreshAccountState() {
+      if (!pocketSupabase) return null;
+      const { data, error } = await pocketSupabase.auth.getSession();
+      if (error) { console.warn("Supabase session lookup failed", error); return null; }
+      const user = data && data.session ? data.session.user : null;
+      hydrateAccountAchievementState(user);
+      if (!user) { accountLoggedOut.classList.remove("hidden"); accountLoggedIn.classList.add("hidden"); return null; }
+      const username = (user.user_metadata && user.user_metadata.username) || (user.email ? user.email.split("@")[0] : "Explorer");
+      accountProfileUsername.textContent = username;
+      accountProfileEmail.textContent = user.email || "—";
+      accountLoggedOut.classList.add("hidden");
+      accountLoggedIn.classList.remove("hidden");
+      return user;
+    }
+    function openAccount() {
+      accountSignupMode = false;
+      renderAccountMode();
+      accountModal.classList.remove("hidden");
+      accountModal.setAttribute("aria-hidden", "false");
+      refreshAccountState();
+      setTimeout(() => accountEmail.focus(), 0);
+    }
+    function closeAccount() {
+      accountModal.classList.add("hidden");
+      accountModal.setAttribute("aria-hidden", "true");
+      accountPassword.value = "";
+      setAccountStatus("");
+      setAccountLoggedInStatus("");
+    }
+    async function submitAccount() {
+      if (!pocketSupabase) { setAccountStatus("Account service is unavailable right now.", "error"); return; }
+      const email = accountEmail.value.trim();
+      const password = accountPassword.value;
+      const username = accountUsername.value.trim();
+      if (!email || !password || (accountSignupMode && !username)) {
+        setAccountStatus(accountSignupMode ? "Enter a username, email, and password." : "Enter your email and password.", "error");
+        return;
+      }
+      accountSubmit.disabled = true;
+      setAccountStatus(accountSignupMode ? "Creating your account…" : "Logging in…");
+      try {
+        if (accountSignupMode) {
+          const { data, error } = await pocketSupabase.auth.signUp({ email, password, options: { data: { username } } });
+          if (error) throw error;
+          accountPassword.value = "";
+          if (data && data.session) {
+            await refreshAccountState();
+            setAccountLoggedInStatus("Account created successfully.", "success");
+          } else {
+            accountSignupMode = false;
+            renderAccountMode();
+            setAccountStatus("Account created! Check your email if confirmation is required, then log in.", "success");
+          }
+        } else {
+          const { error } = await pocketSupabase.auth.signInWithPassword({ email, password });
+          if (error) throw error;
+          accountPassword.value = "";
+          await refreshAccountState();
+          setAccountLoggedInStatus("Logged in successfully.", "success");
+        }
+      } catch (error) {
+        setAccountStatus(error && error.message ? error.message : "Something went wrong.", "error");
+      } finally { accountSubmit.disabled = false; }
+    }
+    async function logoutAccount() {
+      if (!pocketSupabase) return;
+      accountLogout.disabled = true;
+      setAccountLoggedInStatus("Logging out…");
+      try {
+        const { error } = await pocketSupabase.auth.signOut();
+        if (error) throw error;
+        accountLoggedIn.classList.add("hidden");
+        accountLoggedOut.classList.remove("hidden");
+        hydrateAccountAchievementState(null);
+        accountSignupMode = false;
+        renderAccountMode();
+        setAccountStatus("Logged out successfully.", "success");
+      } catch (error) {
+        setAccountLoggedInStatus(error && error.message ? error.message : "Could not log out.", "error");
+      } finally { accountLogout.disabled = false; }
+    }
+    accountButton.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openAccount(); });
+    accountClose.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); closeAccount(); });
+    accountPanel.addEventListener("click", (e) => e.stopPropagation());
+    accountModal.addEventListener("pointerdown", (e) => e.stopPropagation());
+    accountModal.addEventListener("pointermove", (e) => e.stopPropagation());
+    accountModal.addEventListener("pointerup", (e) => e.stopPropagation());
+    accountSubmit.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); submitAccount(); });
+    accountModeToggle.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); accountSignupMode = !accountSignupMode; renderAccountMode(); (accountSignupMode ? accountUsername : accountEmail).focus(); });
+    accountLogout.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); logoutAccount(); });
+    [accountEmail, accountUsername, accountPassword].forEach((el) => {
+      el.addEventListener("pointerdown", (e) => e.stopPropagation());
+      el.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submitAccount(); } });
+    });
+    accountModal.addEventListener("click", (e) => { if (e.target === accountModal) closeAccount(); });
+    renderAccountMode();
+    if (pocketSupabase) {
+      pocketSupabase.auth.onAuthStateChange(() => setTimeout(refreshAccountState, 0));
+      refreshAccountState();
+    }
 
     function updateInventoryActionButton() {
       if (!inventoryCraftButton) return;
@@ -5743,7 +6733,10 @@
     const creditsDisplay = document.getElementById('creditsDisplay');
 
     function updateCreditsUI() {
-      if (creditsDisplay) creditsDisplay.textContent = '¢ ' + Math.max(0, Math.floor(economyState.credits));
+      const credits = Math.max(0, Math.floor(economyState.credits));
+      if (creditsDisplay) creditsDisplay.textContent = '¢ ' + credits;
+      if (credits >= 100) awardAchievement('first_100_credits');
+      if (credits >= 1000) awardAchievement('credits_1000');
     }
 
     function getInventoryCount(typeId) {
@@ -5891,6 +6884,7 @@
       }
 
       economyState.credits -= total;
+      awardAchievement('buy_merchant');
       updateCreditsUI();
       merchantStatus.textContent = 'Bought ' + qty + ' × ' + item.name + ' for ¢' + total + '.';
       refreshEquippedItem();
@@ -6014,6 +7008,8 @@
       if (owned < qty || !removeItemsFromInventory(typeId, qty)) { merchantStatus.textContent = 'You do not have enough of that item.'; return; }
       const earned = qty * SELL_PRICES[typeId];
       economyState.credits += earned;
+      awardAchievement('sell_merchant');
+      if (economyState.credits >= 100) awardAchievement('first_100_credits');
       merchantStatus.textContent = 'Sold ' + qty + ' × ' + itemById[typeId].name + ' for ¢' + earned + '.';
       updateCreditsUI();
       refreshEquippedItem();
@@ -6038,7 +7034,7 @@
       const found = findNearbySpaceObject();
       if (!found || found.type !== 'rocket' || !found.pad) return false;
       const pad = found.pad;
-      if (pad.fuel >= ROCKET_FUEL_CAPACITY) {
+      if (pad.fuel >= getRocketFuelCapacity(pad)) {
         const prompt = document.getElementById('crystalPrompt');
         prompt.classList.remove('hidden');
         prompt.innerHTML = '<span class="promptKey">FULL</span> This rocket is already fueled';
@@ -6077,7 +7073,9 @@
         prompt.textContent = 'Fueling failed — no jerrycan found.';
         return;
       }
-      pad.fuel = ROCKET_FUEL_CAPACITY;
+      const refillAmount = pad.engineType === 'upgraded' ? ROCKET_FUEL_REFILL_AMOUNT_UPGRADED : ROCKET_FUEL_REFILL_AMOUNT_STANDARD;
+      pad.fuel = Math.min(getRocketFuelCapacity(pad), (Number(pad.fuel) || 0) + refillAmount);
+      if (pad.fuel >= getRocketFuelCapacity(pad)) awardAchievement('fuel_rocket');
       economyState.fuelingPad = null;
       economyState.fuelingStartedAt = 0;
       economyState.drillRefueling = null;
@@ -6085,7 +7083,7 @@
       refreshEquippedItem();
       updateHotbarUI();
       updateInventoryUI();
-      prompt.innerHTML = '<span class="promptKey">FUELED</span> Rocket fuel: ' + pad.fuel + '/' + ROCKET_FUEL_CAPACITY;
+      prompt.innerHTML = '<span class="promptKey">FUELED</span> Rocket fuel: ' + Math.round(getRocketFuelPercent(pad)) + '%';
       setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 900);
     }
 
@@ -6152,15 +7150,21 @@
         return;
       }
 
-      if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ShiftLeft','ShiftRight'].includes(e.code)) {
+      const reboundFlightCodes = new Set([
+        ...getBoundCodes('moveForward'), ...getBoundCodes('moveBackward'), ...getBoundCodes('moveLeft'), ...getBoundCodes('moveRight'),
+        ...getBoundCodes('jump'), ...getBoundCodes('sprint')
+      ]);
+      if (reboundFlightCodes.has(e.code)) {
         rocketKeys[e.code] = true;
         e.preventDefault();
       }
     };
     const rocketKeyUp = (e) => {
-      if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ShiftLeft','ShiftRight'].includes(e.code)) {
-        rocketKeys[e.code] = false;
-      }
+      const reboundFlightCodes = new Set([
+        ...getBoundCodes('moveForward'), ...getBoundCodes('moveBackward'), ...getBoundCodes('moveLeft'), ...getBoundCodes('moveRight'),
+        ...getBoundCodes('jump'), ...getBoundCodes('sprint')
+      ]);
+      if (reboundFlightCodes.has(e.code)) rocketKeys[e.code] = false;
     };
     const clearRocketKeys = () => {
       for (const key in rocketKeys) rocketKeys[key] = false;
@@ -6222,6 +7226,12 @@
       moonLandedRocket = flightRocket;
       moonLandingPad = flightPad;
       moonLandingArmed = false;
+      if (rocketFlightElapsedSeconds >= 300) awardAchievement('long_spaceflight_land');
+      if (rocketFlightHasMoved) awardAchievement('safe_flight');
+      rocketFlightElapsedSeconds = 0;
+      rocketFlightDistance = 0;
+      rocketFlightHasMoved = false;
+      rocketFlightMaxIvisDistance = 0;
       playerState.rocketLanded = true;
       flightCameraYaw.value = 0;
       flightCameraPitch.value = 0.22;
@@ -6229,6 +7239,7 @@
       clearRocketKeys();
       rocketLaunchPlayed = false;
       moonGravityActive = true;
+      awardAchievement('land_moon');
       return true;
     }
 
@@ -6322,11 +7333,17 @@
       cordeliaLandedRocket = flightRocket;
       cordeliaLandingPad = flightPad;
       cordeliaLandingArmed = false;
+      if (rocketFlightElapsedSeconds >= 300) awardAchievement('long_spaceflight_land');
+      if (rocketFlightHasMoved) awardAchievement('safe_flight');
+      rocketFlightElapsedSeconds = 0;
+      rocketFlightDistance = 0;
+      rocketFlightHasMoved = false;
       playerState.rocketLanded = true;
       playerState.rocketInSpace = true;
       cordeliaGravityActive = true;
       clearRocketKeys();
       rocketLaunchPlayed = false;
+      awardAchievement('land_cordelia');
       return true;
     }
 
@@ -6411,12 +7428,12 @@
     function updateCordeliaPlayer(delta) {
       if (!cordeliaWalking || state.gameState !== 'playing' || state.paused) return;
       let moveX = 0, moveZ = 0;
-      if (isPhysicalKeyDown('KeyW') || isPhysicalKeyDown('ArrowUp')) moveZ -= 1;
-      if (isPhysicalKeyDown('KeyS') || isPhysicalKeyDown('ArrowDown')) moveZ += 1;
-      if (isPhysicalKeyDown('KeyA') || isPhysicalKeyDown('ArrowLeft')) moveX -= 1;
-      if (isPhysicalKeyDown('KeyD') || isPhysicalKeyDown('ArrowRight')) moveX += 1;
+      if (isActionDown('moveForward')) moveZ -= 1;
+      if (isActionDown('moveBackward')) moveZ += 1;
+      if (isActionDown('moveLeft')) moveX -= 1;
+      if (isActionDown('moveRight')) moveX += 1;
       const isMoving = moveX !== 0 || moveZ !== 0;
-      const shiftHeld = isPhysicalKeyDown('ShiftLeft') || isPhysicalKeyDown('ShiftRight');
+      const shiftHeld = isActionDown('sprint');
       let speed = MOVE_SPEED;
       if (state.gameMode === 'freeplay') { speed = MOVE_SPEED * SPRINT_MULTIPLIER; if (shiftHeld && isMoving) speed *= 1.35; playerState.stamina = STAMINA_MAX; playerState.exhausted = false; }
       else {
@@ -6429,19 +7446,9 @@
       if (isMoving) {
         tmpMove.set(moveX, 0, moveZ).normalize();
         const up = localDir.clone();
-        if (playerState.thirdPerson) {
-          // In third person, movement follows the orbit camera heading.
-          const cameraForwardLocal = thirdPersonCameraForward.clone().addScaledVector(up, -thirdPersonCameraForward.dot(up));
-          if (cameraForwardLocal.lengthSq() < 0.00001) cameraForwardLocal.set(0, 0, -1).addScaledVector(up, -up.z);
-          cameraForwardLocal.normalize();
-          const cameraRightLocal = new THREE.Vector3().crossVectors(cameraForwardLocal, up).normalize();
-          tmpWorldMove.copy(cameraRightLocal).multiplyScalar(tmpMove.x)
-            .addScaledVector(cameraForwardLocal, -tmpMove.z);
-        } else {
-          // In first person, WASD follows the player's actual camera/facing orientation.
-          // This is the same model used on Ivis and the Moon.
-          tmpWorldMove.copy(tmpMove).applyQuaternion(orientation);
-        }
+        const moveSurfaceUpWorld = getActiveWalkingSurfaceWorld(new THREE.Vector3());
+        getCameraRelativePlanetMove(tmpMove.x, tmpMove.z, moveSurfaceUpWorld, cordeliaMesh, tmpWorldMove);
+        if (tmpWorldMove.lengthSq() < 0.00001) tmpWorldMove.copy(tmpMove).applyQuaternion(orientation);
         tmpWorldMove.addScaledVector(up, -tmpWorldMove.dot(up)).normalize();
         const angularStep = (speed * delta) / CORDELIA_PLAYER_GROUND_RADIUS;
         const newDir = localDir.clone().addScaledVector(tmpWorldMove, angularStep).normalize();
@@ -6449,7 +7456,7 @@
         player.position.copy(newDir).multiplyScalar(newSurfaceRadius);
       }
       const grounded = playerState.heightOffset <= 0;
-      if (grounded && isPhysicalKeyDown('Space') && playerState.verticalVelocity <= 0) playerState.verticalVelocity = CORDELIA_JUMP_SPEED;
+      if (grounded && isActionDown('jump') && playerState.verticalVelocity <= 0) playerState.verticalVelocity = CORDELIA_JUMP_SPEED;
       playerState.verticalVelocity -= GRAVITY * delta;
       playerState.heightOffset += playerState.verticalVelocity * delta;
       if (playerState.heightOffset < 0) { playerState.heightOffset = 0; playerState.verticalVelocity = 0; }
@@ -6495,7 +7502,7 @@
       const active = !!playerState.inRocket;
       rocketFlightStatus.classList.toggle('hidden', !active);
       if (!active) return;
-      const fuel = flightPad ? Math.max(0, Math.min(ROCKET_FUEL_CAPACITY, Math.floor(Number(flightPad.fuel) || 0))) : 0;
+      const fuel = flightPad ? Math.round(getRocketFuelPercent(flightPad)) : 0;
       rocketFlightFuel.textContent = 'FUEL ' + fuel + '%';
       const speedMode = ROCKET_SPEED_MODES[rocketSpeedMode];
       const speedValue = FLIGHT_SPEED * speedMode.multiplier;
@@ -6671,6 +7678,13 @@
       flightPadUp.set(0, 1, 0).applyQuaternion(pad._flightWorldQuat).normalize();
       flightPadOffset.copy(flightPadUp).multiplyScalar(0.72);
       flightPosition.copy(flightPadWorld).add(flightPadOffset);
+      if (rocketFlightElapsedSeconds >= 300) awardAchievement('long_spaceflight_land');
+      if (rocketFlightHasMoved) awardAchievement('safe_flight');
+      if (getRocketFuelPercent(flightPad) < 10) awardAchievement('low_fuel_return');
+      if (rocketFlightOriginBody === 'ivis' && rocketFlightMaxIvisDistance >= 10000) awardAchievement('mir_station');
+      rocketFlightElapsedSeconds = 0;
+      rocketFlightDistance = 0;
+      rocketFlightHasMoved = false;
       playerState.rocketLanded = true;
       playerState.rocketInSpace = flightPosition.length() >= ROCKET_ATMOSPHERE_RADIUS;
 
@@ -6678,9 +7692,16 @@
       // reference so exiting the rocket returns the player to Ivis instead of incorrectly
       // sending them back to the Moon after a Moon -> Ivis round trip.
       if (flightRocket === moonLandedRocket) {
+        awardAchievement('return_moon');
         moonLandedRocket = null;
         moonLandingPad = null;
         moonWalking = false;
+      }
+      if (flightRocket === cordeliaLandedRocket) {
+        awardAchievement('return_cordelia');
+        cordeliaLandedRocket = null;
+        cordeliaLandingPad = null;
+        cordeliaWalking = false;
       }
       // Landing on an Ivis launch pad always returns the flight frame to Ivis. This also
       // clears any stale Moon/Cordelia gravity state left over from a previous excursion.
@@ -6730,7 +7751,9 @@
       flightRocket.root.quaternion.copy(worldQuat);
       flightPosition.copy(launchWorldPos);
       flightRocketQuat.copy(worldQuat);
+      flightAchievementFrameStart.copy(flightPosition);
 
+      recordRocketTakeoff('cordelia');
       playerState.rocketLanded = false;
       playerState.rocketInSpace = true;
       cordeliaGravityActive = true;
@@ -6779,6 +7802,7 @@
       flightRocket = pad.rocket;
       flightPosition.copy(rocketWorldPos);
       flightRocketQuat.copy(rocketWorldQuat);
+      flightAchievementFrameStart.copy(flightPosition);
 
       // A landed lunar rocket stays parented to the Moon while you are sitting inside it.
       // That keeps the ship physically docked to the moving Moon until you actually press a
@@ -6832,8 +7856,17 @@
         freeSpacePlaneActive = false;
         freeSpaceDown.set(0, 1, 0);
       }
-      if (reenteringMoonRocket) moonGravityActive = true;
-      if (reenteringCordeliaRocket) cordeliaGravityActive = true;
+      // A rocket can only be docked to one celestial body at a time. Explicitly clear
+      // stale lunar gravity when entering the Cordelia rocket (and vice versa), otherwise
+      // the old Moon state can win the gravity-priority check and show "MOON GRAVITY"
+      // while sitting on Cordelia.
+      if (reenteringMoonRocket) {
+        moonGravityActive = true;
+        cordeliaGravityActive = false;
+      } else if (reenteringCordeliaRocket) {
+        moonGravityActive = false;
+        cordeliaGravityActive = true;
+      }
       playerState.rocketFuelTimer = 0;
       playerState.verticalVelocity = 0;
       rocketSpeedMode = 1;
@@ -6849,8 +7882,7 @@
       flightCameraYaw.value = 0;
       flightCameraPitch.value = 0.22;
       state.paused = false;
-      systemState.keys['KeyE'] = false;
-      physicalKeys['KeyE'] = false;
+      for (const code of getBoundCodes('interact')) { systemState.keys[code] = false; physicalKeys[code] = false; }
       document.body.classList.add('rocket-flight');
 
       if (reenteringMoonRocket) {
@@ -6867,7 +7899,7 @@
       if (reenteringMoonRocket) updateDockedMoonRocketCamera(1 / 60);
       if (reenteringCordeliaRocket) updateDockedCordeliaRocketCamera(1 / 60);
       setRocketFlightUI();
-      showFlightPrompt('Rocket ready · WASD move · Space up · Shift down · 1 Current · 2 Boosted · 3 Warp');
+      showFlightPrompt('Rocket ready · Move / Up / Down controls are rebindable in Settings · 1 Current · 2 Boosted · 3 Warp');
       return true;
     }
 
@@ -7075,11 +8107,11 @@
         if (rockLocal.length() < rockRadius) return true;
       }
 
-      // Merchant stall: block the full physical footprint and height of the actual stall,
-      // rather than relying on the old smaller gameplay box that left large parts ghost-like.
-      if (crystalStall) {
-        collisionStallOffset.copy(local).sub(crystalStall.position);
-        collisionStallInverse.copy(crystalStall.quaternion).invert();
+      // Both permanent stalls are solid to the spaceship as well.
+      for (const stall of [crystalStall, hatStall]) {
+        if (!stall) continue;
+        collisionStallOffset.copy(local).sub(stall.position);
+        collisionStallInverse.copy(stall.quaternion).invert();
         collisionStallLocal.copy(collisionStallOffset).applyQuaternion(collisionStallInverse);
 
         const shipRadius = FLIGHT_PROP_COLLISION_RADIUS;
@@ -7109,6 +8141,8 @@
 
       flightPosition.copy(worldPos);
       flightRocketQuat.copy(worldQuat);
+      flightAchievementFrameStart.copy(flightPosition);
+      recordRocketTakeoff('moon');
       playerState.rocketLanded = false;
       moonLandingArmed = false;
       playerState.rocketInSpace = true;
@@ -7145,6 +8179,8 @@
       flightRocket.root.visible = true;
       flightPosition.copy(worldPos);
       flightRocketQuat.copy(worldQuat);
+      flightAchievementFrameStart.copy(flightPosition);
+      recordRocketTakeoff('ivis');
       playerState.rocketLanded = false;
       playerState.rocketInSpace = flightPosition.length() >= ROCKET_ATMOSPHERE_RADIUS;
       moonGravityActive = false;
@@ -7162,10 +8198,7 @@
       // A Moon-landed rocket stays docked to the Moon while the pilot is stationary.
       // The first held flight control undocks it into world space and allows normal flight.
       if (moonLandedRocket === flightRocket && playerState.rocketLanded) {
-        const shouldTakeOff = rocketKeyHeld(
-          'KeyW','ArrowUp','KeyS','ArrowDown','KeyA','ArrowLeft','KeyD','ArrowRight',
-          'Space','ShiftLeft','ShiftRight'
-        );
+        const shouldTakeOff = ['moveForward','moveBackward','moveLeft','moveRight','jump','sprint'].some(action => rocketKeyHeld(...getBoundCodes(action)));
 
         if (shouldTakeOff && (Number(flightPad.fuel) || 0) > 0) {
           undockMoonRocketForFlight();
@@ -7185,10 +8218,7 @@
       }
 
       if (cordeliaLandedRocket === flightRocket && playerState.rocketLanded) {
-        const shouldTakeOff = rocketKeyHeld(
-          'KeyW','ArrowUp','KeyS','ArrowDown','KeyA','ArrowLeft','KeyD','ArrowRight',
-          'Space','ShiftLeft','ShiftRight'
-        );
+        const shouldTakeOff = ['moveForward','moveBackward','moveLeft','moveRight','jump','sprint'].some(action => rocketKeyHeld(...getBoundCodes(action)));
         if (shouldTakeOff && (Number(flightPad.fuel) || 0) > 0) {
           undockCordeliaRocketForFlight();
         } else {
@@ -7209,10 +8239,7 @@
       // its parent/reference state changed for a frame. Surface-docked rockets are handled above;
       // a normal Ivis-pad rocket can still undock on the first real flight input.
       if (playerState.rocketLanded) {
-        const shouldTakeOff = rocketKeyHeld(
-          'KeyW','ArrowUp','KeyS','ArrowDown','KeyA','ArrowLeft','KeyD','ArrowRight',
-          'Space','ShiftLeft','ShiftRight'
-        );
+        const shouldTakeOff = ['moveForward','moveBackward','moveLeft','moveRight','jump','sprint'].some(action => rocketKeyHeld(...getBoundCodes(action)));
         if (shouldTakeOff && (Number(flightPad.fuel) || 0) > 0 && !moonLandedRocket && !cordeliaLandedRocket) {
           undockIvisRocketForFlight();
         } else {
@@ -7265,12 +8292,12 @@
       cameraMoveForward.normalize();
       cameraMoveRight.crossVectors(cameraMoveForward, basis.up).normalize();
 
-      if (rocketKeyHeld('KeyW','ArrowUp')) forwardInput += 1;
-      if (rocketKeyHeld('KeyS','ArrowDown')) forwardInput -= 1;
-      if (rocketKeyHeld('KeyA','ArrowLeft')) rightInput -= 1;
-      if (rocketKeyHeld('KeyD','ArrowRight')) rightInput += 1;
-      if (rocketKeyHeld('Space')) verticalInput += 1;
-      if (rocketKeyHeld('ShiftLeft','ShiftRight')) verticalInput -= 1;
+      if (rocketKeyHeld(...getBoundCodes('moveForward'))) forwardInput += 1;
+      if (rocketKeyHeld(...getBoundCodes('moveBackward'))) forwardInput -= 1;
+      if (rocketKeyHeld(...getBoundCodes('moveLeft'))) rightInput -= 1;
+      if (rocketKeyHeld(...getBoundCodes('moveRight'))) rightInput += 1;
+      if (rocketKeyHeld(...getBoundCodes('jump'))) verticalInput += 1;
+      if (rocketKeyHeld(...getBoundCodes('sprint'))) verticalInput -= 1;
 
       // Dedicated Cordelia takeoff: always provide an outward escape vector for the first
       // moments after undocking. This completely separates launch from the ordinary movement
@@ -7377,6 +8404,14 @@
         }
       }
 
+      // Account-wide flight distance is measured from actual rocket displacement, not elapsed
+      // time or intended input, so blocked movement and stationary flight do not inflate it.
+      if (state.gameMode === 'survival' && currentAccountUser && !playerState.rocketLanded) {
+        const movedThisFrame = flightAchievementFrameStart.distanceTo(flightPosition);
+        recordFlightAchievementProgress(movedThisFrame, delta, flightPosition.length());
+      }
+      flightAchievementFrameStart.copy(flightPosition);
+
       // Landing is deliberate: entering the small landing zone does NOT immediately snap the
       // ship back to the pad while the pilot is still moving. Release all flight controls while
       // parked over the pad and the ship settles onto the exact launch position.
@@ -7393,6 +8428,7 @@
       // Play the cinematic boom whenever the ship crosses the atmosphere/space boundary
       // in either direction. The 300-unit line is the gameplay state change.
       if (playerState.rocketInSpace !== lastRocketSpaceState) {
+        if (playerState.rocketInSpace) awardAchievement('launch_first_space');
         playAudio('spaceAtmosphereBoom', 0.62, 1.0);
         lastRocketSpaceState = playerState.rocketInSpace;
       }
@@ -7523,7 +8559,8 @@
           direction: pad.direction.toArray(),
           yaw: pad.yaw,
           hasRocket: !!pad.rocket,
-          fuel: Math.max(0, Math.min(ROCKET_FUEL_CAPACITY, Number(pad.fuel) || 0))
+          fuel: Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(pad.fuel) || 0)),
+          engineType: pad.engineType === 'upgraded' ? 'upgraded' : 'standard'
         })),
         drills: placedDrills.map(drill => ({ direction: drill.direction.toArray(), yaw: drill.yaw, durability: drill.durability })),
         droppedItems: droppedItems.map(drop => ({ typeId: drop.typeId, count: drop.count, direction: drop.direction.toArray() }))
@@ -7701,6 +8738,20 @@
         }
       }
 
+      if (Array.isArray(data.moonQuartz) && data.moonQuartz.length === moonQuartzSpawns.length) {
+        for (let i = 0; i < moonQuartzSpawns.length; i++) {
+          const saved = data.moonQuartz[i];
+          const spawn = moonQuartzSpawns[i];
+          if (Array.isArray(saved.direction)) {
+            spawn.direction.copy(new THREE.Vector3().fromArray(saved.direction).normalize());
+            spawn.root.position.copy(spawn.direction).multiplyScalar(MOON_RADIUS + 0.6);
+            spawn.root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), spawn.direction);
+          }
+          spawn.collected = !!saved.collected;
+          spawn.root.visible = !spawn.collected;
+        }
+      }
+
       // Restore placed furnaces and their inventories.
       for (const furnace of furnaces) planetSystem.remove(furnace.root);
       furnaces.length = 0;
@@ -7725,7 +8776,9 @@
           if (!Array.isArray(saved.direction)) continue;
           const pad = createLaunchPadObject(new THREE.Vector3().fromArray(saved.direction).normalize(), Number.isFinite(saved.yaw) ? saved.yaw : 0);
           if (saved.hasRocket) placeRocketOnLaunchPad(pad);
-          pad.fuel = Math.max(0, Math.min(ROCKET_FUEL_CAPACITY, Number(saved.fuel) || 0));
+          pad.engineType = saved.engineType === 'upgraded' ? 'upgraded' : 'standard';
+          pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(saved.fuel) || 0));
+          if (pad.rocket) { pad.rocket.engineType = pad.engineType; ensureRocketEngineVisual(pad.rocket); }
         }
       }
 
@@ -7814,6 +8867,7 @@
     }
 
     function loadGameFromData(data) {
+      closeAchievements();
       applySaveData(data);
       updateInventoryActionButton();
       state.gameState = "playing";
@@ -7917,6 +8971,74 @@
       spawn.ghost.visible = true;
       // Respawn after two complete planet rotations, exactly as before.
       spawn.respawnAtSpin = state.planetSpinAngle + Math.PI * 4;
+      recordCrystalAchievement(spawn.typeId);
+      return true;
+    }
+
+    let nearbyMoonQuartz = null;
+
+    function findNearbyMoonQuartz() {
+      if (!moonWalking) return null;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      let best = null, bestDist = Infinity;
+      for (const spawn of moonQuartzSpawns) {
+        if (spawn.collected || !spawn.root.visible) continue;
+        const pos = spawn.root.getWorldPosition(new THREE.Vector3());
+        const d = pos.distanceTo(playerWorld);
+        if (d < 3.0 && d < bestDist) { bestDist = d; best = spawn; }
+      }
+      return best;
+    }
+
+    function tryCollectNearbyMoonQuartz() {
+      if (!nearbyMoonQuartz) return false;
+      if (!addItemToInventory('moon_quartz', 1)) {
+        const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden'); prompt.textContent = 'Inventory full — make room first';
+        return true;
+      }
+      nearbyMoonQuartz.collected = true;
+      nearbyMoonQuartz.root.visible = false;
+      nearbyMoonQuartz = null;
+      playAudio('moonQuartzPickup', 0.72, 1.0, 500);
+      const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden');
+      prompt.innerHTML = '<span class="promptKey">+1</span> Moon Quartz collected';
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 600);
+      return true;
+    }
+
+    function findNearbyUpgradeableRocket() {
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      if (moonWalking && moonLandedRocket) {
+        const pos = moonLandedRocket.root.getWorldPosition(new THREE.Vector3());
+        if (pos.distanceTo(playerWorld) <= 4.5) return moonLandedRocket;
+      }
+      if (cordeliaWalking && cordeliaLandedRocket) {
+        const pos = cordeliaLandedRocket.root.getWorldPosition(new THREE.Vector3());
+        if (pos.distanceTo(playerWorld) <= 4.5) return cordeliaLandedRocket;
+      }
+      const pad = findNearbyLaunchPad();
+      return pad && pad.rocket ? pad.rocket : null;
+    }
+
+    function tryUpgradeNearbyRocket() {
+      if (state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen) return false;
+      if (uiState.equippedItemType !== 'upgraded_engine') return false;
+      const rocket = findNearbyUpgradeableRocket();
+      if (!rocket || !rocket.pad) return false;
+      if (rocket.engineType === 'upgraded' || rocket.pad.engineType === 'upgraded') {
+        showFlightPrompt('Rocket already has the upgraded engine.');
+        return true;
+      }
+      const idx = getSelectedHotbarInventoryIndex();
+      if (!inventorySlots[idx] || inventorySlots[idx].typeId !== 'upgraded_engine') return false;
+      rocket.pad.engineType = 'upgraded';
+      rocket.engineType = 'upgraded';
+      rocket.pad.fuel = 0;
+      addUpgradedEngineVisual(rocket);
+      inventorySlots[idx] = null;
+      refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
+      showFlightPrompt('UPGRADED ENGINE INSTALLED · Fuel tank: 200%');
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 1000);
       return true;
     }
 
@@ -8113,7 +9235,7 @@
       choppingTreeTarget = null;
       const valid = state.gameState === 'playing' && !state.paused && !uiState.inventoryOpen && !uiState.craftingOpen &&
         settingsModal.classList.contains('hidden') && tree && !tree.chopped && tree.root.visible &&
-        findNearbyTree() === tree && mouseButtonDown;
+        findNearbyTree() === tree && isToolUseHeld();
       const prompt = document.getElementById('crystalPrompt');
 
       if (!valid) {
@@ -8137,6 +9259,7 @@
       spawnImpactParticles(getParticleWorldPosition(tree.root, 0.7), 0x8b5a35, { count: 18, life: 0.65, speed: 2.8, size: 0.085, gravity: 5.0 });
       tree.chopped = true;
       tree.root.visible = false;
+      awardAchievement('first_tree');
       nearbyTree = null;
 
       prompt.classList.remove('hidden');
@@ -8168,6 +9291,7 @@
       if (!current || current.slot.durability < amount) return false;
 
       current.slot.durability = Math.max(0, current.slot.durability - amount);
+      if (current.slot.durability < 5) awardAchievement('low_durability');
       const broke = current.slot.durability === 0;
       if (broke && !isDrill(current.item.id)) {
         inventorySlots[current.index] = null;
@@ -8210,6 +9334,9 @@
     let miningStoneStartedAt = 0;
     let miningRock = null;
     let mouseButtonDown = false;
+    let keyboardToolUseDown = false;
+    const isMouseToolBound = () => keyBindings.useTool === 'MouseLeft';
+    const isToolUseHeld = () => mouseButtonDown || keyboardToolUseDown;
     let nearbyDroppedItem = null;
 
     function mineStone() {
@@ -8292,7 +9419,7 @@
       const target = systemState.breakingSpaceObjectTarget;
       const type = systemState.breakingSpaceObjectType;
       const pad = launchPads.find(p => type === 'rocket' ? (p.rocket && p.rocket.root === target.root) : p.root === target.root);
-      const valid = state.gameState === 'playing' && !state.paused && !uiState.inventoryOpen && !uiState.craftingOpen && settingsModal.classList.contains('hidden') && mouseButtonDown && uiState.equippedItemType === 'iron_pickaxe' && target && pad && target.root.visible;
+      const valid = state.gameState === 'playing' && !state.paused && !uiState.inventoryOpen && !uiState.craftingOpen && settingsModal.classList.contains('hidden') && isToolUseHeld() && uiState.equippedItemType === 'iron_pickaxe' && target && pad && target.root.visible;
       systemState.breakingSpaceObject = false;
       systemState.breakingSpaceObjectStartedAt = 0;
       systemState.breakingSpaceObjectTarget = null;
@@ -8357,7 +9484,7 @@
       systemState.breakingFurnaceTarget = null;
 
       const valid = state.gameState === 'playing' && !state.paused && !uiState.inventoryOpen && !uiState.craftingOpen && furnace &&
-        furnace.root.visible && findNearbyFurnace() === furnace && mouseButtonDown &&
+        furnace.root.visible && findNearbyFurnace() === furnace && isToolUseHeld() &&
         isPickaxe(uiState.equippedItemType);
       if (!valid) {
         if (prompt) {
@@ -8402,7 +9529,7 @@
       const validRock = targetRock && !targetRock.mined && targetRock.root.visible && findNearbyRock() === targetRock;
       const validTerrain = !targetRock && canMineStoneHere();
       const valid = state.gameState === 'playing' && !state.paused && !uiState.inventoryOpen && !uiState.craftingOpen &&
-        settingsModal.classList.contains('hidden') && mouseButtonDown && (validRock || validTerrain);
+        settingsModal.classList.contains('hidden') && isToolUseHeld() && (validRock || validTerrain);
       const prompt = document.getElementById('crystalPrompt');
       if (!valid) {
         prompt.classList.remove('hidden');
@@ -8435,9 +9562,18 @@
         spawnImpactParticles(getParticleWorldPosition(targetRock.root, 0.18), minedItemId === 'iron_ore' ? 0x7f8791 : (minedItemId === 'copper_ore' ? 0xc86b32 : 0x8d8d8d), { count: 16, life: 0.55, speed: 2.5, size: 0.075, gravity: 5.5 });
       }
       if (minedItemId === 'iron_ore') {
+        accountAchievementProgress.ironMined += 1;
+        persistAchievementState();
+        if (accountAchievementProgress.ironMined >= 20) awardAchievement('iron_20');
         targetRock.mined = true;
         targetRock.root.visible = false;
         miningRock = null;
+      }
+
+      if (minedItemId === 'stone') {
+        accountAchievementProgress.stoneMined += 1;
+        persistAchievementState();
+        if (accountAchievementProgress.stoneMined >= 20) awardAchievement('stone_20');
       }
 
       const stillUsable = useToolOnce();
@@ -8471,7 +9607,7 @@
 
       if (playerState.inRocket) {
         prompt.classList.remove('hidden');
-        const fuel = flightPad ? Math.max(0, Math.floor(Number(flightPad.fuel) || 0)) : 0;
+        const fuel = flightPad ? Math.round(getRocketFuelPercent(flightPad)) : 0;
         if (playerState.rocketLanded) {
           const onMoon = !!(moonLandedRocket && flightRocket === moonLandedRocket);
           const onCordelia = !!(cordeliaLandedRocket && flightRocket === cordeliaLandedRocket);
@@ -8491,7 +9627,7 @@
           const rocketWorld = activeRocket.root.getWorldPosition(new THREE.Vector3());
           if (playerWorld.distanceTo(rocketWorld) <= 4.2) {
             prompt.classList.remove('hidden');
-            const fuel = Math.max(0, Math.floor(Number(activePad?.fuel) || 0));
+            const fuel = Math.round(getRocketFuelPercent(activePad || null));
             prompt.innerHTML = '<span class="promptKey">E</span> Enter spaceship · ' + (moonWalking ? 'Moon' : 'Cordelia') + ' base · Fuel ' + fuel + '%';
             return;
           }
@@ -8517,9 +9653,16 @@
       }
 
       const nearbyMerchant = findNearbyMerchant();
-      if (nearbyMerchant) {
+      const nearbyHatMerchant = findNearbyHatMerchant();
+      if (nearbyMerchant || nearbyHatMerchant) {
+        const crystalWorld = nearbyMerchant ? nearbyMerchant.getWorldPosition(new THREE.Vector3()) : null;
+        const hatWorld = nearbyHatMerchant ? nearbyHatMerchant.getWorldPosition(new THREE.Vector3()) : null;
+        const playerWorld = player.getWorldPosition(new THREE.Vector3());
+        const crystalDist = crystalWorld ? playerWorld.distanceTo(crystalWorld) : Infinity;
+        const hatDist = hatWorld ? playerWorld.distanceTo(hatWorld) : Infinity;
         prompt.classList.remove('hidden');
-        prompt.innerHTML = '<span class="promptKey">E</span> Talk to Merchant';
+        if (hatDist < crystalDist) prompt.innerHTML = '<span class="promptKey">E</span> Open Hat Shop';
+        else prompt.innerHTML = '<span class="promptKey">E</span> Talk to Merchant';
         return;
       }
 
@@ -8533,6 +9676,18 @@
       }
       nearbyDroppedItem = null;
 
+      const nearbyUpgradeableRocket = findNearbyUpgradeableRocket();
+      if (nearbyUpgradeableRocket && uiState.equippedItemType === 'upgraded_engine') {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = nearbyUpgradeableRocket.engineType === 'upgraded' ? '<span class="promptKey">UPGRADED</span> Rocket already upgraded' : '<span class="promptKey">E</span> Install Upgraded Engine · 2× fuel capacity';
+        return;
+      }
+      nearbyMoonQuartz = findNearbyMoonQuartz();
+      if (nearbyMoonQuartz && uiState.equippedItemType !== 'upgraded_engine') {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">E</span> Collect Moon Quartz';
+        return;
+      }
       let nearestDistanceSq = Infinity;
       const playerCrystalWorld = player.getWorldPosition(new THREE.Vector3());
       const allCrystalSpawns = crystalSpawns.concat(cordeliaCrystalSpawns);
@@ -8612,13 +9767,15 @@
       const nearbyPad = findNearbyLaunchPad();
       if (nearbyPad && nearbyPad.rocket && uiState.equippedItemType === 'jerrycan') {
         prompt.classList.remove('hidden');
-        if ((nearbyPad.fuel || 0) >= ROCKET_FUEL_CAPACITY) prompt.innerHTML = '<span class="promptKey">FULL</span> Rocket fuel: ' + (nearbyPad.fuel || 0) + '/' + ROCKET_FUEL_CAPACITY + ' · Remove jerrycan to enter';
-        else prompt.innerHTML = '<span class="promptKey">E</span> Fuel Rocket · ' + (nearbyPad.fuel || 0) + '/' + ROCKET_FUEL_CAPACITY;
+        const cap = getRocketFuelCapacity(nearbyPad);
+        const pct = Math.round(getRocketFuelPercent(nearbyPad));
+        if ((nearbyPad.fuel || 0) >= cap) prompt.innerHTML = '<span class="promptKey">FULL</span> Rocket fuel: 100% · Remove jerrycan to enter';
+        else prompt.innerHTML = '<span class="promptKey">E</span> Fuel Rocket · ' + pct + '% (+' + Math.round((nearbyPad.engineType === 'upgraded' ? 100 : 100) / cap * 100) + '%)';
         return;
       }
       if (nearbyPad && nearbyPad.rocket) {
         prompt.classList.remove('hidden');
-        prompt.innerHTML = '<span class="promptKey">E</span> Enter Spaceship · Fuel ' + (nearbyPad.fuel || 0) + '%';
+        prompt.innerHTML = '<span class="promptKey">E</span> Enter Spaceship · Fuel ' + Math.round(getRocketFuelPercent(nearbyPad)) + '%';
         return;
       }
       if (nearbyPad && uiState.equippedItemType === 'rocket' && !nearbyPad.rocket) {
@@ -8721,6 +9878,7 @@
       attemptPointerLock();
     }
     function goToMenu() {
+      closeAchievements();
       if (playerState.inRocket) exitRocketFlight(true);
       // Keep an automatic browser backup before resetting the live world. The portable JSON
       // save is still created with the Save Game button.
@@ -8780,11 +9938,13 @@
     }
 
     function startGame(mode = 'survival') {
+      closeAchievements();
       state.gameMode = mode === 'freeplay' ? 'freeplay' : 'survival';
       updateInventoryActionButton();
 
       // Starting a new game always begins with the normal fresh-player state.
       resetPlayerState();
+      resetContinuousSurvivalAchievementRun();
       closeModeChooser();
 
       // pointer lock must be requested synchronously, right inside this real click
@@ -8792,6 +9952,8 @@
       attemptPointerLock();
 
       state.gameState = "playing";
+      recordCelestialBodyVisit('ivis');
+      if (playerState.currentPlanetId === 'ivis' || !playerState.currentPlanetId) awardAchievement('spawn_ivis');
       document.body.classList.remove("state-menu");
       document.body.classList.add("state-playing");
 
@@ -8873,6 +10035,106 @@
       }
       if (uiState.furnaceOpen) e.preventDefault();
     });
+    // ---------- rebindable keyboard controls ----------
+    // Bindings are shared across walking, planetary movement, and spaceship flight.
+    // They persist locally so changing a key survives reloads without touching save data.
+    const DEFAULT_KEY_BINDINGS = {
+      moveForward: 'KeyW', moveLeft: 'KeyA', moveBackward: 'KeyS', moveRight: 'KeyD',
+      sprint: 'ShiftLeft', jump: 'Space', toggleView: 'KeyC', flashlight: 'KeyF',
+      interact: 'KeyE', drop: 'KeyQ', inventory: 'KeyI', slot1: 'Digit1', slot2: 'Digit2',
+      slot3: 'Digit3', slot4: 'Digit4', map: 'KeyM', weather: 'KeyG', useTool: 'MouseLeft', pause: 'Escape'
+    };
+    const KEY_BINDING_STORAGE = 'pocketUniverseKeyBindings';
+    let keyBindings = { ...DEFAULT_KEY_BINDINGS };
+    try {
+      const stored = JSON.parse(localStorage.getItem(KEY_BINDING_STORAGE) || '{}');
+      if (stored && typeof stored === 'object') {
+        for (const action of Object.keys(DEFAULT_KEY_BINDINGS)) {
+          if (typeof stored[action] === 'string' && stored[action]) keyBindings[action] = stored[action];
+        }
+      }
+    } catch (err) { console.warn('Could not load key bindings', err); }
+
+    const KEY_BINDING_LABELS = {
+      moveForward: 'Move forward', moveLeft: 'Move left', moveBackward: 'Move backward', moveRight: 'Move right',
+      sprint: 'Sprint / ship down', jump: 'Jump / ship up', toggleView: 'Toggle view', flashlight: 'Flashlight',
+      interact: 'Interact / collect / enter-exit', drop: 'Drop item', inventory: 'Inventory',
+      slot1: 'Hotbar slot 1', slot2: 'Hotbar slot 2', slot3: 'Hotbar slot 3', slot4: 'Hotbar slot 4',
+      map: 'Open map', weather: 'Weather menu (Freeplay)', useTool: 'Chop / use tool', pause: 'Pause menu'
+    };
+    const getBoundCodes = (action) => {
+      const code = keyBindings[action];
+      return code ? [code] : [];
+    };
+    const isKeyBoundTo = (code, action) => keyBindings[action] === code;
+    const isActionDown = (action) => getBoundCodes(action).some(code => !!physicalKeys[code] || !!systemState.keys[code]);
+    const isActionEvent = (event, action) => isKeyBoundTo(event.code, action);
+    const allBoundCodes = () => new Set(Object.values(keyBindings));
+    const prettyKeyCode = (code) => {
+      const names = { Space: 'Space', Escape: 'Esc', ShiftLeft: 'Shift', ShiftRight: 'Shift', ControlLeft: 'Ctrl', ControlRight: 'Ctrl',
+        AltLeft: 'Alt', AltRight: 'Alt', Tab: 'Tab', MouseLeft: 'LMB', Enter: 'Enter', Backspace: 'Backspace', Delete: 'Delete',
+        ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', NumpadDecimal: 'Num .', NumpadAdd: 'Num +',
+        NumpadSubtract: 'Num −', NumpadMultiply: 'Num ×', NumpadDivide: 'Num ÷', CapsLock: 'Caps Lock',
+        Backquote: '`', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\\\',
+        Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Pause: 'Pause', Insert: 'Insert', Home: 'Home', End: 'End', PageUp: 'PgUp', PageDown: 'PgDn'
+      };
+      if (names[code]) return names[code];
+      if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+      if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+      if (/^Numpad[0-9]$/.test(code)) return 'Num ' + code.slice(6);
+      if (/^F([1-9]|1[0-2])$/.test(code)) return code;
+      return code.replace(/^Numpad/, 'Num ').replace(/^Intl/, 'Intl ');
+    };
+    let activeRebindAction = null;
+    const rebindStatus = document.getElementById('rebindStatus');
+    function saveKeyBindings() { localStorage.setItem(KEY_BINDING_STORAGE, JSON.stringify(keyBindings)); }
+    function renderKeyBindings() {
+      document.querySelectorAll('.rebindKey').forEach((button) => {
+        const action = button.dataset.bind;
+        if (!action || !keyBindings[action]) return;
+        button.textContent = prettyKeyCode(keyBindings[action]);
+        button.classList.toggle('rebinding', activeRebindAction === action);
+      });
+      if (rebindStatus) {
+        rebindStatus.textContent = activeRebindAction
+          ? `Press a key for ${KEY_BINDING_LABELS[activeRebindAction] || 'this action'}… Press Esc to cancel.`
+          : 'Click a key, then press the new keyboard key. Click again to cancel.';
+      }
+    }
+    function beginKeyRebind(action) {
+      if (!keyBindings[action]) return;
+      if (activeRebindAction === action) { activeRebindAction = null; renderKeyBindings(); return; }
+      activeRebindAction = action;
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      renderKeyBindings();
+    }
+    function finishKeyRebind(code) {
+      if (!activeRebindAction || !code) return;
+      const action = activeRebindAction;
+      if (code === 'Escape') { activeRebindAction = null; renderKeyBindings(); return; }
+      // Keep one clean binding per action: if the chosen key is already assigned,
+      // swap the two actions rather than creating an invisible conflict.
+      const oldCode = keyBindings[action];
+      const otherAction = Object.keys(keyBindings).find(a => a !== action && keyBindings[a] === code);
+      keyBindings[action] = code;
+      if (otherAction) keyBindings[otherAction] = oldCode;
+      saveKeyBindings();
+      // Refresh the preventDefault set so newly chosen keys behave exactly like the originals.
+      GAME_KEYS.clear();
+      for (const code of allBoundCodes()) if (code !== 'MouseLeft') GAME_KEYS.add(code);
+      ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','ShiftRight'].forEach(code => GAME_KEYS.add(code));
+      activeRebindAction = null;
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      renderKeyBindings();
+    }
+    document.querySelectorAll('.rebindKey').forEach((button) => {
+      button.addEventListener('click', (e) => { e.stopPropagation(); beginKeyRebind(button.dataset.bind); });
+    });
+    renderKeyBindings();
+
     // ---------- keyboard input ----------
     // Keep a dedicated physical-key map as a safety net. The gameplay state can be
     // cleared when opening/closing UI, so movement keys are read from this map first.
@@ -8882,24 +10144,48 @@
 
     // Keyboard state is shared through systemState.
     const GAME_KEYS = new Set([
-      "KeyW", "KeyA", "KeyS", "KeyD",
-      "KeyQ",
+      ...[...allBoundCodes()].filter(code => code !== 'MouseLeft'),
       "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
-      "Space", "ShiftLeft", "ShiftRight", "KeyC", "KeyF", "KeyI", "KeyE", "KeyM", "KeyG",
-      "Digit1", "Digit2", "Digit3", "Digit4"
+      "ShiftRight"
     ]);
 
     window.addEventListener("keydown", (e) => {
+      // Let text fields behave like normal form controls. The gameplay key handler
+      // below calls preventDefault() for movement/action keys, which would otherwise
+      // swallow letters while typing into the account form (W/A/S/D/etc.).
+      const editableTarget = e.target && (
+        e.target.matches?.("input, textarea, select") ||
+        e.target.isContentEditable
+      );
+      if (editableTarget) {
+        if (e.key === "Escape") {
+          if (!accountModal.classList.contains("hidden")) {
+            e.preventDefault();
+            closeAccount();
+          }
+        }
+        return;
+      }
+
+      if (activeRebindAction && !settingsModal.classList.contains('hidden')) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!e.repeat) finishKeyRebind(e.code);
+        return;
+      }
+
       physicalKeys[e.code] = true;
-      if (e.code === "KeyE" && !e.repeat && state.gameState === "playing" && !state.paused && settingsModal.classList.contains("hidden") && playerState.inRocket) {
+      if (isActionEvent(e, 'interact') && !e.repeat && state.gameState === "playing" && !state.paused && settingsModal.classList.contains("hidden") && playerState.inRocket) {
         e.preventDefault();
         exitRocketFlight(false);
         return;
       }
 
-      if (e.code === "KeyE" && !e.repeat && state.gameState === "playing" && !state.paused && !uiState.inventoryOpen && !economyState.merchantOpen && settingsModal.classList.contains("hidden")) {
+      if (isActionEvent(e, 'interact') && !e.repeat && state.gameState === "playing" && !state.paused && !uiState.inventoryOpen && !economyState.merchantOpen && settingsModal.classList.contains("hidden")) {
         e.preventDefault();
         if (openMerchant()) return;
+        if (openNearbyHatShop()) return;
+        if (tryUpgradeNearbyRocket()) return;
         if (startRocketFueling()) return;
         if (startDrillRefueling()) return;
         // On Moon/Cordelia, only allow re-entry when the player is actually beside the landed
@@ -8912,11 +10198,12 @@
         if (uiState.equippedItemType === 'launch_pad' && tryPlaceLaunchPad()) return;
         if (uiState.equippedItemType === 'rocket' && tryPlaceRocketOnNearbyPad()) return;
         if (tryPickupNearbyDroppedItem()) return;
+        if (tryCollectNearbyMoonQuartz()) return;
         tryCollectNearbyCrystal();
         return;
       }
 
-      if (e.code === "KeyG" && !e.repeat && state.gameState === "playing" && !state.paused && settingsModal.classList.contains("hidden")) {
+      if (isActionEvent(e, 'weather') && !e.repeat && state.gameState === "playing" && !state.paused && settingsModal.classList.contains("hidden")) {
         const inCreative = state.gameMode === 'freeplay' || state.gameMode === 'creative';
         if (inCreative && !playerState.inRocket) {
           e.preventDefault();
@@ -8925,7 +10212,7 @@
         }
       }
 
-      if (e.code === "KeyQ" && !e.repeat && state.gameState === "playing") {
+      if (isActionEvent(e, 'drop') && !e.repeat && state.gameState === "playing") {
         if (playerState.inRocket) return;
         e.preventDefault();
         let ref = null;
@@ -8938,35 +10225,46 @@
         return;
       }
 
-      if (e.code === "KeyI" && !e.repeat && state.gameState === "playing" && settingsModal.classList.contains("hidden")) {
+      if (isActionEvent(e, 'inventory') && !e.repeat && state.gameState === "playing" && settingsModal.classList.contains("hidden")) {
         if (playerState.inRocket) return;
         e.preventDefault();
         toggleInventory();
         return;
       }
 
-      if (e.code === "Digit1" || e.code === "Digit2" || e.code === "Digit3" || e.code === "Digit4") {
+      if (isActionEvent(e, 'slot1') || isActionEvent(e, 'slot2') || isActionEvent(e, 'slot3') || isActionEvent(e, 'slot4')) {
         if (playerState.inRocket) return;
         if (state.gameState === "playing" && !uiState.inventoryOpen && settingsModal.classList.contains("hidden")) {
           e.preventDefault();
-          selectHotbarSlot(Number(e.code.slice(-1)) - 1);
+          selectHotbarSlot(isActionEvent(e, 'slot1') ? 0 : isActionEvent(e, 'slot2') ? 1 : isActionEvent(e, 'slot3') ? 2 : 3);
         }
         return;
       }
 
-      if (e.code === "KeyM" && !e.repeat && state.gameState === "playing" && settingsModal.classList.contains("hidden")) {
+      if (isActionEvent(e, 'useTool') && !e.repeat && state.gameState === 'playing' && settingsModal.classList.contains('hidden')) {
+        e.preventDefault();
+        keyboardToolUseDown = true;
+        startPrimaryToolAction();
+        return;
+      }
+
+      if (isActionEvent(e, 'map') && !e.repeat && state.gameState === "playing" && settingsModal.classList.contains("hidden")) {
         e.preventDefault();
         togglePlanetMap();
         return;
       }
 
-      if (e.code === "Escape") {
+      if (isActionEvent(e, 'pause')) {
         if (mapOpen) {
           closePlanetMap();
           return;
         }
         if (economyState.merchantOpen) {
           closeMerchant();
+          return;
+        }
+        if (cosmeticShopOpen) {
+          closeCosmeticShop();
           return;
         }
         if (!modeChooser.classList.contains('hidden')) {
@@ -8995,10 +10293,10 @@
       }
       if (GAME_KEYS.has(e.code)) e.preventDefault();
       systemState.keys[e.code] = true;
-      if (e.code === "KeyC" && !e.repeat && state.gameState === "playing") {
+      if (isActionEvent(e, 'toggleView') && !e.repeat && state.gameState === "playing") {
         if (!playerState.inRocket) toggleThirdPerson();
       }
-      if (e.code === "KeyF" && !e.repeat && state.gameState === "playing" && settingsModal.classList.contains("hidden")) {
+      if (isActionEvent(e, 'flashlight') && !e.repeat && state.gameState === "playing" && settingsModal.classList.contains("hidden")) {
         if (playerState.inRocket) return;
         setFlashlight(!playerState.flashlightOn);
       }
@@ -9007,12 +10305,27 @@
       if (GAME_KEYS.has(e.code)) e.preventDefault();
       physicalKeys[e.code] = false;
       systemState.keys[e.code] = false;
+      if (isActionEvent(e, 'useTool')) keyboardToolUseDown = false;
     });
     window.addEventListener("blur", () => {
       clearPhysicalKeys();
       for (const k in systemState.keys) systemState.keys[k] = false;
       clearPhysicalKeys();
     });
+
+    window.addEventListener('pointerdown', (e) => {
+      if (!activeRebindAction || settingsModal.classList.contains('hidden')) return;
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      keyBindings[activeRebindAction] = 'MouseLeft';
+      saveKeyBindings();
+      GAME_KEYS.delete('MouseLeft');
+      activeRebindAction = null;
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      renderKeyBindings();
+    }, true);
 
     // ---------- main-menu planet rotation ----------
     // The menu buttons/overlay are drawn on top of the Three.js canvas, so listening
@@ -9023,7 +10336,7 @@
       if (state.gameState !== "menu" || e.button !== 0) return;
 
       // Do not start rotating when the player is clicking a menu button or control.
-      if (e.target.closest && e.target.closest("button, #controlsToggle, #settingsModal")) return;
+      if (e.target.closest && e.target.closest("button, input, textarea, select, a, #controlsToggle, #settingsModal, #accountModal, #achievementsModal, #homeButtons, #modeChooser, #pauseOverlay")) return;
 
       systemState.menuDragging = true;
       systemState.menuLastX = e.clientX;
@@ -9067,37 +10380,42 @@
     // Use a normal cursor on the menu until the player starts dragging the planet.
     document.body.style.cursor = "default";
 
-    // ---------- mouse look: pointer lock, with a drag-to-look fallback ----------
+    // ---------- primary tool action ----------
+    // Left-click is the default binding, but the same action can be rebound to any keyboard key.
+    function startPrimaryToolAction() {
+      if (state.gameState !== 'playing' || playerState.inRocket || uiState.inventoryOpen || !settingsModal.classList.contains('hidden')) return false;
+      if (uiState.equippedItemType === 'drill') {
+        if (breakNearbyFurnace()) return true;
+        if (findNearbyRock()) { mineStone(); return true; }
+        if (findNearbyTree()) { chopNearbyTree(); return true; }
+        return mineStone();
+      }
+      if (uiState.equippedItemType === 'wooden_pickaxe' || uiState.equippedItemType === 'stone_pickaxe' || uiState.equippedItemType === 'iron_pickaxe') {
+        if (uiState.equippedItemType === 'iron_pickaxe' && breakNearbySpaceObject()) return true;
+        return breakNearbyFurnace() || mineStone();
+      }
+      if (uiState.equippedItemType === 'axe' || uiState.equippedItemType === 'wooden_axe' || uiState.equippedItemType === 'stone_axe' || uiState.equippedItemType === 'iron_axe') {
+        return chopNearbyTree();
+      }
+      if (isScythe(uiState.equippedItemType)) return cutNearbyGrass();
+      return false;
+    }
+
     let isDragging = false;
 
     canvas.addEventListener("mousedown", (e) => {
       if (state.gameState === "playing" && e.button === 0) {
         isDragging = true;
-        if (playerState.inRocket) { mouseButtonDown = true; return; }
-        mouseButtonDown = true;
-        // When an axe/pickaxe is equipped, holding left-click starts the corresponding
-        // action. Releasing the button cancels the action and resets its progress.
-        if (!uiState.inventoryOpen && settingsModal.classList.contains("hidden")) {
-          if (uiState.equippedItemType === 'drill') {
-            // The drill can mine rocks/ores OR chop trees. Prefer a directly targeted
-            // rock first; if there isn't one, let it choose a nearby tree.
-            if (breakNearbyFurnace()) return;
-            if (findNearbyRock()) { mineStone(); return; }
-            if (findNearbyTree()) { chopNearbyTree(); return; }
-            mineStone();
-          } else if (uiState.equippedItemType === 'wooden_pickaxe' || uiState.equippedItemType === 'stone_pickaxe' || uiState.equippedItemType === 'iron_pickaxe') {
-            if (uiState.equippedItemType === 'iron_pickaxe' && breakNearbySpaceObject()) return;
-            if (!breakNearbyFurnace()) mineStone();
-          } else if (uiState.equippedItemType === 'axe' || uiState.equippedItemType === 'wooden_axe' || uiState.equippedItemType === 'stone_axe' || uiState.equippedItemType === 'iron_axe') {
-            chopNearbyTree();
-          } else if (isScythe(uiState.equippedItemType)) cutNearbyGrass();
-        }
+        if (playerState.inRocket) { mouseButtonDown = false; return; }
+        mouseButtonDown = isMouseToolBound();
+        if (mouseButtonDown) startPrimaryToolAction();
       }
     });
     window.addEventListener("mouseup", (e) => {
       if (e.button === 0 || e.button === undefined) {
         isDragging = false;
         mouseButtonDown = false;
+        keyboardToolUseDown = false;
         if (choppingTree || miningStone || scytheCutting) {
           choppingTree = false;
           choppingTreeStartedAt = 0;
@@ -9125,6 +10443,7 @@
     window.addEventListener("blur", () => {
       isDragging = false;
       mouseButtonDown = false;
+      keyboardToolUseDown = false;
       choppingTree = false;
       choppingTreeStartedAt = 0;
       choppingTreeTarget = null;
@@ -9159,14 +10478,23 @@
         thirdPersonCameraForward.normalize();
         playerState.thirdPersonOrbitPitch = Math.max(-0.35, Math.min(0.85, playerState.thirdPersonOrbitPitch - dy * 0.85));
       } else {
-        // First-person yaw rotates around the player's current local surface-up direction.
-        // On spherical planets this must be the local planet normal, not global +Y, otherwise
-        // turning the mouse on Cordelia leaves the movement heading stuck in an old direction.
-        const activeSurfaceUp = (cordeliaWalking || moonWalking)
-          ? player.position.clone().normalize()
-          : new THREE.Vector3(0, 1, 0);
-        const yawQuat = new THREE.Quaternion().setFromAxisAngle(activeSurfaceUp, -dx);
-        orientation.multiply(yawQuat);
+        // First-person yaw must behave exactly like Ivis on every spherical body.
+        //
+        // Ivis uses the player's current surface normal as the yaw axis. Moon/Cordelia are
+        // also represented in their own local planet space, so their surface normal is the
+        // correct axis too. The important difference is quaternion order: the yaw is a
+        // rotation in the CURRENT PLANET/LOCAL frame, so it must be pre-multiplied onto the
+        // player's orientation. Post-multiplying it rotates around the player's own local
+        // axis and can cause the camera to reverse or become effectively locked at certain
+        // latitudes/longitudes as the surface orientation changes.
+        if (moonWalking || cordeliaWalking) {
+          const activeSurfaceUp = player.position.clone().normalize();
+          const yawQuat = new THREE.Quaternion().setFromAxisAngle(activeSurfaceUp, -dx);
+          orientation.premultiply(yawQuat);
+        } else {
+          const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -dx);
+          orientation.multiply(yawQuat);
+        }
         playerState.pitch -= dy;
         playerState.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, playerState.pitch));
       }
@@ -9226,15 +10554,14 @@
         }
       }
 
-      // Stall collision: convert the candidate from planetSystem-local coordinates to the
-      // stall's local coordinates explicitly. crystalStall.worldToLocal() cannot be used here
-      // because the candidate is NOT a world-space point.
-      if (crystalStall && crystalStall.userData.collision) {
-        collisionStallOffset.copy(localPosition).sub(crystalStall.position);
-        collisionStallInverse.copy(crystalStall.quaternion).invert();
+      // Stall collisions: both permanent stalls are solid.
+      for (const stall of [crystalStall, hatStall]) {
+        if (!stall || !stall.userData.collision) continue;
+        collisionStallOffset.copy(localPosition).sub(stall.position);
+        collisionStallInverse.copy(stall.quaternion).invert();
         collisionStallLocal.copy(collisionStallOffset).applyQuaternion(collisionStallInverse);
 
-        const c = crystalStall.userData.collision;
+        const c = stall.userData.collision;
         if (Math.abs(collisionStallLocal.x) <= c.halfX + c.padding &&
             Math.abs(collisionStallLocal.z) <= c.halfZ + c.padding &&
             Math.abs(collisionStallLocal.y) < 3.0) {
@@ -9273,19 +10600,58 @@
       return false;
     }
 
+    // Build movement from the actual gameplay camera so WASD always follows what the player
+    // is looking at. This is deliberately world-space first, then converted into the active
+    // planet's local space. That keeps the control scheme identical on Ivis, the Moon, and
+    // Cordelia even when those bodies are rotated/orbited in world space.
+    function getCameraRelativePlanetMove(inputX, inputZ, surfaceUpWorld, planetObject = null, out = new THREE.Vector3()) {
+      const cameraForwardWorld = new THREE.Vector3();
+      camera.getWorldDirection(cameraForwardWorld).normalize();
+      cameraForwardWorld.addScaledVector(surfaceUpWorld, -cameraForwardWorld.dot(surfaceUpWorld));
+      if (cameraForwardWorld.lengthSq() < 0.00001) {
+        cameraForwardWorld.set(0, 0, -1);
+        cameraForwardWorld.addScaledVector(surfaceUpWorld, -cameraForwardWorld.dot(surfaceUpWorld));
+      }
+      cameraForwardWorld.normalize();
+
+      const cameraRightWorld = new THREE.Vector3().crossVectors(cameraForwardWorld, surfaceUpWorld).normalize();
+      out.copy(cameraRightWorld).multiplyScalar(inputX)
+        .addScaledVector(cameraForwardWorld, -inputZ);
+      out.addScaledVector(surfaceUpWorld, -out.dot(surfaceUpWorld));
+      if (out.lengthSq() < 0.00001) return out.set(0, 0, 0);
+      out.normalize();
+
+      if (planetObject) {
+        const invPlanetQuat = planetObject.getWorldQuaternion(new THREE.Quaternion()).invert();
+        out.applyQuaternion(invPlanetQuat).normalize();
+      }
+      return out;
+    }
+
+    function getActiveWalkingSurfaceWorld(out = new THREE.Vector3()) {
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      let centerWorld;
+      if (moonWalking) centerWorld = moonMesh.getWorldPosition(new THREE.Vector3());
+      else if (cordeliaWalking) centerWorld = cordeliaMesh.getWorldPosition(new THREE.Vector3());
+      else centerWorld = planetSystem.getWorldPosition(new THREE.Vector3());
+      out.copy(playerWorld).sub(centerWorld);
+      if (out.lengthSq() < 0.00001) out.set(0, 1, 0);
+      return out.normalize();
+    }
+
     function groundedForAudio(ps) {
       return ps.heightOffset <= 0.02 && Math.abs(ps.verticalVelocity) < 0.4;
     }
 
     function updatePlayer(delta) {
       let moveX = 0, moveZ = 0;
-      if (isPhysicalKeyDown("KeyW") || isPhysicalKeyDown("ArrowUp")) moveZ -= 1;
-      if (isPhysicalKeyDown("KeyS") || isPhysicalKeyDown("ArrowDown")) moveZ += 1;
-      if (isPhysicalKeyDown("KeyA") || isPhysicalKeyDown("ArrowLeft")) moveX -= 1;
-      if (isPhysicalKeyDown("KeyD") || isPhysicalKeyDown("ArrowRight")) moveX += 1;
+      if (isActionDown('moveForward')) moveZ -= 1;
+      if (isActionDown('moveBackward')) moveZ += 1;
+      if (isActionDown('moveLeft')) moveX -= 1;
+      if (isActionDown('moveRight')) moveX += 1;
 
       const isMoving = (moveX !== 0 || moveZ !== 0);
-      const shiftHeld = isPhysicalKeyDown("ShiftLeft") || isPhysicalKeyDown("ShiftRight");
+      const shiftHeld = isActionDown('sprint');
 
       let speed = MOVE_SPEED;
       if (state.gameMode === 'freeplay') {
@@ -9324,7 +10690,7 @@
       }
       footstepWasActive = footstepActive;
 
-      if (mouseButtonDown && isScythe(uiState.equippedItemType) && !scytheCutting) cutNearbyGrass();
+      if (isToolUseHeld() && isScythe(uiState.equippedItemType) && !scytheCutting) cutNearbyGrass();
       const nowAudio = performance.now();
       finishScytheCut();
       if (scytheCutting) {
@@ -9347,27 +10713,12 @@
       if (isMoving) {
         tmpMove.set(moveX, 0, moveZ).normalize();
 
-        if (playerState.thirdPerson) {
-          // Third-person movement follows the dedicated camera heading, exactly like the
-          // ship. Pitch is ignored for movement, so W/A/S/D stay tangent to the planet.
-          // Everything here is planetSystem-local, matching player.position and orientation.
-          const moveUp = tmpDir;
-          const cameraForward = thirdPersonCameraForward;
-          cameraForward.addScaledVector(moveUp, -cameraForward.dot(moveUp));
-          if (cameraForward.lengthSq() < 0.00001) {
-            cameraForward.set(0, 0, -1);
-            cameraForward.addScaledVector(moveUp, -cameraForward.dot(moveUp));
-          }
-          cameraForward.normalize();
-          const cameraRight = thirdPersonCameraRight
-            .crossVectors(cameraForward, moveUp).normalize();
-          tmpWorldMove.copy(cameraRight).multiplyScalar(tmpMove.x)
-            .addScaledVector(cameraForward, -tmpMove.z);
-        } else {
-          tmpWorldMove.copy(tmpMove).applyQuaternion(orientation);
-        }
+        const moveSurfaceUpWorld = getActiveWalkingSurfaceWorld(new THREE.Vector3());
+        getCameraRelativePlanetMove(tmpMove.x, tmpMove.z, moveSurfaceUpWorld, planetSystem, tmpWorldMove);
+        // updatePlayer() already lives in Ivis/planetSystem local space, so the helper
+        // result is immediately usable here.
+        if (tmpWorldMove.lengthSq() < 0.00001) tmpWorldMove.copy(tmpMove).applyQuaternion(orientation).normalize();
 
-        tmpWorldMove.normalize();
         tmpWorldMove.multiplyScalar(speed * delta);
 
         // Move in small sub-steps so high sprint speed cannot tunnel through a tree or the
@@ -9399,7 +10750,7 @@
         spawnLandingDust(landingPos, landingNormal);
       }
       wasGroundedForAudio = grounded;
-      if (grounded && isPhysicalKeyDown("Space")) {
+      if (grounded && isActionDown('jump')) {
         playerState.verticalVelocity = JUMP_SPEED;
       }
       playerState.verticalVelocity -= GRAVITY * delta;
@@ -9513,12 +10864,12 @@
       if (!moonWalking || state.gameState !== 'playing' || state.paused) return;
 
       let moveX = 0, moveZ = 0;
-      if (isPhysicalKeyDown('KeyW') || isPhysicalKeyDown('ArrowUp')) moveZ -= 1;
-      if (isPhysicalKeyDown('KeyS') || isPhysicalKeyDown('ArrowDown')) moveZ += 1;
-      if (isPhysicalKeyDown('KeyA') || isPhysicalKeyDown('ArrowLeft')) moveX -= 1;
-      if (isPhysicalKeyDown('KeyD') || isPhysicalKeyDown('ArrowRight')) moveX += 1;
+      if (isActionDown('moveForward')) moveZ -= 1;
+      if (isActionDown('moveBackward')) moveZ += 1;
+      if (isActionDown('moveLeft')) moveX -= 1;
+      if (isActionDown('moveRight')) moveX += 1;
       const isMoving = moveX !== 0 || moveZ !== 0;
-      const shiftHeld = isPhysicalKeyDown('ShiftLeft') || isPhysicalKeyDown('ShiftRight');
+      const shiftHeld = isActionDown('sprint');
 
       let speed = MOVE_SPEED;
       if (state.gameMode === 'freeplay') {
@@ -9543,17 +10894,9 @@
       const moonUp = getMoonLocalUp(new THREE.Vector3());
       if (isMoving) {
         tmpMove.set(moveX, 0, moveZ).normalize();
-        if (playerState.thirdPerson) {
-          const cameraForwardLocal = thirdPersonCameraForward.clone();
-          cameraForwardLocal.addScaledVector(moonUp, -cameraForwardLocal.dot(moonUp));
-          if (cameraForwardLocal.lengthSq() < 0.00001) cameraForwardLocal.set(0, 0, -1).addScaledVector(moonUp, moonUp.z * 0);
-          cameraForwardLocal.normalize();
-          const cameraRightLocal = new THREE.Vector3().crossVectors(cameraForwardLocal, moonUp).normalize();
-          tmpWorldMove.copy(cameraRightLocal).multiplyScalar(tmpMove.x)
-            .addScaledVector(cameraForwardLocal, -tmpMove.z);
-        } else {
-          tmpWorldMove.copy(tmpMove).applyQuaternion(orientation);
-        }
+        const moveSurfaceUpWorld = getActiveWalkingSurfaceWorld(new THREE.Vector3());
+        getCameraRelativePlanetMove(tmpMove.x, tmpMove.z, moveSurfaceUpWorld, moonMesh, tmpWorldMove);
+        if (tmpWorldMove.lengthSq() < 0.00001) tmpWorldMove.copy(tmpMove).applyQuaternion(orientation);
         tmpWorldMove.addScaledVector(moonUp, -tmpWorldMove.dot(moonUp)).normalize();
         const moveDistance = speed * delta;
         const angularStep = moveDistance / MOON_PLAYER_GROUND_RADIUS;
@@ -9562,7 +10905,7 @@
       }
 
       const grounded = playerState.heightOffset <= 0;
-      if (grounded && isPhysicalKeyDown('Space') && playerState.verticalVelocity <= 0) {
+      if (grounded && isActionDown('jump') && playerState.verticalVelocity <= 0) {
         playerState.verticalVelocity = MOON_JUMP_SPEED;
       }
       playerState.verticalVelocity -= GRAVITY * delta;
@@ -9625,10 +10968,70 @@
       }
     }
 
+    function resetContinuousSurvivalAchievementRun() {
+      survivalRunSeconds = 0;
+      survivalRunSawNight = false;
+    }
+
+    function updateSurvivalAchievementTelemetry(delta, nightAmount) {
+      if (!currentAccountUser || state.gameMode !== 'survival' || state.gameState !== 'playing' || state.paused) return;
+      survivalRunSeconds += Math.max(0, delta);
+      if (nightAmount > 0.55) {
+        survivalRunSawNight = true;
+        awardAchievement('first_night');
+      }
+      if (survivalRunSeconds >= DAY_LENGTH_SECONDS) awardAchievement('full_day_night');
+      if (survivalRunSeconds >= 20 * 60) awardAchievement('tough_nut');
+    }
+
+    function updateAccountAchievementTelemetry(delta) {
+      if (!currentAccountUser || state.gameMode !== 'survival' || state.gameState !== 'playing' || state.paused) return;
+
+      const playerWorldPosition = new THREE.Vector3();
+      player.getWorldPosition(playerWorldPosition);
+      const distanceFromIvis = playerWorldPosition.length();
+
+      // 'Away from Ivis' means genuinely outside Ivis' local area. The five-minute threshold
+      // is cumulative on the account, so players may earn it across multiple trips.
+      if (distanceFromIvis >= ACHIEVEMENT_AWAY_DISTANCE) {
+        accountAchievementProgress.awayFromIvisSeconds += Math.max(0, delta);
+        if (accountAchievementProgress.awayFromIvisSeconds >= ACHIEVEMENT_AWAY_TIME) {
+          awardAchievement('away_from_home');
+        }
+        achievementTelemetrySaveTimer += Math.max(0, delta);
+        if (achievementTelemetrySaveTimer >= 10) {
+          achievementTelemetrySaveTimer = 0;
+          persistAchievementState();
+        }
+      }
+
+      if (playerState.inRocket && !playerState.rocketLanded && distanceFromIvis >= ACHIEVEMENT_FAR_DISTANCE) {
+        awardAchievement('far_from_home');
+      }
+
+      if (playerState.inRocket && playerState.rocketInSpace && !playerState.rocketLanded) {
+        accountAchievementProgress.spaceSeconds += Math.max(0, delta);
+        if (accountAchievementProgress.spaceSeconds >= 10 * 60) awardAchievement('space_10min');
+      }
+      if (economyState.credits >= 1000) awardAchievement('credits_1000');
+    }
+
     // ---------- main loop ----------
     const clock = new THREE.Clock();
     function animate() {
       requestAnimationFrame(animate);
+      rainbowCosmeticTime += 0.012;
+      if (accountCosmetics.equippedColor === 'rainbow' && typeof playerBody !== 'undefined' && playerBody?.material) {
+        playerBody.material.color.setHSL((rainbowCosmeticTime % 1),0.78,0.58);
+      }
+      const equippedHatSpec = getEquippedHatVisualSpec();
+      if (equippedHatSpec?.colorId === 'rainbow') {
+        if (typeof playerBody !== 'undefined' && playerBody) {
+          const liveHat = playerBody.children.find(ch => ch.userData?.cosmeticHatVisual);
+          if (liveHat) applyRainbowHatColors(liveHat, rainbowCosmeticTime);
+          else if (playerBody.children.length) applyRainbowHatColors(playerBody.children[playerBody.children.length - 1], rainbowCosmeticTime);
+        }
+      }
       const delta = Math.min(clock.getDelta(), 0.05);
       updateParticles(delta);
       updateSpecialParticles(delta);
@@ -9644,6 +11047,14 @@
       // Run the sun/day-night simulation in both game and menu so the planet preview
       // also shows the same lighting system.
       updateDayNight(delta);
+      const currentNightAmount = (() => {
+        const pp = player.getWorldPosition(new THREE.Vector3());
+        const ps = pp.lengthSq() > 0.000001 ? pp.normalize() : new THREE.Vector3(0, 1, 0);
+        const ss = sunMesh.position.clone().normalize();
+        const dot = ps.dot(ss);
+        return THREE.MathUtils.smoothstep(-dot, 0.02, 0.42);
+      })();
+      updateSurvivalAchievementTelemetry(delta, currentNightAmount);
       updateMoon(delta);
       updateCordelia(delta);
       updateWeather(delta);
@@ -9704,6 +11115,7 @@
           } else if (!state.paused) {
             updatePlayer(delta);
           }
+          updateAccountAchievementTelemetry(delta);
         }
         renderer.render(scene, activeCamera);
         if (mapOpen) {

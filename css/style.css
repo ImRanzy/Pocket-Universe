@@ -785,6 +785,19 @@
   to { transform: scale(1.015); opacity: 1; }
 }
 
+  /* ---------- account gems ---------- */
+  #homeGems {
+    position: fixed; top: 22px; right: 24px; z-index: 35;
+    display:flex; align-items:center; gap:8px;
+    padding:8px 13px; border-radius:999px;
+    background:rgba(10,14,22,0.66); border:1px solid rgba(255,255,255,0.18);
+    box-shadow:0 5px 18px rgba(0,0,0,0.24); backdrop-filter:blur(5px);
+    color:#f5f8ff; font-size:15px; font-weight:800; letter-spacing:.2px;
+    text-shadow:0 1px 5px rgba(0,0,0,.5);
+    pointer-events:none; user-select:none;
+  }
+  .homeGemsIcon { color:#8fe7ff; font-size:14px; filter:drop-shadow(0 0 5px rgba(143,231,255,.35)); }
+
   /* ---------- home screen ---------- */
   #homeScreen {
     position: fixed; inset: 0;
@@ -888,6 +901,136 @@
   #loadGameButton:hover { background: rgba(10,14,22,0.75); transform: translateY(3px); box-shadow: 0 3px 0 rgba(0,0,0,0.2); }
   #loadGameButton { box-shadow: 0 6px 0 rgba(0,0,0,0.22); transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease; }
   #loadGameButton:active { transform: translateY(5px); box-shadow: 0 1px 0 rgba(0,0,0,0.2); }
+
+  #accountButton {
+    grid-area: account;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    color: #dfe6ec;
+    background: rgba(10,14,22,0.62);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 999px;
+    padding: 10px 28px;
+    min-width: 126px;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+    box-shadow: 0 6px 0 rgba(0,0,0,0.22);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+  }
+  #accountButton:hover { background: rgba(10,14,22,0.82); transform: translateY(3px); box-shadow: 0 3px 0 rgba(0,0,0,0.2); }
+  #accountButton:active { transform: translateY(5px); box-shadow: 0 1px 0 rgba(0,0,0,0.2); }
+
+  #homeButtons {
+    grid-template-areas:
+      "play play"
+      "load settings"
+      "account achievements";
+  }
+
+  #homeAchievementsButton {
+    grid-area: achievements;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    color: #dfe6ec;
+    background: rgba(10,14,22,0.62);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 999px;
+    padding: 10px 28px;
+    min-width: 126px;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+    box-shadow: 0 6px 0 rgba(0,0,0,0.22);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+  }
+  #homeAchievementsButton:hover { background: rgba(10,14,22,0.82); transform: translateY(3px); box-shadow: 0 3px 0 rgba(0,0,0,0.2); }
+  #homeAchievementsButton:active { transform: translateY(5px); box-shadow: 0 1px 0 rgba(0,0,0,0.2); }
+
+  /* ---------- account dialog ---------- */
+  #accountModal {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 22px;
+    box-sizing: border-box;
+    background: rgba(2,5,10,0.56);
+    backdrop-filter: blur(2px);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  }
+  #accountModal.hidden { display: none; }
+  #accountPanel {
+    position: relative;
+    width: min(430px, 92vw);
+    max-height: min(700px, calc(100vh - 44px));
+    overflow-y: auto;
+    box-sizing: border-box;
+    padding: 30px 28px 26px;
+    color: #eef2f6;
+    background: rgba(12,16,24,0.97);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 16px;
+    box-shadow: 0 26px 90px rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+  .accountClose {
+    position: absolute; right: 12px; top: 12px;
+    width: 34px; height: 34px;
+    border: 0; border-radius: 50%;
+    color: #eef2f6; background: rgba(255,255,255,0.08);
+    cursor: pointer; font-size: 20px; line-height: 1;
+  }
+  .accountClose:hover { background: rgba(255,255,255,0.16); }
+  #accountPanel h1 { margin: 0 42px 6px; text-align: center; font-size: 22px; font-weight: 800; }
+  #accountSubtitle { margin: 0 0 24px; text-align: center; color: rgba(220,228,238,0.68); font-size: 12px; line-height: 1.5; }
+  .accountField { margin-bottom: 14px; }
+  .accountField label { display: block; margin: 0 0 7px; color: #dfe6ec; font-size: 12px; font-weight: 700; }
+  .accountField input {
+    width: 100%; box-sizing: border-box;
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 9px;
+    padding: 12px 13px;
+    color: #f4f7fa; background: #1b2029;
+    outline: none; font: inherit; font-size: 13px;
+  }
+  .accountField input:focus { border-color: rgba(130,174,255,0.85); box-shadow: 0 0 0 3px rgba(90,140,220,0.14); }
+  .hiddenField { display: none; }
+  #accountPanel.accountSignup .hiddenField { display: block; }
+  #accountPanel.accountSignup #accountPassword { autocomplete: new-password; }
+  .accountPrimary {
+    width: 100%; margin-top: 8px;
+    border: 1px solid rgba(255,255,255,0.15); border-radius: 9px;
+    padding: 12px 18px;
+    color: #fff; background: rgba(255,255,255,0.10);
+    font: inherit; font-weight: 800; font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.12s ease;
+  }
+  .accountPrimary:hover { background: rgba(255,255,255,0.17); transform: translateY(2px); }
+  .accountPrimary:active { transform: translateY(4px); }
+  .accountPrimary:disabled { opacity: 0.55; cursor: wait; transform: none; }
+  .accountLink {
+    display: block; margin: 15px auto 0;
+    border: 0; background: transparent; color: #9ec7ff;
+    font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .accountLink:hover { text-decoration: underline; }
+  .accountStatus { min-height: 20px; margin-top: 14px; text-align: center; color: rgba(220,228,238,0.72); font-size: 12px; line-height: 1.45; }
+  .accountStatus.success { color: #9fe3ac; }
+  .accountStatus.error { color: #ff9f9f; }
+  .accountProfileCard {
+    margin: 20px 0 10px; padding: 16px;
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 11px; background: rgba(255,255,255,0.045);
+  }
+  .accountProfileLabel { margin-top: 9px; color: rgba(220,228,238,0.48); font-size: 10px; font-weight: 800; letter-spacing: 1.6px; }
+  .accountProfileLabel:first-child { margin-top: 0; }
+  .accountProfileValue { margin-top: 4px; color: #f0f4f8; font-size: 13px; overflow-wrap: anywhere; }
+  #accountLoggedIn > p { margin: 0; text-align: center; color: rgba(220,228,238,0.68); font-size: 12px; }
 
   /* ---------- game mode chooser ---------- */
   #modeChooser {
@@ -1083,6 +1226,10 @@
     color: #dfe6ec;
     background: rgba(255,255,255,0.08);
   }
+  button.key.rebindKey { cursor: pointer; font: inherit; }
+  button.key.rebindKey:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.3); }
+  button.key.rebindKey.rebinding { border-color: #7ec8ff; box-shadow: 0 0 0 2px rgba(126,200,255,0.16); background: rgba(126,200,255,0.12); }
+  .rebindStatus { margin-top: 10px; width: 100%; text-align: center; display: block; color: #9eb6c9; max-width: none; }
 
   .settingsOptionBlock {
     border: 1px solid rgba(255,255,255,0.14);
@@ -1167,6 +1314,39 @@
 }
 #freeplayInventoryNextPage:hover:not(:disabled) { background:rgba(255,255,255,0.10); }
 #freeplayInventoryNextPage:disabled { opacity:0.28; cursor:default; }
+
+
+/* ---------- character customization / hat shop ---------- */
+#homeCustomizeButton { }
+#cosmeticOverlay { position:fixed; inset:0; z-index:92; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(0,0,0,.72); font-family:'Segoe UI',system-ui,sans-serif; }
+#cosmeticPanel { width:min(1160px,96vw); max-height:min(840px,93vh); min-height:620px; overflow:hidden; border-radius:26px; border:2px solid rgba(255,255,255,.12); background:linear-gradient(145deg,#171c25 0%,#0c1118 100%); color:#f1f5fb; box-shadow:0 30px 110px rgba(0,0,0,.75), inset 0 1px 0 rgba(255,255,255,.06); }
+#cosmeticTopTabs { height:68px; display:flex; align-items:center; gap:8px; padding:0 18px; border-bottom:1px solid rgba(255,255,255,.08); background:rgba(4,8,13,.64); }
+.cosmeticShopTitle { font-size:13px; font-weight:900; letter-spacing:1.8px; color:#f1f5fb; padding:0 10px; }
+.cosmeticTab { height:42px; padding:0 20px; border:1px solid rgba(255,255,255,.10); border-radius:12px; background:rgba(255,255,255,.04); color:#aeb8c8; font:900 12px 'Segoe UI',system-ui,sans-serif; letter-spacing:1.5px; cursor:pointer; }
+.cosmeticTab.active,.cosmeticTab:hover { background:rgba(255,255,255,.10); color:#fff; border-color:rgba(255,255,255,.18); }
+#cosmeticGemBalance { margin-left:auto; min-width:80px; display:flex; gap:7px; align-items:center; justify-content:center; padding:9px 13px; border:1px solid rgba(255,255,255,.10); border-radius:11px; background:rgba(255,255,255,.04); }
+#cosmeticGemBalance span { color:#79e5ff; text-shadow:0 0 12px rgba(121,229,255,.55); }
+#cosmeticGemBalance strong { font-size:16px; }
+.cosmeticCloseButton { margin-left:6px; width:42px; height:42px; border-radius:12px; border:1px solid rgba(255,255,255,.10); background:rgba(255,255,255,.04); color:#eaf0f7; font-size:26px; cursor:pointer; }
+#cosmeticContent { min-height:calc(620px - 68px); height:calc(100% - 68px); display:grid; grid-template-columns:minmax(0,1fr); }
+.cosmeticView { min-width:0; overflow:auto; }
+#cosmeticShopLeft,#cosmeticInventoryLeft { padding:22px; overflow:auto; max-height:calc(93vh - 120px); width:100%; box-sizing:border-box; }
+.cosmeticSectionLabel { font-size:11px; font-weight:900; letter-spacing:2px; color:rgba(220,230,242,.56); margin-bottom:10px; }
+.hatLabel { margin-top:24px; }
+#cosmeticColorGrid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; }
+#cosmeticHatGrid,#cosmeticOwnedHatGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.cosmeticColorCard,.cosmeticHatCard { border:1px solid rgba(255,255,255,.10); border-radius:14px; background:rgba(255,255,255,.04); color:#edf2f7; cursor:pointer; padding:12px; min-height:64px; box-sizing:border-box; text-align:left; transition:.12s ease; }
+.cosmeticColorCard:hover,.cosmeticHatCard:hover { transform:translateY(-1px); background:rgba(255,255,255,.07); border-color:rgba(255,255,255,.18); }
+.cosmeticColorCard.owned,.cosmeticHatCard.owned { border-color:rgba(121,229,255,.25); }
+.cosmeticColorCard.equipped,.cosmeticHatCard.equipped { border-color:rgba(121,229,255,.75); box-shadow:0 0 0 1px rgba(121,229,255,.18),0 0 22px rgba(121,229,255,.10); }
+.cosmeticColorSwatch { width:28px; height:28px; border-radius:50%; border:1px solid rgba(255,255,255,.28); float:left; margin-right:9px; }
+.cosmeticRainbowSwatch { background:conic-gradient(#ff4d4d,#ffd84d,#63d76c,#55b9ff,#aa7bff,#ff5fcf,#ff4d4d); }
+.cosmeticCardTitle { font-size:12px; font-weight:900; }
+.cosmeticCardSub { display:block; margin-top:4px; font-size:10px; color:rgba(221,230,239,.52); }
+.cosmeticPrice { float:right; font-size:10px; font-weight:900; color:#79e5ff; }
+.cosmeticHatPreview { width:44px; height:44px; float:left; margin-right:9px; display:flex; align-items:center; justify-content:center; color:#fff; font-size:28px; }
+.cosmeticOwnedEmpty { padding:20px; color:rgba(224,232,242,.48); border:1px dashed rgba(255,255,255,.10); border-radius:13px; text-align:center; }
+@media (max-width:600px){ #cosmeticTopTabs{padding:0 10px;} .cosmeticTab{padding:0 12px;} #cosmeticColorGrid{grid-template-columns:repeat(3,minmax(0,1fr));} }
 
 /* ---------- merchant / economy ---------- */
 #creditsDisplay {
@@ -1585,3 +1765,133 @@ body.state-menu #creditsDisplay { display: none; }
 .itemIcon.drill { width:36px; height:28px; position:relative; border-radius:6px 8px 6px 6px; background:linear-gradient(145deg,#697177,#33383d); border:2px solid #202429; box-shadow:0 4px 10px rgba(0,0,0,.3); }
 .itemIcon.drill::before { content:''; position:absolute; width:10px; height:19px; left:7px; top:19px; border-radius:3px; transform:rotate(16deg); background:#2e3337; border:2px solid #202429; }
 .itemIcon.drill::after { content:''; position:absolute; width:12px; height:8px; right:-10px; top:8px; border-radius:2px; background:#b86a35; border:2px solid #2d3033; box-shadow:9px 1px 0 -2px #aeb4b8; }\n
+
+
+body.achievements-open #homeButtons,
+body.achievements-open #controlsToggle { pointer-events: none; }
+  /* ---------- achievements modal ---------- */
+  #achievementsModal {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(5,7,12,0.72); z-index: 80; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    color: #eef2f6; padding: 24px; box-sizing: border-box; pointer-events: auto;
+  }
+  #achievementsModal.hidden { display: none !important; }
+  #achievementsPanel {
+    width: min(760px, 94vw); max-height: min(760px, 88vh); overflow: hidden; position: relative;
+    padding: 26px 26px 22px; border: 1px solid rgba(255,255,255,0.14); border-radius: 16px;
+    background: rgba(10,14,22,0.92); box-shadow: 0 24px 70px rgba(0,0,0,0.5);
+    backdrop-filter: blur(10px); display: flex; flex-direction: column;
+  }
+  #achievementsPanel h1 { margin: 0; font-size: 22px; font-weight: 700; color: #fff; }
+  .achievementsHeader { display:flex; align-items:center; justify-content:space-between; gap:20px; padding-right:34px; }
+  #achievementsCounter { font-size: 15px; font-weight: 700; color: #9ed8ff; white-space: nowrap; }
+  .achievementsSubtitle { margin: 6px 0 18px; color: rgba(230,238,246,0.64); font-size: 12px; }
+  #achievementsList { display:flex; flex-direction:column; gap:9px; overflow-y:auto; padding-right:6px; min-height:0; }
+  .achievementCard {
+    position: relative; display:grid; grid-template-columns: 44px minmax(0,1fr) auto auto; align-items:center; gap:13px;
+    padding: 12px 14px; border-radius: 11px; border:1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.07); transition: transform .12s ease, background .12s ease, opacity .12s ease;
+  }
+  .achievementCard.unlocked { background: rgba(82,160,102,0.15); border-color: rgba(110,220,140,0.26); }
+  .achievementCard.locked { opacity: 0.42; }
+  .achievementCard:hover { transform: translateY(-1px); background: rgba(255,255,255,0.10); }
+  .achievementIcon { width:44px; height:44px; display:grid; place-items:center; border-radius:10px;
+    border:1px solid rgba(255,255,255,0.13); background:rgba(255,255,255,0.08); font-size:19px; }
+  .achievementCard.unlocked .achievementIcon { background:rgba(116,210,138,0.14); border-color:rgba(116,210,138,0.32); }
+  .achievementInfo { min-width:0; }
+  .achievementName { font-size:14px; font-weight:700; color:#fff; margin:0 0 3px; }
+  .achievementRequirement { font-size:11px; line-height:1.35; color:rgba(228,236,244,0.62); margin:0; }
+  .achievementState { font-size:10px; font-weight:700; letter-spacing:.7px; color:rgba(255,255,255,.48); white-space:nowrap; }
+  .achievementCard.unlocked .achievementState { color:#8ee4a7; }
+  .achievementReward { font-size:10px; font-weight:800; color:#8fe7ff; white-space:nowrap; display:flex; align-items:center; gap:4px; letter-spacing:.3px; }
+  .achievementRewardIcon { font-size:10px; }
+  .achievementLockedBadge { font-size:11px; font-weight:700; opacity:.65; }
+  .achievementsClose { position:absolute; top:10px; right:12px; width:30px; height:30px; border:0;
+    border-radius:8px; background:transparent; color:#aab4bf; font-size:24px; cursor:pointer; }
+  .achievementsClose:hover { background:rgba(255,255,255,0.08); color:#fff; }
+
+  /* ---------- achievement unlock toast ---------- */
+  .achievementToast {
+    position: fixed; top: 76px; right: 24px; z-index: 140;
+    width: min(360px, calc(100vw - 48px)); min-height: 72px;
+    display:flex; align-items:center; gap:13px; box-sizing:border-box;
+    padding: 12px 16px; border-radius: 12px;
+    background: rgba(10,14,22,0.96); border: 1px solid rgba(142,228,167,0.34);
+    box-shadow: 0 14px 40px rgba(0,0,0,0.42), 0 0 24px rgba(116,210,138,0.08);
+    backdrop-filter: blur(10px); pointer-events:none;
+    transform: translateX(130%); opacity: 0;
+  }
+  .achievementToast.show { animation: achievementToastIn 0.45s cubic-bezier(.2,.8,.2,1) forwards; }
+  .achievementToast.hide { animation: achievementToastOut 0.42s cubic-bezier(.7,0,.8,.2) forwards; }
+  .achievementToastIcon {
+    width:42px; height:42px; flex:0 0 42px; display:grid; place-items:center;
+    border-radius:10px; background:rgba(116,210,138,0.12);
+    border:1px solid rgba(116,210,138,0.28); font-size:21px;
+  }
+  .achievementToastText { min-width:0; }
+  .achievementToastLabel {
+    font-size:10px; font-weight:800; letter-spacing:1.1px; color:#8ee4a7; margin-bottom:4px;
+  }
+  .achievementToastName {
+    font-size:16px; font-weight:750; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  @keyframes achievementToastIn {
+    from { transform: translateX(130%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+  @keyframes achievementToastOut {
+    from { transform: translateX(0); opacity: 1; }
+    to { transform: translateX(-130%); opacity: 0; }
+  }
+
+/* ---------- main menu credits ---------- */
+#homeCreditsButton {
+  position: fixed;
+  left: 24px;
+  bottom: 22px;
+  z-index: 35;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(10,14,22,0.60);
+  color: rgba(255,255,255,0.78);
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+  cursor: pointer;
+  box-shadow: 0 5px 18px rgba(0,0,0,0.2);
+  backdrop-filter: blur(5px);
+  transition: transform .12s ease, background .12s ease, color .12s ease;
+}
+#homeCreditsButton:hover { background: rgba(255,255,255,0.14); color:#fff; transform: translateY(-2px); }
+#homeCreditsButton:active { transform: translateY(1px); }
+
+#creditsModal {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.56);
+  backdrop-filter: blur(4px);
+}
+#creditsModal.hidden { display:none; }
+#creditsPanel {
+  position: relative;
+  width: min(560px, calc(100vw - 40px));
+  padding: 30px 34px 28px;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(12,17,25,0.96);
+  box-shadow: 0 22px 70px rgba(0,0,0,0.46);
+  color:#f4f7fb;
+  font-family:'Segoe UI', system-ui, -apple-system, sans-serif;
+  text-align:center;
+}
+#creditsTitle { margin:0 0 22px; font-size:24px; letter-spacing:1.5px; text-transform:uppercase; }
+.creditsLine { margin:10px 0; font-size:14px; color:rgba(235,241,248,0.86); }
+.creditsSmile { margin-top:20px; font-size:18px; color:rgba(255,255,255,0.65); }
+.creditsClose {
+  position:absolute; top:10px; right:12px; width:34px; height:34px;
+  border:0; border-radius:9px; background:rgba(255,255,255,0.08); color:#fff;
+  font-size:24px; cursor:pointer;
+}
+.creditsClose:hover { background:rgba(255,255,255,0.16); }

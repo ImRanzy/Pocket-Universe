@@ -1,0 +1,286 @@
+    scene.add(cordeliaMesh);
+
+    // ---------- crystal merchant stall ----------
+    // A permanent decorative market stall sits a short distance from the player's spawn.
+    // It is part of the rotating planetSystem, so the same stall is visible in both the
+    // playable world and the main-menu planet preview.
+    function createStallCrate(filledTypeId = null, visualKind = 'crystal') {
+      const crate = new THREE.Group();
+      const wood = new THREE.MeshStandardMaterial({ color: 0x9b6338, roughness: 0.92 });
+      const woodDark = new THREE.MeshStandardMaterial({ color: 0x674026, roughness: 0.98 });
+      const inside = new THREE.MeshStandardMaterial({ color: 0x2b1c14, roughness: 1 });
+
+      const body = new THREE.Mesh(new THREE.BoxGeometry(1.18, 0.72, 0.92), wood);
+      body.position.y = 0.36;
+      crate.add(body);
+
+      const inner = new THREE.Mesh(new THREE.BoxGeometry(0.90, 0.10, 0.64), inside);
+      inner.position.y = 0.75;
+      crate.add(inner);
+
+      const rimPieces = [
+        [1.02, 0.14, 0.08, 0, 0.83, -0.39],
+        [1.02, 0.14, 0.08, 0, 0.83,  0.39],
+        [0.08, 0.14, 0.76, -0.55, 0.83, 0],
+        [0.08, 0.14, 0.76,  0.55, 0.83, 0]
+      ];
+      for (const [sx, sy, sz, x, y, z] of rimPieces) {
+        const rim = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), woodDark);
+        rim.position.set(x, y, z);
+        crate.add(rim);
+      }
+
+      const braceFront = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.62, 0.06), woodDark);
+      braceFront.position.set(0, 0.40, -0.47);
+      braceFront.rotation.z = 0.18;
+      crate.add(braceFront);
+      const braceFront2 = braceFront.clone();
+      braceFront2.rotation.z = -0.18;
+      crate.add(braceFront2);
+
+      if (visualKind === 'crystal' && filledTypeId) {
+        const crystal = createCrystalVisual(filledTypeId, false, 0.58);
+        crystal.position.y = 0.72;
+        crystal.rotation.y = Math.random() * Math.PI * 2;
+        crate.add(crystal);
+      } else if (visualKind === 'hat' && filledTypeId) {
+        const hat = createHatVisual(filledTypeId);
+        hat.position.y = 0.70;
+        hat.rotation.y = Math.random() * Math.PI * 2;
+        hat.scale.setScalar(0.82);
+        crate.add(hat);
+      }
+
+      return crate;
+    }
+
+    function createHatVisual(typeId) {
+      const hat = new THREE.Group();
+      const black = new THREE.MeshStandardMaterial({ color: 0x101217, roughness: 0.9 });
+      const dark = new THREE.MeshStandardMaterial({ color: 0x252932, roughness: 0.86 });
+      const banana = new THREE.MeshStandardMaterial({ color: 0xf5d22f, roughness: 0.82 });
+      const bananaDark = new THREE.MeshStandardMaterial({ color: 0x8c6f11, roughness: 0.9 });
+      const blue = new THREE.MeshStandardMaterial({ color: 0x2e6fc0, roughness: 0.82 });
+      const white = new THREE.MeshStandardMaterial({ color: 0xe9edf3, roughness: 0.86 });
+
+      const makeBrim = (mat, radius = 0.46, depth = 0.08) => {
+        const brim = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius * 1.08, depth, 20), mat);
+        brim.position.y = 0.02;
+        return brim;
+      };
+
+      if (typeId === 'banana_skin_hat') {
+        // Curled banana peel, displayed like a goofy wearable hat.
+        const peelMat = banana;
+        const peelDark = bananaDark;
+        for (let i = 0; i < 3; i++) {
+          const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.18, 0.58, 10), peelMat);
+          const a = (i - 1) * 0.48;
+          seg.position.set(a * 0.52, 0.24 + i * 0.03, 0.03 * i);
+          seg.rotation.z = a * 0.9;
+          hat.add(seg);
+        }
+        const tip = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 8), peelDark);
+        tip.position.set(0.66, 0.43, 0);
+        hat.add(tip);
+        const band = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.055, 8, 20), bananaDark);
+        band.rotation.x = Math.PI / 2;
+        band.position.y = 0.03;
+        hat.add(band);
+      } else if (typeId === 'fedora_hat') {
+        hat.add(makeBrim(black, 0.48, 0.08));
+        const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.39, 0.46, 18), black);
+        crown.position.y = 0.27;
+        hat.add(crown);
+        const band = new THREE.Mesh(new THREE.CylinderGeometry(0.355, 0.355, 0.075, 18), dark);
+        band.position.y = 0.18;
+        hat.add(band);
+      } else if (typeId === 'top_hat') {
+        hat.add(makeBrim(black, 0.50, 0.08));
+        const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.35, 0.68, 18), black);
+        crown.position.y = 0.40;
+        hat.add(crown);
+        const band = new THREE.Mesh(new THREE.CylinderGeometry(0.325, 0.325, 0.09, 18), dark);
+        band.position.y = 0.18;
+        hat.add(band);
+      } else if (typeId === 'baseball_hat') {
+        const cap = new THREE.Mesh(new THREE.SphereGeometry(0.46, 18, 10, 0, Math.PI * 2, 0, Math.PI * 0.58), blue);
+        cap.scale.y = 0.72;
+        cap.position.y = 0.18;
+        hat.add(cap);
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.06, 0.42), white);
+        panel.position.set(0, 0.33, -0.05);
+        panel.rotation.x = -0.12;
+        hat.add(panel);
+        const visor = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.40, 0.055, 16), blue);
+        visor.scale.z = 0.62;
+        visor.rotation.x = Math.PI / 2;
+        visor.position.set(0, 0.10, -0.43);
+        hat.add(visor);
+      }
+
+      return hat;
+    }
+
+    function addStallSign(stall, label, accentHex, signMatHex) {
+      const sign = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.78, 0.12), new THREE.MeshStandardMaterial({ color: signMatHex, roughness: 0.92 }));
+      sign.position.set(0, 2.20, -1.73);
+      stall.add(sign);
+
+      const signTextureCanvas = document.createElement('canvas');
+      signTextureCanvas.width = 512;
+      signTextureCanvas.height = 128;
+      const ctx = signTextureCanvas.getContext('2d');
+      ctx.fillStyle = '#' + signMatHex.toString(16).padStart(6, '0');
+      ctx.fillRect(0, 0, 512, 128);
+      ctx.fillStyle = '#f4ead8';
+      ctx.font = 'bold 48px Segoe UI, Arial, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, 256, 64);
+      const signTexture = new THREE.CanvasTexture(signTextureCanvas);
+      signTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      const signFace = new THREE.Mesh(
+        new THREE.PlaneGeometry(2.95, 0.74),
+        new THREE.MeshStandardMaterial({ map: signTexture, roughness: 0.85 })
+      );
+      signFace.position.set(0, 2.20, -1.795);
+      stall.add(signFace);
+      return sign;
+    }
+
+    function createCrystalStall() {
+      const stall = new THREE.Group();
+      stall.name = 'CrystalMerchantStall';
+      stall.userData.collision = { halfX: 4.62, halfZ: 1.82, padding: 0.48 };
+
+      const wood = new THREE.MeshStandardMaterial({ color: 0x8a5632, roughness: 0.9 });
+      const woodLight = new THREE.MeshStandardMaterial({ color: 0xb97b45, roughness: 0.88 });
+      const clothLight = new THREE.MeshStandardMaterial({ color: 0xf0dfbd, roughness: 0.95 });
+      const clothDark = new THREE.MeshStandardMaterial({ color: 0x2f78b7, roughness: 0.92 });
+      const signMatHex = 0x6f4527;
+      const black = new THREE.MeshStandardMaterial({ color: 0x090a0d, roughness: 0.92 });
+
+      const postGeo = new THREE.CylinderGeometry(0.11, 0.13, 3.15, 8);
+      const postPositions = [[-4.35,1.58,-1.55],[4.35,1.58,-1.55],[-4.35,1.58,1.55],[4.35,1.58,1.55]];
+      for (const [x,y,z] of postPositions) { const post = new THREE.Mesh(postGeo, wood); post.position.set(x,y,z); stall.add(post); }
+      const topBeam = new THREE.Mesh(new THREE.BoxGeometry(9.05,0.22,3.35), wood); topBeam.position.y=3.03; stall.add(topBeam);
+
+      const awning = new THREE.Group();
+      const panelCount = 7;
+      for (let i=0;i<panelCount;i++) {
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(9.05/panelCount+0.015,0.12,3.55), i%2===0?clothLight:clothDark);
+        panel.position.set(-4.525+(i+0.5)*(9.05/panelCount),3.22,0); panel.rotation.x=-0.035; awning.add(panel);
+      }
+      stall.add(awning);
+      const valance = new THREE.Mesh(new THREE.BoxGeometry(9.05,0.48,0.13), clothLight); valance.position.set(0,2.91,-1.69); stall.add(valance);
+
+      const counterLegGeo = new THREE.BoxGeometry(0.28,1.35,0.28);
+      for (const x of [-3.8,3.8]) for (const z of [-1.15,1.15]) { const leg=new THREE.Mesh(counterLegGeo,wood); leg.position.set(x,0.68,z); stall.add(leg); }
+      const counterBase = new THREE.Mesh(new THREE.BoxGeometry(8.55,0.18,2.55), wood); counterBase.position.y=1.36; stall.add(counterBase);
+      const counterTop = new THREE.Mesh(new THREE.BoxGeometry(8.75,0.18,2.72), woodLight); counterTop.position.y=1.50; stall.add(counterTop);
+
+      const stockedTypes = ['ruby','emerald','diamond','amethyst'];
+      const crateZ=[-0.70,0.70], crateX=[-3.25,-1.08,1.08,3.25];
+      for (let row=0;row<2;row++) for (let col=0;col<4;col++) {
+        const crate = createStallCrate(row===0?stockedTypes[col]:null, 'crystal');
+        crate.position.set(crateX[col],1.58,crateZ[row]); crate.rotation.y=(col-1.5)*0.025+(row?-0.025:0.025); stall.add(crate);
+      }
+      addStallSign(stall,'CRYSTALS',0x2f78b7,signMatHex);
+
+      const npc = new THREE.Group(); npc.name='CrystalMerchantNPC';
+      const npcBodyGeo = typeof THREE.CapsuleGeometry==='function'?new THREE.CapsuleGeometry(0.45,1.0,4,8):new THREE.CylinderGeometry(0.45,0.45,1.9,8);
+      const npcBody = new THREE.Mesh(npcBodyGeo,black); npcBody.position.y=0.95; npc.add(npcBody);
+      const hatBrim = new THREE.Mesh(new THREE.CylinderGeometry(0.62,0.68,0.10,16),black); hatBrim.position.y=1.95; npc.add(hatBrim);
+      const hatCrown = new THREE.Mesh(new THREE.CylinderGeometry(0.44,0.52,0.54,16),black); hatCrown.position.y=2.24; npc.add(hatCrown);
+      const hatBand = new THREE.Mesh(new THREE.CylinderGeometry(0.46,0.46,0.10,16),new THREE.MeshStandardMaterial({color:0x15171b,roughness:0.8})); hatBand.position.y=2.06; npc.add(hatBand);
+
+      const stallDir = new THREE.Vector3(0.105,1,0).normalize();
+      const groundRadius=PLANET_RADIUS+heightAt(stallDir); stall.position.copy(stallDir).multiplyScalar(groundRadius+0.02);
+      const spawnTangent=new THREE.Vector3(0,1,0).sub(stallDir.clone().multiplyScalar(stallDir.y)).normalize();
+      const stallRight=new THREE.Vector3().crossVectors(spawnTangent,stallDir).normalize();
+      stall.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(stallRight,stallDir,spawnTangent.clone().negate()));
+      planetSystem.add(stall);
+      npc.position.set(5.55,0.02,-0.30); npc.scale.setScalar(0.76); stall.add(npc);
+      stall.userData.merchantNPC=npc;
+      return stall;
+    }
+
+    function createHatStall() {
+      const stall = new THREE.Group();
+      stall.name = 'HatMerchantStall';
+      stall.userData.collision = { halfX: 4.62, halfZ: 1.82, padding: 0.48 };
+
+      const wood = new THREE.MeshStandardMaterial({ color: 0x8a5632, roughness: 0.9 });
+      const woodLight = new THREE.MeshStandardMaterial({ color: 0xb97b45, roughness: 0.88 });
+      const clothLight = new THREE.MeshStandardMaterial({ color: 0xf0dfbd, roughness: 0.95 });
+      const clothDark = new THREE.MeshStandardMaterial({ color: 0xf28a2e, roughness: 0.92 });
+      const npcOrange = new THREE.MeshStandardMaterial({ color: 0xf07824, roughness: 0.9 });
+      const hatGreen = new THREE.MeshStandardMaterial({ color: 0x2e9b48, roughness: 0.86 });
+
+      const postGeo=new THREE.CylinderGeometry(0.11,0.13,3.15,8);
+      for (const [x,y,z] of [[-4.35,1.58,-1.55],[4.35,1.58,-1.55],[-4.35,1.58,1.55],[4.35,1.58,1.55]]) { const post=new THREE.Mesh(postGeo,wood); post.position.set(x,y,z); stall.add(post); }
+      const topBeam=new THREE.Mesh(new THREE.BoxGeometry(9.05,0.22,3.35),wood); topBeam.position.y=3.03; stall.add(topBeam);
+      const awning=new THREE.Group();
+      for(let i=0;i<7;i++){ const panel=new THREE.Mesh(new THREE.BoxGeometry(9.05/7+0.015,0.12,3.55),i%2===0?clothLight:clothDark); panel.position.set(-4.525+(i+0.5)*(9.05/7),3.22,0); panel.rotation.x=-0.035; awning.add(panel); }
+      stall.add(awning);
+      const valance=new THREE.Mesh(new THREE.BoxGeometry(9.05,0.48,0.13),clothLight); valance.position.set(0,2.91,-1.69); stall.add(valance);
+      const counterLegGeo=new THREE.BoxGeometry(0.28,1.35,0.28);
+      for(const x of [-3.8,3.8]) for(const z of [-1.15,1.15]){const leg=new THREE.Mesh(counterLegGeo,wood);leg.position.set(x,0.68,z);stall.add(leg);}
+      const counterBase=new THREE.Mesh(new THREE.BoxGeometry(8.55,0.18,2.55),wood);counterBase.position.y=1.36;stall.add(counterBase);
+      const counterTop=new THREE.Mesh(new THREE.BoxGeometry(8.75,0.18,2.72),woodLight);counterTop.position.y=1.50;stall.add(counterTop);
+
+      const stockedTypes=['banana_skin_hat','fedora_hat','top_hat','baseball_hat'];
+      const crateZ=[-0.70,0.70], crateX=[-3.25,-1.08,1.08,3.25];
+      for(let row=0;row<2;row++) for(let col=0;col<4;col++){
+        const crate=createStallCrate(row===0?stockedTypes[col]:null,'hat');
+        crate.position.set(crateX[col],1.58,crateZ[row]); crate.rotation.y=(col-1.5)*0.025+(row?-0.025:0.025); stall.add(crate);
+      }
+      // Give the hat stall its own visual sign, but do not wire any interaction to it.
+      addStallSign(stall,'HATS',0xf28a2e,0x7a3e1c);
+
+      const npc=new THREE.Group(); npc.name='HatStallNPC';
+      const npcBodyGeo=typeof THREE.CapsuleGeometry==='function'?new THREE.CapsuleGeometry(0.45,1.0,4,8):new THREE.CylinderGeometry(0.45,0.45,1.9,8);
+      const npcBody=new THREE.Mesh(npcBodyGeo,npcOrange); npcBody.position.y=0.95; npc.add(npcBody);
+      const hatBrim=new THREE.Mesh(new THREE.CylinderGeometry(0.62,0.68,0.10,16),hatGreen); hatBrim.position.y=1.95; npc.add(hatBrim);
+      const hatCrown=new THREE.Mesh(new THREE.CylinderGeometry(0.44,0.52,0.54,16),hatGreen); hatCrown.position.y=2.24; npc.add(hatCrown);
+      const hatBand=new THREE.Mesh(new THREE.CylinderGeometry(0.46,0.46,0.10,16),new THREE.MeshStandardMaterial({color:0x237538,roughness:0.82})); hatBand.position.y=2.06; npc.add(hatBand);
+
+      const baseDir=stallDirForHatStall();
+      const groundRadius=PLANET_RADIUS+heightAt(baseDir);
+      stall.position.copy(baseDir).multiplyScalar(groundRadius+0.02);
+      const spawnTangent=new THREE.Vector3(0,1,0).sub(baseDir.clone().multiplyScalar(baseDir.y)).normalize();
+      const stallRight=new THREE.Vector3().crossVectors(spawnTangent,baseDir).normalize();
+      stall.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(stallRight,baseDir,spawnTangent.clone().negate()));
+      planetSystem.add(stall);
+      npc.position.set(5.55,0.02,-0.30); npc.scale.setScalar(0.76); stall.add(npc);
+      stall.userData.merchantNPC=npc;
+      return stall;
+    }
+
+    function stallDirForHatStall() {
+      const base = new THREE.Vector3(0.105,1,0).normalize();
+      const tangent = new THREE.Vector3(1,0,0).sub(base.clone().multiplyScalar(base.x)).normalize();
+      const angle = 0.17; // ~10–11 world units of separation at the planet's surface
+      return base.clone().multiplyScalar(Math.cos(angle)).add(tangent.multiplyScalar(Math.sin(angle))).normalize();
+    }
+
+
+    const crystalStall = createCrystalStall();
+    const hatStall = createHatStall();
+
+    // ---------- merchant UI 3D preview ----------
+    // The merchant preview is rendered in its own small scene so the in-world NPC model
+    // can be shown inside the wooden shop UI without moving or duplicating the live merchant.
+    const merchantPreviewCanvas = document.getElementById('merchantPreviewCanvas');
+    let merchantPreviewRenderer = null;
+    let merchantPreviewScene = null;
+    let merchantPreviewCamera = null;
+    let merchantPreviewModel = null;
+    let merchantPreviewFrame = document.querySelector('.merchantPreviewFrame');
+    let merchantPreviewAnimation = 0;
+
+    function setupMerchantPreview() {
+      if (!merchantPreviewCanvas || typeof THREE.WebGLRenderer !== 'function') return;
+      merchantPreviewRenderer = new THREE.WebGLRenderer({
+        canvas: merchantPreviewCanvas,
