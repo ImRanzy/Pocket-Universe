@@ -13,7 +13,21 @@
 
 <div id="staminaWrap"><div id="staminaLabel">SPRINT</div><div id="staminaBar"></div></div>
   <div id="flashlightStatus" class="hidden">FLASHLIGHT ON · F</div>
-  <div id="rocketFlightStatus" class="hidden"><div id="rocketFlightTitle">ROCKET FLIGHT</div><div id="rocketFlightFuel">FUEL 0%</div><div id="rocketFlightMode">ATMOSPHERE</div><div id="rocketFlightControls">WASD MOVE · SPACE UP · SHIFT DOWN · E EXIT</div></div>
+  <div id="rocketFlightStatus" class="hidden">
+  <div id="rocketFlightTitle">ROCKET STATUS</div>
+  <div id="rocketFlightFlightStats">
+    <div class="rocketStatusRow"><span>FUEL LEFT</span><strong id="rocketFlightFuel">0%</strong></div>
+    <div class="rocketStatusRow"><span>TIME LEFT</span><strong id="rocketFlightTime">0:00</strong></div>
+    <div class="rocketStatusRow"><span>SPEED</span><strong id="rocketFlightSpeed">30u/s</strong></div>
+    <div class="rocketStatusRow"><span>CONSUMPTION</span><strong id="rocketFlightConsumption">1% / 5.0s</strong></div>
+  </div>
+  <div id="rocketFlightNearbyStats" class="hidden">
+    <div class="rocketStatusRow"><span>ENGINE</span><strong id="rocketNearbyEngine">STANDARD</strong></div>
+    <div class="rocketStatusRow"><span>TANK</span><strong id="rocketNearbyTank">0%</strong></div>
+  </div>
+  <div id="rocketFlightContext">ATMOSPHERE</div>
+  <div id="rocketFlightControls">WASD MOVE · SPACE UP · SHIFT DOWN · E EXIT</div>
+</div>
 
 <div id="hotbar">
   <div class="hotbarSlot selected" data-slot="0"><div class="hotbarNumber">1</div><div class="hotbarEmpty">EMPTY</div></div>
@@ -44,6 +58,18 @@
       <div class="mapInstructions">DRAG TO ROTATE · SCROLL TO ZOOM · M TO CLOSE</div>
       <div class="mapScale">PLANET SURVEY</div>
     </div>
+  </div>
+</div>
+
+<div id="journalOverlay" class="hidden" aria-hidden="true">
+  <div id="journalPanel" role="dialog" aria-modal="true" aria-labelledby="journalTitle">
+    <div id="journalHeader"><h1 id="journalTitle">Explorer's Journal</h1><button id="journalClose" type="button" title="Close">×</button></div>
+    <div id="journalTabs">
+      <button type="button" data-section="items">ITEM</button>
+      <button type="button" data-section="bodies">CELESTIAL BODIES</button>
+      <button type="button" data-section="people">PEOPLE</button>
+    </div>
+    <div id="journalList"></div>
   </div>
 </div>
 
@@ -200,13 +226,14 @@
   <div id="homeGems" aria-label="Gems"><span class="homeGemsIcon">◆</span><span id="homeGemsAmount">0</span></div>
   <div id="homeTitle">POCKET UNIVERSE</div>
   <div id="planetHint">Drag to rotate the planet and explore your spawn location</div>
-  <div id="homeLoading">Loading planet…</div>
+  <div id="homeLoading"><div class="homeLoadingTitle">LOADING UNIVERSE…</div><div class="homeLoadingBar"><span></span></div><div class="homeVersion">v0.8B</div></div>
   <div id="homeButtons" class="hidden">
     <button id="playButton">SINGLEPLAYER</button>
     <button id="loadGameButton">LOAD GAME</button>
     <button id="homeSettingsButton">Settings</button>
     <button id="accountButton">ACCOUNT</button>
     <button id="homeAchievementsButton">ACHIEVEMENTS</button>
+    <button id="homeFullscreenButton" type="button">FULLSCREEN</button>
   </div>
   <!-- Hidden file picker used when loading a saved Pocket Universe JSON file. -->
   <input id="saveFileInput" type="file" accept="application/json,.json" hidden />
@@ -274,6 +301,17 @@
         <div id="accountProfileUsername" class="accountProfileValue">—</div>
         <div class="accountProfileLabel">EMAIL</div>
         <div id="accountProfileEmail" class="accountProfileValue">—</div>
+      </div>
+      <div class="accountStatisticsSection">
+        <div class="accountStatisticsHeader">STATISTICS</div>
+        <div class="accountStatisticsGrid">
+          <div class="accountStatCard"><div class="accountStatLabel">TOTAL PLAYTIME</div><div id="accountStatPlaytime" class="accountStatValue">0m 00s</div></div>
+          <div class="accountStatCard"><div class="accountStatLabel">TOTAL UNITS TRAVELED</div><div id="accountStatTravel" class="accountStatValue">0 u</div></div>
+          <div class="accountStatCard"><div class="accountStatLabel">TOTAL CREDITS EARNED</div><div id="accountStatEarned" class="accountStatValue">¢ 0</div></div>
+          <div class="accountStatCard"><div class="accountStatLabel">TOTAL CREDITS SPENT</div><div id="accountStatSpent" class="accountStatValue">¢ 0</div></div>
+          <div class="accountStatCard"><div class="accountStatLabel">TIME AWAY FROM CELESTIAL BODIES</div><div id="accountStatAway" class="accountStatValue">0m 00s</div></div>
+          <div class="accountStatCard"><div class="accountStatLabel">ACHIEVEMENTS UNLOCKED</div><div id="accountStatAchievements" class="accountStatValue">0 / 41</div></div>
+        </div>
       </div>
       <button id="accountLogout" class="accountPrimary" type="button">LOG OUT</button>
       <div id="accountLoggedInStatus" class="accountStatus" aria-live="polite"></div>
@@ -387,19 +425,21 @@
         <h1>Update Log</h1>
       </div>
       <div id="settingsUpdateLogContent">
-        <section class="updateLogDay"><h2>Day 7</h2><p>Cordelia gets its own day/night atmosphere and the camera now works consistently across every celestial body. Moon Quartz and the Upgraded Rocket Engine arrive, with 200% fuel capacity. Accounts, achievements, account-wide Gems, rebindable controls, and LMB keybinding are added. A new orange-striped hat stall brings character customization with colors and hats, plus the Credits page. Day 7 is officially complete!</p></section>
-        <section class="updateLogDay"><h2>Day 6</h2><p>Cordelia becomes fully launchable with a dedicated takeoff and escape sequence. Ivis stays visible from deep space, spaceflight now has emergency fuel-loss recovery to prevent softlocks, and the scythe gets a rebuilt curved blade. Day 6 is officially complete!</p></section>
-        <section class="updateLogDay"><h2>Day 1</h2><p>Pocket Universe begins: the small spherical planet, terrain generation, player movement, jumping, sprinting, the day/night cycle, and the first world visuals.</p></section>
-        <section class="updateLogDay"><h2>Day 2</h2><p>Survival systems arrive: crystals, inventory and hotbar, crafting, tools and durability, trees and mining, the furnace, merchant, credits, and a growing set of world interactions.</p></section>
-        <section class="updateLogDay"><h2>Day 3</h2><p>The project is reorganized into a proper multi-file project. Save/load, Survival and Freeplay, the rocket, launch pad, engine and fuel systems, and full spaceflight are added.</p></section>
-        <section class="updateLogDay"><h2>Day 4</h2><p>The world gets atmosphere: weather, clouds, rain and thunderstorms, lightning, stars, space visuals, particles, ambient sounds, tool animations, the World Control menu, and more polish.</p></section>
-        <section class="updateLogDay"><h2>Day 5</h2><p>The Moon is added as a real celestial body with its own collision and gravity. The rocket can land on the Moon, the player can explore it with 2× jumping and lunar dust, and the full Moon ↔ Ivis return loop works. Rocket speed modes add Boosted and WARP travel.</p></section>
+        <section class="updateLogDay"><h2>0.8B</h2><p>Day 8 brings account statistics, an upgraded rocket status HUD, first-person hat hiding, standardized Moon Quartz behavior, a rebuilt baseball cap and super-long wizard hats, new achievements, corrected third-person camera movement and orientation, an in-game journal, Freeplay-complete journal knowledge, and actual low-poly 3D axe and pickaxe models with tuned sizing and orientation. Version 0.8B marks the current public build.</p></section>
+        <section class="updateLogDay"><h2>0.7B</h2><p>Cordelia gets its own day/night atmosphere and the camera now works consistently across every celestial body. Moon Quartz and the Upgraded Rocket Engine arrive, with 200% fuel capacity. Accounts, achievements, account-wide Gems, rebindable controls, and LMB keybinding are added. A new orange-striped hat stall brings character customization with colors and hats, plus the Credits page. Version 0.7B is complete!</p></section>
+        <section class="updateLogDay"><h2>0.6B</h2><p>Cordelia becomes fully launchable with a dedicated takeoff and escape sequence. Ivis stays visible from deep space, spaceflight now has emergency fuel-loss recovery to prevent softlocks, and the scythe gets a rebuilt curved blade. Version 0.6B is complete!</p></section>
+        <section class="updateLogDay"><h2>0.1B</h2><p>Pocket Universe begins: the small spherical planet, terrain generation, player movement, jumping, sprinting, the day/night cycle, and the first world visuals.</p></section>
+        <section class="updateLogDay"><h2>0.2B</h2><p>Survival systems arrive: crystals, inventory and hotbar, crafting, tools and durability, trees and mining, the furnace, merchant, credits, and a growing set of world interactions.</p></section>
+        <section class="updateLogDay"><h2>0.3B</h2><p>The project is reorganized into a proper multi-file project. Save/load, Survival and Freeplay, the rocket, launch pad, engine and fuel systems, and full spaceflight are added.</p></section>
+        <section class="updateLogDay"><h2>0.4B</h2><p>The world gets atmosphere: weather, clouds, rain and thunderstorms, lightning, stars, space visuals, particles, ambient sounds, tool animations, the World Control menu, and more polish.</p></section>
+        <section class="updateLogDay"><h2>0.5B</h2><p>The Moon is added as a real celestial body with its own collision and gravity. The rocket can land on the Moon, the player can explore it with 2× jumping and lunar dust, and the full Moon ↔ Ivis return loop works. Rocket speed modes add Boosted and WARP travel.</p></section>
       </div>
     </div>
   </div>
 </div>
 
 <script src="js/state/game-state.js"></script>
+<script src="js/tool-model-data.js"></script>
   <script src="js/state/player-state.js"></script>
 <script src="js/state/inventory-state.js"></script>
 <script src="js/state/ui-state.js"></script>

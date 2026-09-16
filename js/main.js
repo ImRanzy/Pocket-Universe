@@ -23,6 +23,15 @@
     "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"
   ];
 
+  const TOOL_LOADER_URLS = [
+    "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/MTLLoader.js",
+    "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js",
+    "https://unpkg.com/three@0.128.0/examples/js/loaders/MTLLoader.js",
+    "https://unpkg.com/three@0.128.0/examples/js/loaders/OBJLoader.js"
+  ];
+  let axeModelTemplate = null;
+  let pickaxeModelTemplate = null;
+
   const SUPABASE_URL = "https://ktzhvnpbksngleegdikd.supabase.co";
   const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hrbbTSn2zhmFaejsrJd_ig_6RMF4k7G";
   let pocketSupabase = null;
@@ -35,6 +44,81 @@
       el.onerror = () => reject(new Error("failed to load " + src));
       document.head.appendChild(el);
     });
+  }
+
+  function loadToolModel(url, mtlUrl) {
+    return new Promise((resolve, reject) => {
+      const finishWithObjFallback = (reason) => {
+        try {
+          if (!window.THREE.OBJLoader) throw reason || new Error('OBJLoader unavailable');
+          const loader = new THREE.OBJLoader();
+          loader.load(url, (obj) => resolve(obj), undefined, (objErr) => {
+            reject(objErr || reason || new Error('OBJ model failed to load'));
+          });
+        } catch (e) {
+          reject(e || reason || new Error('Tool model failed to load'));
+        }
+      };
+
+      try {
+        // Prefer the supplied MTL so the original model materials are retained.
+        // If the MTL loader/material file fails for any reason, load the exact same OBJ
+        // without materials rather than silently reverting to the old procedural mesh.
+        if (!window.THREE.MTLLoader) {
+          finishWithObjFallback(new Error('MTLLoader unavailable'));
+          return;
+        }
+        const materialsLoader = new THREE.MTLLoader();
+        materialsLoader.load(mtlUrl, (materials) => {
+          try {
+            materials.preload();
+            const loader = new THREE.OBJLoader();
+            loader.setMaterials(materials);
+            loader.load(url, resolve, undefined, (objErr) => finishWithObjFallback(objErr));
+          } catch (e) {
+            finishWithObjFallback(e);
+          }
+        }, undefined, (mtlErr) => finishWithObjFallback(mtlErr));
+      } catch (e) {
+        finishWithObjFallback(e);
+      }
+    });
+  }
+
+  function buildEmbeddedToolModel(modelKey) {
+    const source = window.PocketUniverseToolModels && window.PocketUniverseToolModels[modelKey];
+    if (!source) return null;
+    const group = new THREE.Group();
+    for (const [materialName, data] of Object.entries(source)) {
+      if (!data || !Array.isArray(data.positions) || !data.positions.length) continue;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
+      if (Array.isArray(data.normals) && data.normals.length === data.positions.length) {
+        geometry.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
+      } else {
+        geometry.computeVertexNormals();
+      }
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+      const material = new THREE.MeshStandardMaterial({
+        name: materialName,
+        color: materialName.toLowerCase().includes('blade') ? 0xb8b8b8 : 0x7a4d2c,
+        roughness: materialName.toLowerCase().includes('blade') ? 0.48 : 0.86,
+        metalness: materialName.toLowerCase().includes('blade') ? 0.55 : 0.03
+      });
+      group.add(new THREE.Mesh(geometry, material));
+    }
+    return group.children.length ? group : null;
+  }
+
+  function loadToolModels() {
+    // The supplied OBJ files are now embedded as geometry data and become the
+    // authoritative tool meshes. This avoids the unreliable external OBJ/MTL
+    // loader path that was silently falling back to the old procedural models.
+    axeModelTemplate = buildEmbeddedToolModel('axe');
+    pickaxeModelTemplate = buildEmbeddedToolModel('pickaxe');
+    if (!axeModelTemplate) console.warn('Embedded axe model unavailable; using procedural fallback.');
+    if (!pickaxeModelTemplate) console.warn('Embedded pickaxe model unavailable; using procedural fallback.');
   }
 
   function showFatalError(message) {
@@ -68,6 +152,9 @@
         }
       } catch (supabaseError) {
         console.warn("Supabase unavailable; account features are disabled.", supabaseError);
+      }
+      try { await loadToolModels(); } catch (toolError) {
+        console.warn("Tool models unavailable; procedural fallback will be used.", toolError);
       }
       runGame();
     } catch (e) {
@@ -1263,6 +1350,7 @@
     }
 
     function recoverFromSunExposure() {
+      awardAchievement('sun_blackout_survived');
       clearRocketKeys();
       updateRocketEngineAudio(false, false);
       destroyCurrentRocketForSunPenalty();
@@ -1577,12 +1665,15 @@
     const moonQuartzSpawns = [];
     function spawnMoonQuartz(dir) {
       const group = new THREE.Group();
-      const visual = createMoonQuartzVisual(1.0 + Math.random() * 0.25);
+      const visual = createMoonQuartzVisual(1.0 + Math.random() * 0.25, false);
+      const ghost = createMoonQuartzVisual(1.04, true);
       group.add(visual);
+      group.add(ghost);
+      ghost.visible = false;
       group.position.copy(dir).multiplyScalar(MOON_RADIUS + 0.6);
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
       moonMesh.add(group);
-      moonQuartzSpawns.push({ root: group, visual, direction: dir.clone(), collected: false });
+      moonQuartzSpawns.push({ root: group, visual, ghost, direction: dir.clone(), collected: false, respawnAtSpin: 0 });
     }
     function scatterMoonQuartz(count = 60) {
       for (let i = 0; i < count; i++) {
@@ -2636,7 +2727,7 @@
         let toolVisual = null;
         if (item.kind === 'axe') {
           const headType = item.ironTool ? 'iron' : item.stoneTool ? 'stone' : item.id === 'wooden_axe' ? 'wood' : 'metal';
-          toolVisual = createAxeVisual(0.50, headType);
+          toolVisual = createAxeVisual(0.50, headType, item.id === 'axe');
         } else if (item.kind === 'pickaxe') {
           const headType = item.ironTool ? 'iron' : item.stoneTool ? 'stone' : 'wood';
           toolVisual = createPickaxeVisual(0.50, headType);
@@ -3109,9 +3200,193 @@
       { id: 'rocket_engine', name: 'Rocket Engine', kind: 'engine', maxStack: 1 },
       { id: 'rocket', name: 'Rocket', kind: 'rocket', maxStack: 1 },
       { id: 'launch_pad', name: 'Launch Pad', kind: 'launch_pad', maxStack: 1 },
-      { id: 'jerrycan', name: 'Jerrycan (Full)', kind: 'jerrycan', maxStack: 1 }
+      { id: 'jerrycan', name: 'Jerrycan (Full)', kind: 'jerrycan', maxStack: 1 },
+      { id: 'journal', name: 'Journal', kind: 'journal', maxStack: 1 }
     ];
     const itemById = Object.fromEntries(ITEM_TYPES.map(t => [t.id, t]));
+
+    // ---------- in-game journal ----------
+    // Journal discoveries are saved with each world. Items stay catalogued after being sold;
+    // the journal is an encyclopedia of things the player has discovered, not a live inventory.
+    const JOURNAL_ITEM_INFO = Object.freeze({
+      journal: { description: 'A field journal containing your discoveries across Pocket Universe.', how: 'Given to every new explorer alongside the Starter Axe.', used: 'Open the journal to browse discovered items, celestial bodies, and people.' },
+      axe: { description: 'A simple starter axe for your first days on Ivis.', how: 'Given when a new world is started.', used: 'Chops trees and can be used until its durability runs out.' },
+      ruby: { description: 'A bright red crystal with a high natural shine.', how: 'Collect it from crystal spawns on Ivis and other worlds that contain crystals.', used: 'Can be sold to the merchant or used in rocket construction.' },
+      topaz: { description: 'A warm orange crystal found around the world.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      jasper: { description: 'A yellow-gold crystal with a soft glow.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      emerald: { description: 'A vivid green crystal valued by the merchant.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      diamond: { description: 'A pale blue crystal prized for its rarity.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      lapis: { description: 'A deep blue crystal with a rich color.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      amethyst: { description: 'A purple crystal with a distinctive glow.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      onyx: { description: 'A very dark crystal that almost seems to absorb the light.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      wooden_axe: { description: 'A basic crafted axe made from wood.', how: 'Craft it from early-game materials.', used: 'Chops trees more efficiently than the starter axe.' },
+      wooden_pickaxe: { description: 'A simple wooden mining tool.', how: 'Craft it from wood and sticks.', used: 'Mines stone and basic resources.' },
+      stone_axe: { description: 'A sturdier axe with a stone head.', how: 'Craft it after gathering stone.', used: 'Chops trees with better durability and speed.' },
+      stone_pickaxe: { description: 'A stronger pickaxe for serious mining.', how: 'Craft it using stone and sticks.', used: 'Mines stone and ore, including iron and copper.' },
+      iron_axe: { description: 'A durable axe forged from iron.', how: 'Craft it after obtaining iron ingots from a furnace.', used: 'Chops trees efficiently with high durability.' },
+      iron_pickaxe: { description: 'A durable iron mining tool.', how: 'Craft it after obtaining iron ingots.', used: 'Mines stone, iron ore, and copper ore efficiently.' },
+      wooden_scythe: { description: 'A curved wooden-handled harvesting tool.', how: 'Craft it from early-game materials.', used: 'Cuts grass and gathers plant resources.' },
+      stone_scythe: { description: 'A sturdier scythe with a stone head.', how: 'Craft it using stone.', used: 'Cuts grass with increased durability.' },
+      iron_scythe: { description: 'A durable iron-bladed scythe.', how: 'Craft it after obtaining iron ingots.', used: 'Cuts grass efficiently and lasts longer.' },
+      copper_wire: { description: 'Several thin copper wires bundled together.', how: 'Craft wires from copper ingots.', used: 'A key component of the Upgraded Rocket Engine.' },
+      moon_quartz: { description: 'A pale mineral naturally found on the Moon.', how: 'Collect Moon Quartz from its lunar deposits.', used: 'Can be sold to the merchant and is required for the Upgraded Rocket Engine.' },
+      upgraded_engine: { description: 'An improved rocket engine capable of carrying a larger fuel reserve.', how: 'Craft it from a Rocket Engine, Moon Quartz, and Copper Wires.', used: 'Install it into a rocket to increase fuel capacity to 200%.' },
+      drill: { description: 'A powered mining drill for tougher resource gathering.', how: 'Find and collect a placed or dropped Drill when available.', used: 'Mines rocks and ore quickly and can be used for resource gathering.' },
+      planks: { description: 'Processed wooden boards used throughout early crafting.', how: 'Chop trees with an axe.', used: 'Used for tools, furnaces, fuel, and other crafting.' },
+      sticks: { description: 'Small wooden sticks prepared for crafting.', how: 'Craft them from Planks.', used: 'Used in many tools and the Rocket Engine.' },
+      grass_fiber: { description: 'Plant fibers gathered from the grasslands.', how: 'Harvest grass with a scythe.', used: 'Used in fiber-based crafting recipes.' },
+      woven_grass_fiber: { description: 'Grass fiber woven into a stronger material.', how: 'Craft it from Grass Fiber.', used: 'Used in more advanced crafting and utility items.' },
+      backpack: { description: 'A wearable storage pack that gives you more room for supplies.', how: 'Craft or obtain a Backpack when its recipe becomes available.', used: 'Provides extra storage space for your adventure.' },
+      stone: { description: 'Common rock collected from the surface and boulders.', how: 'Mine rocks and mountain stone with a pickaxe.', used: 'Used for tools, furnaces, and other crafting.' },
+      iron_ore: { description: 'Dark ore chunks containing useful iron.', how: 'Mine iron-bearing boulders with a suitable pickaxe.', used: 'Smelt it in a furnace to make Iron Ingots.' },
+      copper_ore: { description: 'Orange-brown ore containing copper.', how: 'Mine copper-bearing boulders with a suitable pickaxe.', used: 'Smelt it in a furnace to make Copper Ingots.' },
+      iron_ingot: { description: 'Refined iron ready for stronger equipment.', how: 'Smelt Iron Ore in a furnace.', used: 'Used for iron tools, rocket parts, and advanced crafting.' },
+      copper_ingot: { description: 'Refined copper used for electrical components.', how: 'Smelt Copper Ore in a furnace.', used: 'Used to craft Copper Wires and other advanced components.' },
+      furnace: { description: 'A compact furnace for turning ore into useful ingots.', how: 'Craft it from stone and planks.', used: 'Smelts Iron Ore and Copper Ore using Planks as fuel.' },
+      rocket_engine: { description: 'The standard engine that powers your first spacecraft.', how: 'Craft it from Iron Ingots, Sticks, and Stone.', used: 'Builds and powers a standard rocket.' },
+      rocket: { description: 'A spacecraft built to leave a celestial body and enter space.', how: 'Craft it from a Rocket Engine, Iron Ingots, and Rubies.', used: 'Travel between Ivis, the Moon, Cordelia, and deep space.' },
+      launch_pad: { description: 'A flat platform designed to hold a rocket during launch.', how: 'Craft it from Iron Ingots.', used: 'Provides the launch and landing point for a rocket.' },
+      jerrycan: { description: 'A full can of rocket fuel for refilling a spacecraft.', how: 'Buy it from the merchant.', used: 'Adds fuel to a rocket; each can provides 100% of a tank refill.' },
+    });
+    const JOURNAL_BODY_INFO = Object.freeze({
+      ivis: { name: 'Ivis', description: 'Your home world: a small living planet with forests, mountains, a river, crystals, and the familiar merchant stall. It is the safest place to prepare for your next flight.' },
+      moon: { name: 'Moon', description: 'A smaller, low-gravity celestial body reached by rocket. Moon Quartz can be found here, making lunar trips valuable for advanced rocket upgrades.' },
+      cordelia: { name: 'Cordelia', description: 'A distant alien world with a sandy environment, its own day/night cycle, and a separate launch and landing experience.' },
+    });
+    const JOURNAL_PERSON_INFO = Object.freeze({
+      jaecob: { name: 'Jaecob', role: 'The shopkeeper of the crystal stall. He buys your items and sells selected supplies, including rocket-related essentials.', connections: 'Friends with Helna.' },
+      helna: { name: 'Helna', role: 'The hat lady at the orange-striped customization stall. She offers character colors and hats for Gems.', connections: 'Friends with Jaecob.' },
+    });
+    let journalDiscoveredItems = new Set(['journal', 'axe']);
+    let journalVisitedBodies = new Set(['ivis']);
+    let journalMetPeople = new Set();
+
+    function journalSafeIds(value, allowed) {
+      return new Set(Array.isArray(value) ? value.filter(id => allowed.has(id)) : []);
+    }
+    function markJournalItemDiscovered(typeId, saveNow = true) {
+      if (!itemById[typeId] || journalDiscoveredItems.has(typeId)) return false;
+      journalDiscoveredItems.add(typeId);
+      if (saveNow) persistLocalBackup();
+      return true;
+    }
+    function markJournalBodyVisited(bodyId, saveNow = true) {
+      if (!JOURNAL_BODY_INFO[bodyId] || journalVisitedBodies.has(bodyId)) return false;
+      journalVisitedBodies.add(bodyId);
+      if (saveNow) persistLocalBackup();
+      return true;
+    }
+    function markJournalPersonMet(personId, saveNow = true) {
+      if (!JOURNAL_PERSON_INFO[personId] || journalMetPeople.has(personId)) return false;
+      journalMetPeople.add(personId);
+      if (saveNow) persistLocalBackup();
+      return true;
+    }
+
+    const journalOverlay = document.getElementById('journalOverlay');
+    const journalPanel = document.getElementById('journalPanel');
+    const journalClose = document.getElementById('journalClose');
+    const journalTabs = document.getElementById('journalTabs');
+    const journalList = document.getElementById('journalList');
+    let journalOpen = false;
+    let journalSection = 'items';
+    let journalReturnToInventory = false;
+
+    function journalItemCard(typeId) {
+      const item = itemById[typeId];
+      const info = JOURNAL_ITEM_INFO[typeId];
+      if (!item || !info) return null;
+      const card = document.createElement('article');
+      card.className = 'journalEntry';
+      const icon = makeItemIconElement(typeId, 'journalEntryIcon');
+      const body = document.createElement('div');
+      body.className = 'journalEntryBody';
+      const title = document.createElement('div'); title.className = 'journalEntryTitle'; title.textContent = item.name;
+      const desc = document.createElement('p'); desc.textContent = info.description;
+      const how = document.createElement('p'); how.innerHTML = '<strong>HOW TO GET:</strong> ' + info.how;
+      const used = document.createElement('p'); used.innerHTML = '<strong>USED FOR:</strong> ' + info.used;
+      body.append(title, desc, how, used);
+      card.append(icon, body);
+      return card;
+    }
+    function journalBodyCard(bodyId) {
+      const info = JOURNAL_BODY_INFO[bodyId];
+      if (!info) return null;
+      const card = document.createElement('article'); card.className = 'journalEntry';
+      const icon = document.createElement('div'); icon.className = 'journalBodyIcon'; icon.textContent = bodyId === 'moon' ? '☾' : (bodyId === 'cordelia' ? '◉' : '●');
+      const body = document.createElement('div'); body.className = 'journalEntryBody';
+      const title = document.createElement('div'); title.className = 'journalEntryTitle'; title.textContent = info.name;
+      const desc = document.createElement('p'); desc.textContent = info.description;
+      body.append(title, desc); card.append(icon, body); return card;
+    }
+    function journalPersonCard(personId) {
+      const info = JOURNAL_PERSON_INFO[personId];
+      if (!info) return null;
+      const card = document.createElement('article'); card.className = 'journalEntry';
+      const icon = document.createElement('div'); icon.className = 'journalPersonIcon'; icon.textContent = personId === 'helna' ? 'H' : 'J';
+      const body = document.createElement('div'); body.className = 'journalEntryBody';
+      const title = document.createElement('div'); title.className = 'journalEntryTitle'; title.textContent = info.name;
+      const role = document.createElement('p'); role.innerHTML = '<strong>WHAT THEY DO:</strong> ' + info.role;
+      const connections = document.createElement('p'); connections.innerHTML = '<strong>CONNECTIONS:</strong> ' + info.connections;
+      body.append(title, role, connections); card.append(icon, body); return card;
+    }
+    function renderJournal() {
+      if (!journalList) return;
+      journalTabs.querySelectorAll('button').forEach(btn => btn.classList.toggle('active', btn.dataset.section === journalSection));
+      journalList.replaceChildren();
+      const heading = document.createElement('div'); heading.className = 'journalSectionHeading';
+      const empty = document.createElement('div'); empty.className = 'journalEmpty';
+      if (journalSection === 'items') {
+        heading.textContent = 'ITEM DISCOVERIES';
+        const ids = ITEM_TYPES.map(item => item.id).filter(id => journalDiscoveredItems.has(id));
+        journalList.appendChild(heading);
+        if (!ids.length) { empty.textContent = 'No items discovered yet.'; journalList.appendChild(empty); }
+        else ids.forEach(id => { const card = journalItemCard(id); if (card) journalList.appendChild(card); });
+      } else if (journalSection === 'bodies') {
+        heading.textContent = 'CELESTIAL BODIES';
+        journalList.appendChild(heading);
+        const ids = ['ivis','moon','cordelia'].filter(id => journalVisitedBodies.has(id));
+        if (!ids.length) { empty.textContent = 'No celestial bodies discovered yet.'; journalList.appendChild(empty); }
+        else ids.forEach(id => { const card = journalBodyCard(id); if (card) journalList.appendChild(card); });
+      } else {
+        heading.textContent = 'PEOPLE';
+        journalList.appendChild(heading);
+        const ids = ['jaecob','helna'].filter(id => journalMetPeople.has(id));
+        if (!ids.length) { empty.textContent = 'No people have been added to your journal yet.'; journalList.appendChild(empty); }
+        else ids.forEach(id => { const card = journalPersonCard(id); if (card) journalList.appendChild(card); });
+      }
+    }
+    function openJournal(fromInventory = false) {
+      if (state.gameState !== 'playing' || playerState.inRocket) return false;
+      journalOpen = true;
+      journalReturnToInventory = !!fromInventory;
+      state.paused = true;
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      clearPhysicalKeys();
+      renderJournal();
+      journalOverlay.classList.remove('hidden');
+      journalOverlay.setAttribute('aria-hidden', 'false');
+      if (!fromInventory) document.getElementById('inventoryOverlay').classList.add('hidden');
+      return true;
+    }
+    function closeJournal() {
+      if (!journalOpen) return;
+      journalOpen = false;
+      journalOverlay.classList.add('hidden');
+      journalOverlay.setAttribute('aria-hidden', 'true');
+      if (!journalReturnToInventory) {
+        if (state.gameState === 'playing') { state.paused = false; attemptPointerLock(); }
+      } else {
+        journalReturnToInventory = false;
+      }
+    }
+    journalClose.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); closeJournal(); });
+    journalPanel.addEventListener('click', e => e.stopPropagation());
+    journalOverlay.addEventListener('click', e => { if (e.target === journalOverlay) closeJournal(); });
+    journalTabs.querySelectorAll('button').forEach(btn => btn.addEventListener('click', (e) => { e.stopPropagation(); journalSection = btn.dataset.section; renderJournal(); }));
+    document.addEventListener('keydown', (e) => { if (journalOpen && e.key === 'Escape') { e.preventDefault(); closeJournal(); } });
+    document.addEventListener('contextmenu', (e) => { if (journalOpen) { e.preventDefault(); e.stopPropagation(); } }, true);
     const SELL_PRICES = Object.freeze({
       ruby: 50, topaz: 40, jasper: 38, emerald: 65, diamond: 150, lapis: 55, amethyst: 85, onyx: 120,
       axe: 20, wooden_axe: 35, wooden_pickaxe: 35, stone_axe: 55, stone_pickaxe: 55, iron_axe: 100, iron_pickaxe: 115, wooden_scythe: 35, stone_scythe: 55, iron_scythe: 100, copper_wire: 8, moon_quartz: 500, drill: 180,
@@ -3156,13 +3431,15 @@
 
     // Build the visible model used both for world crystals and for the held item model.
     // `ghost` switches the material to a faint wireframe silhouette for collected crystals.
-    function createMoonQuartzVisual(scale = 1) {
+    function createMoonQuartzVisual(scale = 1, ghost = false) {
       const group = new THREE.Group();
-      const pale = new THREE.MeshStandardMaterial({ color: 0xe9eef7, roughness: 0.22, metalness: 0.08, emissive: 0x6f7b91, emissiveIntensity: 0.18 });
-      const glow = new THREE.MeshBasicMaterial({ color: 0xdfe9ff, transparent: true, opacity: 0.18, depthWrite: false });
+      const pale = ghost
+        ? new THREE.MeshBasicMaterial({ color: 0xe9eef7, wireframe: true, transparent: true, opacity: 0.26, depthWrite: false, depthTest: true })
+        : new THREE.MeshStandardMaterial({ color: 0xe9eef7, roughness: 0.22, metalness: 0.08, emissive: 0x6f7b91, emissiveIntensity: 0.18 });
+      const glow = new THREE.MeshBasicMaterial({ color: 0xdfe9ff, transparent: true, opacity: ghost ? 0.10 : 0.18, depthWrite: false });
       const main = new THREE.Mesh(new THREE.OctahedronGeometry(0.34, 0), pale);
       main.scale.set(0.85, 1.55, 0.85); main.position.y = 0.42; group.add(main);
-      const side = new THREE.Mesh(new THREE.OctahedronGeometry(0.23, 0), pale);
+      const side = new THREE.Mesh(new THREE.OctahedronGeometry(0.23, 0), pale.clone ? pale.clone() : pale);
       side.scale.set(0.72, 1.12, 0.72); side.position.set(0.22, 0.29, 0.04); side.rotation.z = 0.33; group.add(side);
       const aura = new THREE.Mesh(new THREE.SphereGeometry(0.58, 12, 10), glow);
       aura.position.y = 0.36; group.add(aura);
@@ -3330,19 +3607,72 @@
         const band = new THREE.Mesh(new THREE.CylinderGeometry(0.325, 0.325, 0.09, 18), dark);
         band.position.y = 0.18;
         hat.add(band);
+      } else if (typeId === 'wizard_hat_blue' || typeId === 'wizard_hat_red') {
+        // Extra-long, floppy wizard hat inspired by the supplied reference: wide brim,
+        // tall tapered cone and a dramatically bent, drooping tip. Two fixed colors exist.
+        const wizardColor = typeId === 'wizard_hat_red' ? 0xb7353d : 0x2f57b7;
+        const wizardMat = new THREE.MeshStandardMaterial({ color: wizardColor, roughness: 0.88 });
+        const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.64, 0.72, 0.10, 24), wizardMat);
+        brim.scale.z = 0.86;
+        brim.position.y = 0.03;
+        hat.add(brim);
+
+        // Build the body from connected tapered sections along a curved centerline.
+        const pts = [
+          new THREE.Vector3(0.00, 0.08, 0.00),
+          new THREE.Vector3(0.00, 0.40, 0.00),
+          new THREE.Vector3(0.03, 0.72, 0.00),
+          new THREE.Vector3(0.12, 1.04, 0.00),
+          new THREE.Vector3(0.28, 1.32, 0.00),
+          new THREE.Vector3(0.52, 1.50, 0.00),
+          new THREE.Vector3(0.82, 1.54, 0.00),
+          new THREE.Vector3(1.07, 1.45, 0.00)
+        ];
+        const radii = [0.46,0.42,0.37,0.31,0.24,0.15,0.085,0.028];
+        for (let i = 0; i < pts.length - 1; i++) {
+          const a = pts[i], b = pts[i + 1];
+          const mid = a.clone().add(b).multiplyScalar(0.5);
+          const dir = b.clone().sub(a);
+          const len = dir.length();
+          const seg = new THREE.Mesh(new THREE.CylinderGeometry(radii[i + 1], radii[i], len, 18), wizardMat);
+          seg.position.copy(mid);
+          seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+          hat.add(seg);
+        }
+        // Soft droop at the very end makes the silhouette read like cloth rather than a rigid cone.
+        const tip = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), wizardMat);
+        tip.position.copy(pts[pts.length - 1]);
+        tip.scale.set(1.35, 0.8, 1.0);
+        hat.add(tip);
       } else if (typeId === 'baseball_hat') {
-        const cap = new THREE.Mesh(new THREE.SphereGeometry(0.46, 18, 10, 0, Math.PI * 2, 0, Math.PI * 0.58), colored);
-        cap.scale.y = 0.72;
-        cap.position.y = 0.18;
+        // Baseball cap: shallow rounded crown, small top button, and a broad curved visor
+        // projecting forward. The shape is intentionally simple/low-poly to fit the rest
+        // of the game's cosmetic models while reading clearly as a normal cap.
+        const cap = new THREE.Mesh(
+          new THREE.SphereGeometry(0.47, 22, 12, 0, Math.PI * 2, 0, Math.PI * 0.50),
+          colored
+        );
+        cap.scale.set(1.00, 0.76, 0.96);
+        cap.position.set(0, 0.17, 0.01);
         hat.add(cap);
-        const panel = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.06, 0.42), white);
-        panel.position.set(0, 0.33, -0.05);
-        panel.rotation.x = -0.12;
-        hat.add(panel);
-        const visor = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.40, 0.055, 16), colored);
-        visor.scale.z = 0.62;
+
+        const button = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8), colored);
+        button.position.set(0, 0.53, 0.01);
+        hat.add(button);
+
+        // Custom flat visor silhouette, slightly wider than the crown and curved at its tip.
+        const visorShape = new THREE.Shape();
+        visorShape.moveTo(-0.37, 0.035);
+        visorShape.bezierCurveTo(-0.22, 0.005, 0.22, 0.005, 0.37, 0.035);
+        visorShape.bezierCurveTo(0.32, -0.075, 0.16, -0.145, 0.00, -0.155);
+        visorShape.bezierCurveTo(-0.16, -0.145, -0.32, -0.075, -0.37, 0.035);
+        const visor = new THREE.Mesh(
+          new THREE.ExtrudeGeometry(visorShape, { depth: 0.055, bevelEnabled: false, curveSegments: 3, steps: 1 }),
+          colored
+        );
         visor.rotation.x = Math.PI / 2;
-        visor.position.set(0, 0.10, -0.43);
+        visor.position.set(0, 0.075, -0.39);
+        visor.scale.set(1.02, 1.0, 1.0);
         hat.add(visor);
       }
 
@@ -3458,7 +3788,7 @@
       const counterBase=new THREE.Mesh(new THREE.BoxGeometry(8.55,0.18,2.55),wood);counterBase.position.y=1.36;stall.add(counterBase);
       const counterTop=new THREE.Mesh(new THREE.BoxGeometry(8.75,0.18,2.72),woodLight);counterTop.position.y=1.50;stall.add(counterTop);
 
-      const stockedTypes=['banana_skin_hat','fedora_hat','top_hat','baseball_hat'];
+      const stockedTypes=['banana_skin_hat','fedora_hat','top_hat','baseball_hat','wizard_hat_blue','wizard_hat_red'];
       const crateZ=[-0.70,0.70], crateX=[-3.25,-1.08,1.08,3.25];
       for(let row=0;row<2;row++) for(let col=0;col<4;col++){
         const crate=createStallCrate(row===0?stockedTypes[col]:null,'hat');
@@ -3608,14 +3938,17 @@
           for(const color of COSMETIC_COLORS){
             const id=cosmeticHatKey(hat.id,color.id); const owned=accountCosmetics.ownedHats.includes(id); const equipped=accountCosmetics.equippedHat===id; const b=makeCosmeticHatCard(hat,color,id,owned,equipped); cosmeticHatGrid.appendChild(b);
           }
-        }else{
+        } else if(hat.fixedColor) {
+          const color=cosmeticColorById[hat.fixedColor];
+          const id=hat.id; const owned=accountCosmetics.ownedHats.includes(id); const equipped=accountCosmetics.equippedHat===id; cosmeticHatGrid.appendChild(makeCosmeticHatCard(hat,color,id,owned,equipped));
+        } else {
           const id=hat.id; const owned=accountCosmetics.ownedHats.includes(id); const equipped=accountCosmetics.equippedHat===id; cosmeticHatGrid.appendChild(makeCosmeticHatCard(hat,null,id,owned,equipped));
         }
       }
     }
     function makeCosmeticHatCard(hat,color,id,owned,equipped){
       const b=document.createElement('button'); b.type='button'; b.className='cosmeticHatCard'+(owned?' owned':'')+(equipped?' equipped':'');
-      const p=document.createElement('span'); p.className='cosmeticHatPreview'; p.textContent=hat.id==='banana_skin_hat'?'🍌':hat.id==='top_hat'?'🎩':'◆';
+      const p=document.createElement('span'); p.className='cosmeticHatPreview'; p.textContent=hat.id==='banana_skin_hat'?'🍌':hat.id==='top_hat'?'🎩':hat.id.startsWith('wizard_hat')?'🧙':'◆';
       if(color) p.style.color='#'+color.hex.toString(16).padStart(6,'0');
       const title=document.createElement('span'); title.className='cosmeticCardTitle'; title.textContent=hat.name+(color?' · '+color.name:'');
       const sub=document.createElement('span'); sub.className='cosmeticCardSub'; sub.textContent=owned?(equipped?'EQUIPPED':'Click to equip'):'Click to buy';
@@ -3636,6 +3969,7 @@
     }
     function equipCosmeticHat(hatId){ accountCosmetics.equippedHat = accountCosmetics.equippedHat===hatId ? null : hatId; applyPlayerCosmetics(); persistAchievementState(); updateHomeGemsAndCosmeticsUI(); }
     function openCosmeticShop(){
+      markJournalPersonMet('helna');
       if(!currentAccountUser){ openAccount(); return true; }
       cosmeticShopOpen=true; state.paused=true; if(document.pointerLockElement===canvas)document.exitPointerLock();
       cosmeticOverlay.classList.remove('hidden'); cosmeticOverlay.setAttribute('aria-hidden','false'); ensureCosmeticPreview(); renderCosmeticShop(); updateCosmeticPreview();
@@ -3771,6 +4105,53 @@
       while (group.children.length) group.remove(group.children[group.children.length - 1]);
     }
 
+    function cloneAndTintToolModel(template, scale, headType, starter = false) {
+      if (!template) return null;
+      const group = template.clone(true);
+      group.traverse((node) => {
+        if (!node.isMesh) return;
+        if (Array.isArray(node.material)) node.material = node.material.map(m => m && m.clone ? m.clone() : m);
+        else if (node.material && node.material.clone) node.material = node.material.clone();
+        const mats = Array.isArray(node.material) ? node.material : [node.material];
+        for (const mat of mats) {
+          if (!mat || !mat.color) continue;
+          const name = String(mat.name || '').toLowerCase();
+          const bladeColor = starter ? 0xb4b0a6 : headType === 'wood' ? 0x6b462f : headType === 'stone' ? 0x90979d : 0x4b525a;
+          const handleColor = starter ? 0x9a6738 : 0x7a4d2c;
+          if (name.includes('blade')) {
+            mat.color.setHex(bladeColor);
+            mat.roughness = 0.48;
+            mat.metalness = headType === 'wood' ? 0.06 : 0.55;
+          } else if (name.includes('stick') || name.includes('handle')) {
+            mat.color.setHex(handleColor);
+            mat.roughness = 0.86;
+            mat.metalness = 0.03;
+          }
+        }
+      });
+      const box = new THREE.Box3().setFromObject(group);
+      const center = box.getCenter(new THREE.Vector3());
+      group.position.x -= center.x;
+      group.position.z -= center.z;
+      group.position.y -= box.min.y;
+      group.scale.setScalar(scale);
+      return group;
+    }
+
+    function createActualAxeVisual(scale = 1, headType = 'metal', starter = false) {
+      const actual = cloneAndTintToolModel(axeModelTemplate, scale, headType, starter);
+      if (actual) {
+        // The supplied axe mesh is modeled with the cutting side facing inward.
+        // Turn it around so the blade points outward from the player when held.
+        actual.rotation.y = Math.PI;
+      }
+      return actual;
+    }
+
+    function createActualPickaxeVisual(scale = 1, headType = 'wood') {
+      return cloneAndTintToolModel(pickaxeModelTemplate, scale, headType, false);
+    }
+
     function makeToolHeadMaterial(headType, defaultMetalness = 0.45) {
       return new THREE.MeshStandardMaterial({
         color: headType === 'wood' ? 0x6f4328 : (headType === 'stone' ? 0x9aa1a8 : (headType === 'iron' ? 0x4d5359 : 0xbcc3cb)),
@@ -3779,62 +4160,120 @@
       });
     }
 
-    // Axe silhouette: a central eye with a noticeably longer cutting side, like 🪓.
-    function createAxeVisual(scale = 1, headType = 'metal') {
+    // Low-poly axe inspired by the supplied reference: long slightly curved wooden
+    // handle, compact eye, and a broad wedge-shaped metal head with a single cutting edge.
+    function createAxeVisual(scale = 1, headType = 'metal', starter = false) {
+      const actual = createActualAxeVisual(scale * 4.625, headType, starter);
+      if (actual) return actual;
       const group = new THREE.Group();
-      const handle = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.055, 0.075, 0.95, 8),
-        new THREE.MeshStandardMaterial({ color: 0x8b5a32, roughness: 0.8 })
-      );
-      handle.rotation.z = -0.42;
-      handle.position.y = -0.02;
-      group.add(handle);
+      const handleMat = new THREE.MeshStandardMaterial({ color: 0x8b5a32, roughness: 0.84 });
 
-      const mat = makeToolHeadMaterial(headType, 0.55);
-      const eye = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.17, 0.09), mat);
-      eye.position.set(0.02, 0.40, 0);
-      eye.rotation.z = -0.42;
+      // Build the handle from three faceted sections to suggest the gentle natural curve
+      // of the reference while keeping the model deliberately low-poly/cartoon-like.
+      const handleParts = [
+        { y: -0.33, len: 0.44, x: -0.035, zRot: -0.08, r1: 0.070, r2: 0.060 },
+        { y:  0.00, len: 0.56, x: -0.005, zRot: -0.02, r1: 0.064, r2: 0.055 },
+        { y:  0.35, len: 0.46, x:  0.055, zRot:  0.08, r1: 0.058, r2: 0.048 }
+      ];
+      for (const part of handleParts) {
+        const mesh = new THREE.Mesh(
+          new THREE.CylinderGeometry(part.r1, part.r2, part.len, 7),
+          handleMat
+        );
+        mesh.position.set(part.x, part.y, 0);
+        mesh.rotation.z = part.zRot;
+        group.add(mesh);
+      }
+
+      const mat = makeToolHeadMaterial(headType, 0.52);
+
+      // Small metal eye/collar where the head passes over the handle.
+      const eye = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.20, 0.13), mat);
+      eye.position.set(0.12, 0.57, 0);
+      eye.rotation.z = 0.10;
       group.add(eye);
 
-      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.23, 0.09), mat);
-      blade.position.set(0.24, 0.40, 0);
-      blade.rotation.z = -0.42;
+      // Broad, slightly downward-swept wedge. The single low-poly extrusion gives it the
+      // silhouette of the reference axe without trying to make a realistic high-poly blade.
+      const bladeShape = new THREE.Shape();
+      bladeShape.moveTo(0.14, 0.66);
+      bladeShape.lineTo(0.48, 0.73);
+      bladeShape.lineTo(0.68, 0.58);
+      bladeShape.lineTo(0.55, 0.32);
+      bladeShape.lineTo(0.26, 0.43);
+      bladeShape.lineTo(0.10, 0.50);
+      bladeShape.closePath();
+      const bladeGeo = new THREE.ExtrudeGeometry(bladeShape, {
+        depth: 0.13,
+        bevelEnabled: false,
+        curveSegments: 1,
+        steps: 1
+      });
+      bladeGeo.translate(0, 0, -0.065);
+      const blade = new THREE.Mesh(bladeGeo, mat);
+      blade.rotation.z = 0.02;
       group.add(blade);
 
-      group.scale.setScalar(scale);
+      group.scale.setScalar(scale * 1.25);
       return group;
     }
 
-    // Pickaxe silhouette: the handle passes through the middle of a symmetric-ish cross head, like ⛏️.
+    // Low-poly pickaxe inspired by the supplied reference: a long wooden handle with a
+    // chunky center eye and two broad, slightly drooping tapered picks.
     function createPickaxeVisual(scale = 1, headType = 'wood') {
+      const actual = createActualPickaxeVisual(scale * 5.0, headType);
+      if (actual) return actual;
       const group = new THREE.Group();
+      const handleMat = new THREE.MeshStandardMaterial({ color: 0x8b5a32, roughness: 0.84 });
+
       const handle = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.055, 0.075, 0.95, 8),
-        new THREE.MeshStandardMaterial({ color: 0x8b5a32, roughness: 0.8 })
+        new THREE.CylinderGeometry(0.070, 0.090, 1.32, 7),
+        handleMat
       );
-      handle.rotation.z = -0.40;
-      handle.position.y = -0.02;
+      handle.rotation.z = -0.08;
+      handle.position.set(-0.04, -0.10, 0);
       group.add(handle);
 
-      const mat = makeToolHeadMaterial(headType, 0.45);
-      const head = new THREE.Group();
-      head.position.set(0.12, 0.38, 0);
-      head.rotation.z = -0.12;
-      group.add(head);
+      // Slightly thicker butt-cap to match the sturdy carved handle silhouette.
+      const butt = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.105, 0.18, 7), handleMat);
+      butt.position.set(-0.10, -0.77, 0);
+      butt.rotation.z = -0.08;
+      group.add(butt);
 
-      const center = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.09), mat);
-      center.position.set(0, 0, 0);
-      head.add(center);
+      const mat = makeToolHeadMaterial(headType, 0.46);
+      const eye = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.19, 0.14), mat);
+      eye.position.set(0.08, 0.50, 0);
+      eye.rotation.z = -0.04;
+      group.add(eye);
 
-      const leftPick = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.10, 0.09), mat);
-      leftPick.position.set(-0.17, 0, 0);
-      leftPick.rotation.z = -0.10;
-      head.add(leftPick);
+      function addPick(points, x, rot = 0) {
+        const shape = new THREE.Shape();
+        shape.moveTo(points[0][0], points[0][1]);
+        for (let i = 1; i < points.length; i++) shape.lineTo(points[i][0], points[i][1]);
+        shape.closePath();
+        const geo = new THREE.ExtrudeGeometry(shape, {
+          depth: 0.13,
+          bevelEnabled: false,
+          curveSegments: 1,
+          steps: 1
+        });
+        geo.translate(0, 0, -0.065);
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.x = x;
+        mesh.rotation.z = rot;
+        group.add(mesh);
+      }
 
-      const rightPick = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.10, 0.09), mat);
-      rightPick.position.set(0.17, 0, 0);
-      rightPick.rotation.z = 0.10;
-      head.add(rightPick);
+      // Broad shoulders into long pointed ends. They angle down just enough to echo the
+      // reference without making the tool overly realistic.
+      addPick([
+        [-0.02, 0.58], [-0.44, 0.62], [-0.68, 0.48], [-0.79, 0.28],
+        [-0.58, 0.39], [-0.18, 0.52]
+      ], 0.08, -0.04);
+      addPick([
+        [0.02, 0.58], [0.44, 0.62], [0.68, 0.48], [0.79, 0.28],
+        [0.58, 0.39], [0.18, 0.52]
+      ], 0.08, 0.04);
 
       group.scale.setScalar(scale);
       return group;
@@ -3918,6 +4357,27 @@
       return group;
     }
 
+    function createJournalVisual(scale = 1) {
+      const group = new THREE.Group();
+      const coverMat = new THREE.MeshStandardMaterial({ color: 0x5b3b29, roughness: 0.86, metalness: 0.03 });
+      const pageMat = new THREE.MeshStandardMaterial({ color: 0xe7d7ae, roughness: 0.98 });
+      const spineMat = new THREE.MeshStandardMaterial({ color: 0x3d271d, roughness: 0.92 });
+      const cover = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.68, 0.10), coverMat);
+      cover.rotation.z = -0.12;
+      cover.position.y = 0.04;
+      group.add(cover);
+      const pages = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.59, 0.085), pageMat);
+      pages.rotation.z = -0.12;
+      pages.position.set(0.045, 0.04, 0.014);
+      group.add(pages);
+      const spine = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.70, 0.12), spineMat);
+      spine.rotation.z = -0.12;
+      spine.position.set(-0.245, 0.04, 0.005);
+      group.add(spine);
+      group.scale.setScalar(scale);
+      return group;
+    }
+
     function setHeldItem(typeId) {
       clearHeldItem(heldCrystalFirstPerson);
       clearHeldItem(heldCrystalThirdPerson);
@@ -3927,8 +4387,8 @@
       let tpModel;
       if (typeId === 'axe' || typeId === 'wooden_axe' || typeId === 'stone_axe' || typeId === 'iron_axe') {
         const headType = typeId === 'wooden_axe' ? 'wood' : (typeId === 'stone_axe' ? 'stone' : (typeId === 'iron_axe' ? 'iron' : 'metal'));
-        fpModel = createAxeVisual(0.92, headType);
-        tpModel = createAxeVisual(0.66, headType);
+        fpModel = createAxeVisual(0.92, headType, typeId === 'axe');
+        tpModel = createAxeVisual(0.66, headType, typeId === 'axe');
       } else if (typeId === 'wooden_pickaxe' || typeId === 'stone_pickaxe' || typeId === 'iron_pickaxe') {
         const headType = typeId === 'stone_pickaxe' ? 'stone' : (typeId === 'iron_pickaxe' ? 'iron' : 'wood');
         fpModel = createPickaxeVisual(0.92, headType);
@@ -3949,6 +4409,9 @@
       } else if (typeId === 'jerrycan') {
         fpModel = createJerrycanVisual(0.85);
         tpModel = createJerrycanVisual(0.60);
+      } else if (typeId === 'journal') {
+        fpModel = createJournalVisual(0.86);
+        tpModel = createJournalVisual(0.62);
       } else {
         return;
       }
@@ -3956,6 +4419,7 @@
       heldCrystalThirdPerson.add(tpModel);
       heldCrystalFirstPerson.visible = !playerState.thirdPerson;
       heldCrystalThirdPerson.visible = playerState.thirdPerson;
+      updatePlayerHatVisibility();
     }
 
     function createScytheVisual(scale = 1, headType = 'wood') {
@@ -4400,6 +4864,8 @@
     function addItemToInventory(typeId, amount = 1, durability = null) {
       const item = itemById[typeId];
       if (!item || amount <= 0) return false;
+      // Any successful pickup/craft/purchase becomes a permanent journal discovery.
+      const journalWasNew = !journalDiscoveredItems.has(typeId);
       if (typeId === 'backpack') {
         let remaining = Math.floor(amount);
         for (let i = 0; i < INVENTORY_SLOT_COUNT && remaining > 0; i++) {
@@ -4410,7 +4876,9 @@
         updateHotbarUI();
         updateInventoryUI();
         refreshEquippedItem();
-        return remaining === 0;
+        const success = remaining === 0;
+        if (success && journalWasNew) markJournalItemDiscovered(typeId);
+        return success;
       }
 
       // Work out whether the full amount fits before changing anything, so chopping a tree
@@ -4443,7 +4911,9 @@
       updateHotbarUI();
       updateInventoryUI();
       refreshEquippedItem();
-      return remaining === 0;
+      const success = remaining === 0;
+      if (success && journalWasNew) markJournalItemDiscovered(typeId);
+      return success;
     }
 
     function hasItemType(typeId) {
@@ -4483,6 +4953,9 @@
         icon.style.background = data.css;
         icon.style.boxShadow = '0 0 12px ' + data.css;
       }
+      // Dedicated CSS icons are used for special multi-part items too.
+      // Keeping this function data-driven means inventory, hotbar, and journal
+      // entries all render the same item identity.
       icon.title = data.name;
       return icon;
     }
@@ -4518,6 +4991,7 @@
         }
         slot.addEventListener('contextmenu', (e) => {
           const held = inventorySlots[getHotbarInventoryIndex(index)];
+          if (held && held.typeId === 'journal') { e.preventDefault(); e.stopPropagation(); openJournal(false); return; }
           if (held && held.typeId === 'backpack') {
             e.preventDefault(); e.stopPropagation(); openBackpackStorage(held);
           }
@@ -4577,6 +5051,7 @@
         });
         slot.addEventListener('contextmenu', (e) => {
           const held = inventorySlots[i];
+          if (held && held.typeId === 'journal') { e.preventDefault(); e.stopPropagation(); openJournal(true); return; }
           if (held && held.typeId === 'backpack') { e.preventDefault(); e.stopPropagation(); openBackpackStorage(held); }
         });
         grid.appendChild(slot);
@@ -4788,8 +5263,12 @@
       for (let i = 0; i < backpackSlots.length; i++) backpackSlots[i] = null;
       clearHeldItem(heldCrystalFirstPerson);
       clearHeldItem(heldCrystalThirdPerson);
-      // A brand-new player always starts with one simple axe in inventory slot 0.
+      // A brand-new player starts with the Starter Axe and Journal.
+      // Journal discoveries are intentionally NOT reset here because resetInventory() is also
+      // used for emergency recoveries inside an existing world. New-world journal state is
+      // initialized explicitly by startGame() below.
       inventorySlots[INVENTORY_MAIN_SLOTS] = { typeId: 'axe', count: 1, durability: TOOL_MAX_DURABILITY };
+      inventorySlots[INVENTORY_MAIN_SLOTS + 1] = { typeId: 'journal', count: 1 };
       uiState.selectedHotbarSlot = 0;
       refreshEquippedItem();
       updateHotbarUI();
@@ -5801,7 +6280,6 @@
       land2: new Audio('audio/land2.mp3'),
       drill: new Audio('audio/drill.mp3'),
       achievement: new Audio('audio/achievement-unlock.mp3'),
-      moonQuartzPickup: new Audio('audio/moon-quartz-pickup.mp3')
     };
     audioBank.footsteps.loop = true;
     audioBank.river.loop = true;
@@ -5816,7 +6294,7 @@
       const base = audioBank[key];
       if (!base) return;
       // Clone one-shot sounds so repeated impacts do not cut each other off.
-      if (key === 'pickaxe' || key === 'chop' || key === 'uiClick' || key === 'crystalPickup' || key === 'moonQuartzPickup' || key === 'jumpLanding' || key === 'land2' || key === 'rocketLaunch' || key === 'spaceAtmosphereBoom' || key === 'drill' || key === 'achievement') {
+      if (key === 'pickaxe' || key === 'chop' || key === 'uiClick' || key === 'crystalPickup' || key === 'jumpLanding' || key === 'land2' || key === 'rocketLaunch' || key === 'spaceAtmosphereBoom' || key === 'drill' || key === 'achievement') {
         const sound = base.cloneNode(true);
         sound.volume = Math.max(0, Math.min(1, volume * settingsMasterVolume));
         sound.playbackRate = playbackRate;
@@ -5943,6 +6421,7 @@
     const playButton = document.getElementById("playButton");
     const homeSettingsButton = document.getElementById("homeSettingsButton");
     const loadGameButton = document.getElementById("loadGameButton");
+    const homeFullscreenButton = document.getElementById("homeFullscreenButton");
 
     // ---------- achievements (account-wide, stored with the Supabase account) ----------
     // Gems are awarded from the achievement difficulty score discussed for each advancement.
@@ -5958,7 +6437,8 @@
       return_cordelia:58, catalogued:63, away_from_home:48, total_flight_distance:55, first_rocket:30,
       first_launch_pad:24, fuel_rocket:38, launch_first_space:32, voyager:62, long_spaceflight_land:72,
       takeoff_100:68, low_fuel_return:76, safe_flight:66, fuel_emergency:58, full_day_night:43, first_night:20,
-      stone_20:14, iron_20:25, credits_1000:70, low_durability:34, tough_nut:64, space_10min:88, mir_station:98
+      stone_20:14, iron_20:25, credits_1000:70, low_durability:34, tough_nut:64, space_10min:88, mir_station:98,
+      sun_blackout_survived:60, moon_quartz_sale:24, upgraded_engine:42
     };
 
     const ACHIEVEMENTS = [
@@ -6003,6 +6483,9 @@
       { id: 'tough_nut', name: 'Tough nut to Crack', requirement: 'Complete 20 minutes of gameplay without dying/recovering.', icon: '20m' },
       { id: 'space_10min', name: 'Planning on going back anytime soon?', requirement: 'Spend 10 minutes in space.', icon: '10m' },
       { id: 'mir_station', name: 'Mir station is jealous', requirement: 'Travel 10000 units from Ivis in one trip and make it back.', icon: '???', secret: true },
+      { id: 'sun_blackout_survived', name: "Can't touch that!", requirement: 'Start blacking out near the Sun and survive the recovery.', icon: '☀' },
+      { id: 'moon_quartz_sale', name: 'Deal of a Lifetime', requirement: 'Collect Moon Quartz and sell it to the merchant.', icon: '☾' },
+      { id: 'upgraded_engine', name: 'Houston, We Have an Upgrade!', requirement: 'Install an Upgraded Rocket Engine.', icon: '🚀' },
     ];
     for (const achievement of ACHIEVEMENTS) {
       achievement.difficulty = ACHIEVEMENT_DIFFICULTIES[achievement.id] || 1;
@@ -6020,6 +6503,15 @@
     let currentAccountUser = null;
     let accountAchievements = {};
     let accountGems = 0;
+    // Account-wide lifetime statistics introduced in Day 8.
+    let accountStatistics = {
+      totalPlaytimeSeconds: 0,
+      totalUnitsTraveled: 0,
+      totalCreditsEarned: 0,
+      totalCreditsSpent: 0,
+      totalSpaceSeconds: 0
+    };
+    let accountStatsSaveTimer = 0;
     // ---------- character customization / hat shop ----------
     const COSMETIC_COLORS = [
       { id:'red', name:'Red', hex:0xe34a4a, free:true },
@@ -6042,6 +6534,8 @@
       { id:'fedora_hat', name:'Fedora Hat', cost:15, colored:true },
       { id:'top_hat', name:'Top-Hat', cost:20, fixed:true },
       { id:'baseball_hat', name:'Baseball Cap', cost:15, colored:true },
+      { id:'wizard_hat_blue', name:'Wizard Hat', cost:30, fixed:true, fixedColor:'blue' },
+      { id:'wizard_hat_red', name:'Wizard Hat', cost:30, fixed:true, fixedColor:'red' },
     ];
     const cosmeticColorById = Object.fromEntries(COSMETIC_COLORS.map(c => [c.id, c]));
     const cosmeticHatById = Object.fromEntries(COSMETIC_HATS.map(h => [h.id, h]));
@@ -6091,6 +6585,15 @@
     function sanitizeAccountGems(raw) {
       return Math.max(0, Math.floor(Number(raw) || 0));
     }
+    function sanitizeAccountStatistics(raw) {
+      return {
+        totalPlaytimeSeconds: Math.max(0, Number(raw && raw.totalPlaytimeSeconds) || 0),
+        totalUnitsTraveled: Math.max(0, Number(raw && raw.totalUnitsTraveled) || 0),
+        totalCreditsEarned: Math.max(0, Number(raw && raw.totalCreditsEarned) || 0),
+        totalCreditsSpent: Math.max(0, Number(raw && raw.totalCreditsSpent) || 0),
+        totalSpaceSeconds: Math.max(0, Number(raw && raw.totalSpaceSeconds) || 0)
+      };
+    }
     function sanitizeCosmeticState(raw) {
       const state = {
         ownedColors: [...FREE_COSMETIC_COLOR_IDS],
@@ -6129,7 +6632,8 @@
     function getEquippedHatVisualSpec() {
       if (!accountCosmetics.equippedHat) return null;
       const [baseId, colorId] = String(accountCosmetics.equippedHat).split(':');
-      return { baseId, colorId: colorId || accountCosmetics.equippedColor };
+      const hatDef = cosmeticHatById[baseId];
+      return { baseId, colorId: hatDef?.fixedColor || colorId || accountCosmetics.equippedColor };
     }
     function applyRainbowHatColors(root, phase) {
       if (!root) return;
@@ -6139,6 +6643,13 @@
         if (!mat || !mat.userData || !mat.userData.cosmeticRainbowPart || !mat.color) return;
         mat.color.setHSL((hue + (obj.id % 7) * 0.045) % 1, 0.82, 0.56);
       });
+    }
+    function updatePlayerHatVisibility() {
+      if (typeof playerBody === 'undefined' || !playerBody) return;
+      const hatVisible = !!playerState.thirdPerson;
+      for (const child of playerBody.children) {
+        if (child && child.userData && child.userData.cosmeticHatVisual) child.visible = hatVisible;
+      }
     }
     function applyPlayerCosmetics() {
       if (typeof playerBody === 'undefined' || !playerBody) return;
@@ -6151,9 +6662,11 @@
         hat.rotation.y = 0;
         hat.scale.setScalar(1.05);
         hat.layers.set(1);
+        hat.visible = !!playerState.thirdPerson;
         playerBody.add(hat);
         if(spec.colorId === 'rainbow') applyRainbowHatColors(hat, rainbowCosmeticTime);
       }
+      updatePlayerHatVisibility();
     }
     function cosmeticMetadataSnapshot() {
       return {
@@ -6172,6 +6685,33 @@
       if (!homeGems || !homeGemsAmount) return;
       homeGemsAmount.textContent = String(accountGems);
       homeGems.classList.toggle('hidden', !currentAccountUser);
+    }
+
+    function formatAccountDuration(seconds) {
+      const whole = Math.max(0, Math.floor(Number(seconds) || 0));
+      const days = Math.floor(whole / 86400);
+      const hours = Math.floor((whole % 86400) / 3600);
+      const minutes = Math.floor((whole % 3600) / 60);
+      const secs = whole % 60;
+      if (days > 0) return days + 'd ' + hours + 'h ' + minutes + 'm';
+      if (hours > 0) return hours + 'h ' + minutes + 'm ' + String(secs).padStart(2, '0') + 's';
+      return minutes + 'm ' + String(secs).padStart(2, '0') + 's';
+    }
+
+    function renderAccountStatistics() {
+      if (!currentAccountUser) return;
+      const valueMap = {
+        accountStatPlaytime: formatAccountDuration(accountStatistics.totalPlaytimeSeconds),
+        accountStatTravel: Math.floor(accountStatistics.totalUnitsTraveled).toLocaleString() + ' u',
+        accountStatEarned: '¢ ' + Math.floor(accountStatistics.totalCreditsEarned).toLocaleString(),
+        accountStatSpent: '¢ ' + Math.floor(accountStatistics.totalCreditsSpent).toLocaleString(),
+        accountStatAway: formatAccountDuration(accountStatistics.totalSpaceSeconds),
+        accountStatAchievements: ACHIEVEMENTS.reduce((n, a) => n + (accountAchievements[a.id] ? 1 : 0), 0) + ' / ' + ACHIEVEMENTS.length
+      };
+      for (const [id, value] of Object.entries(valueMap)) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+      }
     }
     function sanitizeAchievementProgress(raw) {
       const crystals = Array.isArray(raw && raw.crystals) ? raw.crystals.filter(id => crystalById && crystalById[id]) : [];
@@ -6256,6 +6796,14 @@
       }
       renderAccountGems();
       accountAchievementProgress = sanitizeAchievementProgress(user && user.user_metadata && user.user_metadata.pocketUniverseAchievementProgress);
+      const rawStatistics = user && user.user_metadata ? user.user_metadata.pocketUniverseStatistics : undefined;
+      accountStatistics = sanitizeAccountStatistics(rawStatistics);
+      // Migrate the two statistics we already tracked during Day 7 for existing accounts.
+      if (rawStatistics === undefined) {
+        accountStatistics.totalUnitsTraveled = accountAchievementProgress.totalFlightDistance;
+        accountStatistics.totalSpaceSeconds = accountAchievementProgress.spaceSeconds;
+      }
+      accountStatsSaveTimer = 0;
       accountCosmetics = sanitizeCosmeticState(user && user.user_metadata && user.user_metadata.pocketUniverseCosmetics);
       applyPlayerCosmetics();
       renderAchievements();
@@ -6267,6 +6815,13 @@
       const metadata = { ...(user.user_metadata || {}) };
       metadata.pocketUniverseAchievements = { ...accountAchievements };
       metadata.pocketUniverseGems = accountGems;
+      metadata.pocketUniverseStatistics = {
+        totalPlaytimeSeconds: accountStatistics.totalPlaytimeSeconds,
+        totalUnitsTraveled: accountStatistics.totalUnitsTraveled,
+        totalCreditsEarned: accountStatistics.totalCreditsEarned,
+        totalCreditsSpent: accountStatistics.totalCreditsSpent,
+        totalSpaceSeconds: accountStatistics.totalSpaceSeconds
+      };
       metadata.pocketUniverseAchievementProgress = {
         crystals: [...accountAchievementProgress.crystals],
         celestialBodies: [...accountAchievementProgress.celestialBodies],
@@ -6345,6 +6900,7 @@
     }
 
     function recordCelestialBodyVisit(bodyId) {
+      markJournalBodyVisited(bodyId);
       if (!currentAccountUser || state.gameMode !== 'survival') return;
       if (!accountAchievementProgress.celestialBodies.includes(bodyId)) {
         accountAchievementProgress.celestialBodies.push(bodyId);
@@ -6595,8 +7151,15 @@
     const controlsToggle = document.getElementById("controlsToggle");
     const flashlightStatus = document.getElementById("flashlightStatus");
     const rocketFlightStatus = document.getElementById("rocketFlightStatus");
+    const rocketFlightFlightStats = document.getElementById("rocketFlightFlightStats");
+    const rocketFlightNearbyStats = document.getElementById("rocketFlightNearbyStats");
     const rocketFlightFuel = document.getElementById("rocketFlightFuel");
-    const rocketFlightMode = document.getElementById("rocketFlightMode");
+    const rocketFlightTime = document.getElementById("rocketFlightTime");
+    const rocketFlightSpeed = document.getElementById("rocketFlightSpeed");
+    const rocketFlightConsumption = document.getElementById("rocketFlightConsumption");
+    const rocketNearbyEngine = document.getElementById("rocketNearbyEngine");
+    const rocketNearbyTank = document.getElementById("rocketNearbyTank");
+    const rocketFlightContext = document.getElementById("rocketFlightContext");
 
     document.getElementById('inventorySortButton').addEventListener('click', (e) => { e.stopPropagation(); sortInventoryResources(); });
     inventoryCraftButton.addEventListener('click', (e) => {
@@ -6884,6 +7447,11 @@
       }
 
       economyState.credits -= total;
+      if (currentAccountUser) {
+        accountStatistics.totalCreditsSpent += total;
+        renderAccountStatistics();
+        persistAchievementState();
+      }
       awardAchievement('buy_merchant');
       updateCreditsUI();
       merchantStatus.textContent = 'Bought ' + qty + ' × ' + item.name + ' for ¢' + total + '.';
@@ -6977,6 +7545,7 @@
       if (economyState.merchantOpen || state.gameState !== 'playing') return false;
       const merchant = findNearbyMerchant();
       if (!merchant) return false;
+      markJournalPersonMet('jaecob');
       economyState.merchantOpen = true;
       economyState.merchantSection = 'dialogue';
       state.paused = true;
@@ -7008,7 +7577,13 @@
       if (owned < qty || !removeItemsFromInventory(typeId, qty)) { merchantStatus.textContent = 'You do not have enough of that item.'; return; }
       const earned = qty * SELL_PRICES[typeId];
       economyState.credits += earned;
+      if (currentAccountUser) {
+        accountStatistics.totalCreditsEarned += earned;
+        renderAccountStatistics();
+        persistAchievementState();
+      }
       awardAchievement('sell_merchant');
+      if (typeId === 'moon_quartz') awardAchievement('moon_quartz_sale');
       if (economyState.credits >= 100) awardAchievement('first_100_credits');
       merchantStatus.textContent = 'Sold ' + qty + ' × ' + itemById[typeId].name + ' for ¢' + earned + '.';
       updateCreditsUI();
@@ -7486,7 +8061,11 @@
         player.worldToLocal(thirdPersonCameraLocalDesired.copy(desiredWorld));
         camera.position.lerp(thirdPersonCameraLocalDesired, Math.min(1, delta * 10));
         camera.updateMatrixWorld(true);
-        camera.lookAt(cordeliaMesh.localToWorld(target.clone()));
+        const targetWorld = cordeliaMesh.localToWorld(target.clone());
+        const thirdPersonCameraWorldPos = camera.getWorldPosition(new THREE.Vector3());
+        const cordeliaCenterWorld = cordeliaMesh.getWorldPosition(new THREE.Vector3());
+        camera.up.copy(thirdPersonCameraWorldPos.sub(cordeliaCenterWorld).normalize());
+        camera.lookAt(targetWorld);
       } else { camera.rotation.set(playerState.pitch, 0, 0); camera.position.lerp(targetCamPos, Math.min(1, delta * 10)); }
       if (isMoving && shiftHeld && grounded) {
         cordeliaDustTimer -= delta;
@@ -7498,17 +8077,54 @@
       } else cordeliaDustTimer = 0;
     }
 
+    function formatRocketTime(seconds) {
+      const whole = Math.max(0, Math.ceil(Number(seconds) || 0));
+      const mins = Math.floor(whole / 60);
+      const secs = whole % 60;
+      return mins + ':' + String(secs).padStart(2, '0');
+    }
+
+    function getRocketTankFillPercent(pad) {
+      if (!pad) return 0;
+      const cap = getRocketFuelCapacity(pad);
+      if (cap <= 0) return 0;
+      return Math.max(0, Math.min(100, ((Number(pad.fuel) || 0) / cap) * 100));
+    }
+
     function setRocketFlightUI() {
       const active = !!playerState.inRocket;
-      rocketFlightStatus.classList.toggle('hidden', !active);
-      if (!active) return;
-      const fuel = flightPad ? Math.round(getRocketFuelPercent(flightPad)) : 0;
-      rocketFlightFuel.textContent = 'FUEL ' + fuel + '%';
-      const speedMode = ROCKET_SPEED_MODES[rocketSpeedMode];
-      const speedValue = FLIGHT_SPEED * speedMode.multiplier;
-      const fuelTime = speedMode.fuelInterval === 1.5 ? '1.5' : String(speedMode.fuelInterval);
-      const flightContext = playerState.rocketInSpace ? (moonGravityActive ? 'SPACE · MOON GRAVITY' : (cordeliaGravityActive ? 'SPACE · CORDELIA GRAVITY' : (freeSpacePlaneActive ? 'SPACE · RANDOM PLANE' : 'SPACE · FREE FLIGHT'))) : 'ATMOSPHERE · GRAVITY OFF';
-      rocketFlightMode.textContent = flightContext + ' · ' + speedMode.label + ' ' + speedValue + 'u/s · 1%/' + fuelTime + 's · [1/2/3]';
+      const canShowNearby = !active && state.gameState === 'playing' && !state.paused && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !economyState.merchantOpen;
+      const nearbyPad = canShowNearby ? findRocketEntryPad() : null;
+      const showNearby = !!(nearbyPad && nearbyPad.rocket);
+      const visible = active || showNearby;
+
+      rocketFlightStatus.classList.toggle('hidden', !visible);
+      if (!visible) return;
+
+      rocketFlightFlightStats.classList.toggle('hidden', !active);
+      rocketFlightNearbyStats.classList.toggle('hidden', !showNearby);
+
+      if (active) {
+        const rawFuel = flightPad ? Math.max(0, Number(flightPad.fuel) || 0) : 0;
+        const speedMode = ROCKET_SPEED_MODES[rocketSpeedMode] || ROCKET_SPEED_MODES[1];
+        const speedValue = FLIGHT_SPEED * speedMode.multiplier;
+        const timeLeft = rawFuel * speedMode.fuelInterval;
+        const fuelTime = speedMode.fuelInterval === 1.5 ? '1.5' : String(speedMode.fuelInterval);
+
+        rocketFlightFuel.textContent = Math.round(rawFuel) + '%';
+        rocketFlightTime.textContent = formatRocketTime(timeLeft);
+        rocketFlightSpeed.textContent = speedValue + 'u/s';
+        rocketFlightConsumption.textContent = '1% / ' + fuelTime + 's';
+        const flightContext = playerState.rocketInSpace ? (moonGravityActive ? 'SPACE · MOON GRAVITY' : (cordeliaGravityActive ? 'SPACE · CORDELIA GRAVITY' : (freeSpacePlaneActive ? 'SPACE · RANDOM PLANE' : 'SPACE · FREE FLIGHT'))) : 'ATMOSPHERE';
+        rocketFlightContext.textContent = flightContext + ' · SPEED [1/2/3]';
+      }
+
+      if (showNearby) {
+        const cap = getRocketFuelCapacity(nearbyPad);
+        const currentFuel = Math.max(0, Math.min(cap, Number(nearbyPad.fuel) || 0));
+        rocketNearbyEngine.textContent = nearbyPad.engineType === 'upgraded' ? 'UPGRADED' : 'STANDARD';
+        rocketNearbyTank.textContent = Math.round(getRocketTankFillPercent(nearbyPad)) + '%';
+      }
     }
 
     function showFlightPrompt(message) {
@@ -8406,9 +9022,12 @@
 
       // Account-wide flight distance is measured from actual rocket displacement, not elapsed
       // time or intended input, so blocked movement and stationary flight do not inflate it.
-      if (state.gameMode === 'survival' && currentAccountUser && !playerState.rocketLanded) {
+      if (currentAccountUser && !playerState.rocketLanded) {
         const movedThisFrame = flightAchievementFrameStart.distanceTo(flightPosition);
-        recordFlightAchievementProgress(movedThisFrame, delta, flightPosition.length());
+        accountStatistics.totalUnitsTraveled += Math.max(0, movedThisFrame);
+        if (state.gameMode === 'survival') {
+          recordFlightAchievementProgress(movedThisFrame, delta, flightPosition.length());
+        }
       }
       flightAchievementFrameStart.copy(flightPosition);
 
@@ -8525,6 +9144,11 @@
             ...(itemById[slot.typeId] && itemById[slot.typeId].tool ? { durability: slot.durability == null ? getToolMaxDurability(itemById[slot.typeId]) : slot.durability } : {})
           };
         }),
+        journal: {
+          discoveredItems: [...journalDiscoveredItems],
+          visitedBodies: [...journalVisitedBodies],
+          metPeople: [...journalMetPeople]
+        },
         // Crystal positions are saved too. The world uses random placement, so storing the
         // directions makes sure a loaded save restores the SAME crystal locations.
         crystals: crystalSpawns.map(spawn => ({
@@ -8549,6 +9173,11 @@
           direction: ore.direction.toArray(),
           mined: ore.mined,
           oreType: ore.oreType === 'copper_ore' ? 'copper_ore' : 'iron_ore'
+        })),
+        moonQuartz: moonQuartzSpawns.map(spawn => ({
+          direction: spawn.root.position.clone().normalize().toArray(),
+          collected: spawn.collected,
+          respawnAtSpin: spawn.respawnAtSpin
         })),
         furnaces: furnaces.map(furnace => ({
           direction: furnace.direction.toArray(),
@@ -8632,6 +9261,20 @@
 
       uiState.selectedHotbarSlot = Math.max(0, Math.min(HOTBAR_SLOT_COUNT - 1, data.player.selectedHotbarSlot | 0));
       state.gameMode = data.player && data.player.mode === 'freeplay' ? 'freeplay' : 'survival';
+
+      const savedJournal = data.journal && typeof data.journal === 'object' ? data.journal : null;
+      const validJournalItems = new Set(ITEM_TYPES.map(item => item.id));
+      const validJournalBodies = new Set(Object.keys(JOURNAL_BODY_INFO));
+      const validJournalPeople = new Set(Object.keys(JOURNAL_PERSON_INFO));
+      journalDiscoveredItems = journalSafeIds(savedJournal && savedJournal.discoveredItems, validJournalItems);
+      journalDiscoveredItems.add('journal');
+      if (hasItemType('axe')) journalDiscoveredItems.add('axe');
+      if (!savedJournal) {
+        for (const slot of inventorySlots) if (slot) journalDiscoveredItems.add(slot.typeId);
+      }
+      journalVisitedBodies = journalSafeIds(savedJournal && savedJournal.visitedBodies, validJournalBodies);
+      journalVisitedBodies.add('ivis');
+      journalMetPeople = journalSafeIds(savedJournal && savedJournal.metPeople, validJournalPeople);
 
       // Legacy v1 saves predate the axe/plank system. Give those worlds the starter axe too
       // when possible, so loading an older world does not strand the player without tools.
@@ -8748,7 +9391,10 @@
             spawn.root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), spawn.direction);
           }
           spawn.collected = !!saved.collected;
-          spawn.root.visible = !spawn.collected;
+          spawn.respawnAtSpin = Number.isFinite(saved.respawnAtSpin) ? saved.respawnAtSpin : 0;
+          spawn.visual.visible = !spawn.collected;
+          spawn.ghost.visible = spawn.collected;
+          spawn.root.visible = true;
         }
       }
 
@@ -8909,6 +9555,22 @@
       }
     });
 
+    homeFullscreenButton.addEventListener("click", async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      try {
+        if (!document.fullscreenElement) {
+          await document.documentElement.requestFullscreen();
+        } else {
+          await document.exitFullscreen();
+        }
+      } catch (err) {
+        console.warn("Fullscreen request failed:", err);
+      }
+    });
+    document.addEventListener("fullscreenchange", () => {
+      homeFullscreenButton.textContent = document.fullscreenElement ? "EXIT FULLSCREEN" : "FULLSCREEN";
+    });
+
     loadGameButton.addEventListener("click", (e) => { e.stopPropagation(); openSaveFilePicker(); });
 
     function tryRestoreLocalBackup() {
@@ -8997,9 +9659,11 @@
         return true;
       }
       nearbyMoonQuartz.collected = true;
-      nearbyMoonQuartz.root.visible = false;
+      nearbyMoonQuartz.visual.visible = false;
+      nearbyMoonQuartz.ghost.visible = true;
+      nearbyMoonQuartz.respawnAtSpin = state.planetSpinAngle + Math.PI * 4;
       nearbyMoonQuartz = null;
-      playAudio('moonQuartzPickup', 0.72, 1.0, 500);
+      playAudio('crystalPickup', 0.55, 0.98 + Math.random() * 0.06, 500);
       const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden');
       prompt.innerHTML = '<span class="promptKey">+1</span> Moon Quartz collected';
       setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 600);
@@ -9037,6 +9701,7 @@
       addUpgradedEngineVisual(rocket);
       inventorySlots[idx] = null;
       refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
+      awardAchievement('upgraded_engine');
       showFlightPrompt('UPGRADED ENGINE INSTALLED · Fuel tank: 200%');
       setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 1000);
       return true;
@@ -9863,6 +10528,15 @@
           spawn.respawnAtSpin = 0;
         }
       }
+      for (const spawn of moonQuartzSpawns) {
+        if (!spawn.collected) continue;
+        if (state.planetSpinAngle >= spawn.respawnAtSpin) {
+          spawn.collected = false;
+          spawn.visual.visible = true;
+          spawn.ghost.visible = false;
+          spawn.respawnAtSpin = 0;
+        }
+      }
     }
 
     function pauseGame() {
@@ -9942,6 +10616,20 @@
       state.gameMode = mode === 'freeplay' ? 'freeplay' : 'survival';
       updateInventoryActionButton();
 
+      // Starting a NEW world gets a completely fresh, world-specific Journal. The journal
+      // state is deliberately kept independent from resetInventory(), which is also used
+      // when recovering from hazards inside an existing world.
+      journalDiscoveredItems = new Set(['journal', 'axe']);
+      journalVisitedBodies = new Set(['ivis']);
+      journalMetPeople = new Set();
+
+      // Freeplay is a sandbox, so its new world's Journal opens as a complete encyclopedia.
+      if (state.gameMode === 'freeplay') {
+        journalDiscoveredItems = new Set(ITEM_TYPES.map(item => item.id));
+        journalVisitedBodies = new Set(Object.keys(JOURNAL_BODY_INFO));
+        journalMetPeople = new Set(Object.keys(JOURNAL_PERSON_INFO));
+      }
+
       // Starting a new game always begins with the normal fresh-player state.
       resetPlayerState();
       resetContinuousSurvivalAchievementRun();
@@ -10006,6 +10694,9 @@
     document.getElementById('furnaceOverlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeFurnace(); });
     window.addEventListener('mousedown', (e) => {
       if (e.button !== 2) return;
+      if (state.gameState === 'playing' && !playerState.inRocket && uiState.equippedItemType === 'journal' && !uiState.craftingOpen && !uiState.furnaceOpen && !economyState.merchantOpen && !cosmeticShopOpen && !journalOpen) {
+        e.preventDefault(); e.stopPropagation(); openJournal(false); return;
+      }
       if (state.gameState === 'playing' && !playerState.inRocket && pickupNearbyDrill()) { e.preventDefault(); return; }
       if (state.gameState === 'playing' && !playerState.inRocket && uiState.equippedItemType === 'backpack' && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen) {
         e.preventDefault();
@@ -10023,6 +10714,9 @@
       if (uiState.furnaceOpen) e.preventDefault();
     });
     window.addEventListener('contextmenu', (e) => {
+      if (state.gameState === 'playing' && !playerState.inRocket && uiState.equippedItemType === 'journal' && !uiState.craftingOpen && !uiState.furnaceOpen && !economyState.merchantOpen && !cosmeticShopOpen && !journalOpen) {
+        e.preventDefault(); e.stopPropagation(); openJournal(false); return;
+      }
       if (state.gameState === 'playing' && !playerState.inRocket && pickupNearbyDrill()) { e.preventDefault(); return; }
       if (state.gameState === 'playing' && !playerState.inRocket && uiState.equippedItemType === 'backpack' && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen) {
         e.preventDefault();
@@ -10606,7 +11300,24 @@
     // Cordelia even when those bodies are rotated/orbited in world space.
     function getCameraRelativePlanetMove(inputX, inputZ, surfaceUpWorld, planetObject = null, out = new THREE.Vector3()) {
       const cameraForwardWorld = new THREE.Vector3();
-      camera.getWorldDirection(cameraForwardWorld).normalize();
+      // In third person, movement must use the dedicated orbit heading rather than
+      // camera.getWorldDirection(). The render camera is looked-at/lerped every frame,
+      // so deriving movement from its current quaternion creates a tiny feedback loop
+      // that makes straight movement visibly wobble left/right.
+      if (playerState.thirdPerson) {
+        // thirdPersonCameraForward is stored in the CURRENT CELESTIAL BODY'S
+        // local tangent frame. The planet/moon itself can rotate in world space,
+        // so convert that heading into world space before projecting it onto the
+        // current surface. This keeps WASD aligned with the actual third-person
+        // camera heading even while the celestial body is rotating beneath you.
+        cameraForwardWorld.copy(thirdPersonCameraForward);
+        if (planetObject) {
+          cameraForwardWorld.applyQuaternion(planetObject.getWorldQuaternion(new THREE.Quaternion()));
+        }
+      } else {
+        camera.getWorldDirection(cameraForwardWorld);
+      }
+      cameraForwardWorld.normalize();
       cameraForwardWorld.addScaledVector(surfaceUpWorld, -cameraForwardWorld.dot(surfaceUpWorld));
       if (cameraForwardWorld.lengthSq() < 0.00001) {
         cameraForwardWorld.set(0, 0, -1);
@@ -10842,7 +11553,17 @@
         player.worldToLocal(thirdPersonCameraLocalDesired.copy(thirdPersonCameraDesired));
         camera.position.lerp(thirdPersonCameraLocalDesired, Math.min(1, delta * 10));
 
+        // Keep the third-person camera upright relative to the spherical planet surface.
+        // THREE.Camera.lookAt() otherwise uses the global Y-up reference, which makes the
+        // view roll upside down after walking onto the far side of a spherical world.
         camera.updateMatrixWorld(true);
+        const thirdPersonCameraWorldPos = new THREE.Vector3();
+        const thirdPersonPlanetCenterWorld = planetSystem.getWorldPosition(new THREE.Vector3());
+        camera.getWorldPosition(thirdPersonCameraWorldPos);
+        const thirdPersonCameraWorldUp = thirdPersonCameraWorldPos
+          .sub(thirdPersonPlanetCenterWorld)
+          .normalize();
+        camera.up.copy(thirdPersonCameraWorldUp);
         camera.lookAt(planetSystem.localToWorld(thirdPersonCameraTarget.clone()));
         const impactPulse = getToolImpactPulse();
         if (impactPulse > 0) {
@@ -10946,6 +11667,9 @@
         camera.position.lerp(thirdPersonCameraLocalDesired, Math.min(1, delta * 10));
         camera.updateMatrixWorld(true);
         const targetWorld = moonMesh.localToWorld(target.clone());
+        const thirdPersonCameraWorldPos = camera.getWorldPosition(new THREE.Vector3());
+        const moonCenterWorld = moonMesh.getWorldPosition(new THREE.Vector3());
+        camera.up.copy(thirdPersonCameraWorldPos.sub(moonCenterWorld).normalize());
         camera.lookAt(targetWorld);
       } else {
         camera.rotation.set(playerState.pitch, 0, 0);
@@ -10971,6 +11695,22 @@
     function resetContinuousSurvivalAchievementRun() {
       survivalRunSeconds = 0;
       survivalRunSawNight = false;
+    }
+
+    function updateAccountStatisticsTelemetry(delta) {
+      if (!currentAccountUser || state.gameState !== 'playing' || state.paused) return;
+      const dt = Math.max(0, Math.min(Number(delta) || 0, 0.25));
+      if (dt <= 0) return;
+      accountStatistics.totalPlaytimeSeconds += dt;
+      if (playerState.inRocket && playerState.rocketInSpace && !playerState.rocketLanded) {
+        accountStatistics.totalSpaceSeconds += dt;
+      }
+      accountStatsSaveTimer += dt;
+      if (accountStatsSaveTimer >= 10) {
+        accountStatsSaveTimer = 0;
+        renderAccountStatistics();
+        persistAchievementState();
+      }
     }
 
     function updateSurvivalAchievementTelemetry(delta, nightAmount) {
@@ -11105,6 +11845,7 @@
         scene.fog = (playerState.inRocket && playerState.rocketInSpace) ? null : sceneFog;
         updateCrystalPrompt();
         flashlightStatus.classList.toggle("hidden", !playerState.flashlightOn);
+        updatePlayerHatVisibility();
         if (!solarHazardLock && !spaceFuelHazardLock) {
           if (playerState.inRocket) {
             updateRocketFlight(delta);
@@ -11115,6 +11856,7 @@
           } else if (!state.paused) {
             updatePlayer(delta);
           }
+          updateAccountStatisticsTelemetry(delta);
           updateAccountAchievementTelemetry(delta);
         }
         renderer.render(scene, activeCamera);

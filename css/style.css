@@ -821,10 +821,18 @@
   }
 
   #homeLoading {
+    display:flex; flex-direction:column; align-items:center; gap:9px;
     font-size: 14px;
-    color: rgba(255,255,255,0.75);
+    color: rgba(255,255,255,0.78);
     margin-bottom: 8px;
+    min-width: 190px;
+    text-align:center;
   }
+  .homeLoadingTitle { font-weight:700; letter-spacing:1.5px; text-shadow:0 2px 14px rgba(0,0,0,.45); }
+  .homeLoadingBar { width:180px; height:5px; border-radius:99px; overflow:hidden; background:rgba(255,255,255,.15); box-shadow:0 2px 10px rgba(0,0,0,.25); }
+  .homeLoadingBar span { display:block; width:45%; height:100%; border-radius:inherit; background:rgba(255,255,255,.82); animation: homeLoadingPulse 1.2s ease-in-out infinite; }
+  .homeVersion { font-size:10px; font-weight:800; letter-spacing:1px; color:rgba(255,255,255,.48); }
+  @keyframes homeLoadingPulse { 0%,100% { transform:translateX(-100%); } 50% { transform:translateX(310%); } }
   #homeLoading.error { color: #ff9a9a; max-width: 360px; text-align: center; line-height: 1.6; }
 
   /* Small hint explaining how to inspect the planet on the menu. */
@@ -926,7 +934,8 @@
     grid-template-areas:
       "play play"
       "load settings"
-      "account achievements";
+      "account achievements"
+      "fullscreen fullscreen";
   }
 
   #homeAchievementsButton {
@@ -948,6 +957,17 @@
   }
   #homeAchievementsButton:hover { background: rgba(10,14,22,0.82); transform: translateY(3px); box-shadow: 0 3px 0 rgba(0,0,0,0.2); }
   #homeAchievementsButton:active { transform: translateY(5px); box-shadow: 0 1px 0 rgba(0,0,0,0.2); }
+
+  #homeFullscreenButton {
+    grid-area: fullscreen;
+    font-family: inherit; font-size: 13px; font-weight: 700; letter-spacing:.2px;
+    color:#dfe6ec; background:rgba(10,14,22,0.62); border:1px solid rgba(255,255,255,0.2);
+    border-radius:999px; padding:10px 28px; min-width:126px; cursor:pointer;
+    backdrop-filter:blur(4px); box-shadow:0 6px 0 rgba(0,0,0,0.22);
+    transition:transform .12s ease, box-shadow .12s ease, background .12s ease;
+  }
+  #homeFullscreenButton:hover { background:rgba(10,14,22,0.82); transform:translateY(3px); box-shadow:0 3px 0 rgba(0,0,0,.2); }
+  #homeFullscreenButton:active { transform:translateY(5px); box-shadow:0 1px 0 rgba(0,0,0,.2); }
 
   /* ---------- account dialog ---------- */
   #accountModal {
@@ -1031,6 +1051,50 @@
   .accountProfileLabel:first-child { margin-top: 0; }
   .accountProfileValue { margin-top: 4px; color: #f0f4f8; font-size: 13px; overflow-wrap: anywhere; }
   #accountLoggedIn > p { margin: 0; text-align: center; color: rgba(220,228,238,0.68); font-size: 12px; }
+  .accountStatisticsSection {
+    margin: 14px 0 10px;
+    padding: 13px;
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 12px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.038), rgba(255,255,255,0.018));
+  }
+  .accountStatisticsHeader {
+    margin: 0 2px 9px;
+    color: rgba(220,228,238,0.52);
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 1.7px;
+  }
+  .accountStatisticsGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .accountStatCard {
+    min-width: 0;
+    padding: 10px 11px;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 9px;
+    background: rgba(4,7,12,0.34);
+  }
+  .accountStatLabel {
+    color: rgba(220,228,238,0.44);
+    font-size: 8px;
+    line-height: 1.25;
+    font-weight: 900;
+    letter-spacing: 1px;
+  }
+  .accountStatValue {
+    margin-top: 5px;
+    color: #f2f5f8;
+    font-size: 14px;
+    line-height: 1.15;
+    font-weight: 800;
+    overflow-wrap: anywhere;
+  }
+  @media (max-width: 520px) {
+    .accountStatisticsGrid { grid-template-columns: 1fr; }
+  }
 
   /* ---------- game mode chooser ---------- */
   #modeChooser {
@@ -1506,11 +1570,11 @@ button.merchantItemRow:hover:not(:disabled), .merchantItemRow.selected { backgro
   top:18px;
   left:22px;
   z-index:95;
-  min-width:210px;
-  padding:10px 14px;
+  min-width:245px;
+  padding:11px 14px 12px;
   border:1px solid rgba(255,255,255,.12);
   border-radius:12px;
-  background:rgba(10,14,20,.72);
+  background:rgba(10,14,20,.74);
   color:#f5f7fb;
   font-size:12px;
   line-height:1.45;
@@ -1518,10 +1582,15 @@ button.merchantItemRow:hover:not(:disabled), .merchantItemRow.selected { backgro
   box-shadow:0 8px 26px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.04);
   backdrop-filter:blur(8px);
 }
-#rocketFlightTitle { font-size:11px; font-weight:900; letter-spacing:1.4px; color:rgba(255,255,255,.48); }
-#rocketFlightFuel { margin-top:3px; font-size:18px; font-weight:900; }
-#rocketFlightMode { margin-top:1px; font-size:11px; color:rgba(220,228,238,.68); }
-#rocketFlightControls { margin-top:6px; font-size:10px; color:rgba(220,228,238,.48); }
+#rocketFlightTitle { font-size:11px; font-weight:900; letter-spacing:1.5px; color:rgba(255,255,255,.52); }
+#rocketFlightFlightStats, #rocketFlightNearbyStats { margin-top:6px; display:grid; gap:3px; }
+#rocketFlightNearbyStats { padding-top:7px; margin-top:8px; border-top:1px solid rgba(255,255,255,.08); }
+.rocketStatusRow { display:flex; align-items:baseline; justify-content:space-between; gap:22px; }
+.rocketStatusRow span { font-size:10px; font-weight:800; letter-spacing:1px; color:rgba(220,228,238,.52); }
+.rocketStatusRow strong { font-size:14px; font-weight:900; color:#f5f7fb; text-align:right; }
+#rocketFlightFuel { font-size:15px; }
+#rocketFlightContext { margin-top:8px; font-size:10px; color:rgba(220,228,238,.68); letter-spacing:.5px; }
+#rocketFlightControls { margin-top:5px; font-size:10px; color:rgba(220,228,238,.46); }
 body.rocket-flight #staminaWrap,
 body.rocket-flight #hotbar,
 body.rocket-flight #flashlightStatus { display:none; }
@@ -1764,7 +1833,8 @@ body.state-menu #creditsDisplay { display: none; }
 }
 .itemIcon.drill { width:36px; height:28px; position:relative; border-radius:6px 8px 6px 6px; background:linear-gradient(145deg,#697177,#33383d); border:2px solid #202429; box-shadow:0 4px 10px rgba(0,0,0,.3); }
 .itemIcon.drill::before { content:''; position:absolute; width:10px; height:19px; left:7px; top:19px; border-radius:3px; transform:rotate(16deg); background:#2e3337; border:2px solid #202429; }
-.itemIcon.drill::after { content:''; position:absolute; width:12px; height:8px; right:-10px; top:8px; border-radius:2px; background:#b86a35; border:2px solid #2d3033; box-shadow:9px 1px 0 -2px #aeb4b8; }\n
+.itemIcon.drill::after { content:''; position:absolute; width:12px; height:8px; right:-10px; top:8px; border-radius:2px; background:#b86a35; border:2px solid #2d3033; box-shadow:9px 1px 0 -2px #aeb4b8; }
+
 
 
 body.achievements-open #homeButtons,
@@ -1895,3 +1965,303 @@ body.achievements-open #controlsToggle { pointer-events: none; }
   font-size:24px; cursor:pointer;
 }
 .creditsClose:hover { background:rgba(255,255,255,0.16); }
+
+
+/* ---------- in-game journal ---------- */
+#journalOverlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 22px;
+  background: rgba(4, 5, 8, 0.72);
+  z-index: 90;
+  font-family: Georgia, 'Times New Roman', serif;
+  color: #3f2d1f;
+  backdrop-filter: blur(4px);
+}
+#journalOverlay.hidden { display: none !important; }
+
+#journalPanel {
+  width: min(860px, 94vw);
+  height: min(720px, 88vh);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  border: 2px solid #73502d;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 16% 18%, rgba(255,255,255,.22), transparent 18%),
+    radial-gradient(circle at 84% 76%, rgba(110,72,35,.09), transparent 25%),
+    linear-gradient(100deg, #e7d0a3 0%, #f3e3ba 47%, #e8d4a9 100%);
+  box-shadow:
+    0 28px 90px rgba(0,0,0,.58),
+    inset 0 0 0 1px rgba(255,255,255,.28),
+    inset 0 0 34px rgba(102,71,38,.10);
+}
+#journalPanel::before,
+#journalPanel::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  z-index: 3;
+}
+#journalPanel::before {
+  inset: 9px;
+  border: 1px solid rgba(96,65,36,.28);
+  border-radius: 10px;
+}
+#journalPanel::after {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-1px);
+  background: linear-gradient(180deg, transparent 0%, rgba(94,64,35,.10) 10%, rgba(94,64,35,.16) 50%, rgba(94,64,35,.10) 90%, transparent 100%);
+  box-shadow: 3px 0 12px rgba(92,59,28,.08), -3px 0 12px rgba(255,255,255,.14);
+}
+
+#journalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 28px 12px;
+  position: relative;
+  z-index: 4;
+}
+#journalHeader h1 {
+  margin: 0;
+  color: #4d3622;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-shadow: 0 1px 0 rgba(255,255,255,.35);
+}
+#journalHeader h1::after {
+  content: ' • FIELD NOTES';
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: rgba(77,54,34,.48);
+  margin-left: 8px;
+  vertical-align: middle;
+}
+#journalClose {
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(84,57,32,.30);
+  border-radius: 7px;
+  background: rgba(255,248,228,.55);
+  color: #4d3622;
+  font-family: Georgia, serif;
+  font-size: 25px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 2px 4px rgba(93,59,28,.08);
+}
+#journalClose:hover { background: rgba(255,252,240,.76); transform: translateY(-1px); }
+
+#journalTabs {
+  display: flex;
+  gap: 0;
+  padding: 0 22px;
+  position: relative;
+  z-index: 4;
+}
+#journalTabs button {
+  min-width: 150px;
+  padding: 10px 14px 11px;
+  margin-right: 6px;
+  border: 1px solid rgba(92,61,32,.24);
+  border-bottom: 0;
+  border-radius: 9px 9px 0 0;
+  background: rgba(225,203,161,.72);
+  color: #64472d;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
+}
+#journalTabs button:hover { background: rgba(241,222,183,.92); }
+#journalTabs button.active {
+  background: #f3e3ba;
+  color: #4b3421;
+  box-shadow: 0 -2px 8px rgba(82,52,25,.07), inset 0 1px 0 rgba(255,255,255,.35);
+  position: relative;
+}
+#journalTabs button.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 3px;
+  background: #f3e3ba;
+}
+
+#journalList {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  z-index: 2;
+  padding: 20px 30px 26px;
+  margin: 0 12px 12px;
+  border: 1px solid rgba(92,61,32,.22);
+  border-radius: 0 10px 10px 10px;
+  background: rgba(249,236,204,.34);
+  box-shadow: inset 0 0 22px rgba(106,73,39,.06);
+  scrollbar-color: rgba(95,62,31,.35) rgba(105,70,32,.08);
+}
+.journalSectionHeading {
+  margin: 0 0 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(92,61,32,.18);
+  color: rgba(77,54,34,.62);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+.journalEntry {
+  display: flex;
+  align-items: flex-start;
+  gap: 15px;
+  padding: 14px 14px 13px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(92,61,32,.16);
+  border-radius: 6px;
+  background: rgba(255,248,225,.45);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.28), 0 2px 5px rgba(94,61,29,.05);
+}
+.journalEntry:hover { background: rgba(255,250,232,.62); }
+.journalEntryBody { min-width: 0; flex: 1; }
+.journalEntryTitle {
+  margin-bottom: 5px;
+  color: #4d3622;
+  font-family: Georgia, serif;
+  font-size: 18px;
+  font-weight: 800;
+}
+.journalEntryBody p {
+  margin: 4px 0;
+  color: #60462e;
+  font-family: Georgia, serif;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.journalEntryBody strong {
+  color: #4d3622;
+  font-size: 10px;
+  letter-spacing: .8px;
+}
+.journalEntryIcon {
+  width: 44px;
+  height: 50px;
+  margin-top: 2px;
+  flex: 0 0 44px;
+  object-fit: contain;
+}
+.journalEntryIcon.journal { width: 38px; height: 46px; flex-basis: 38px; }
+.journalEntryIcon.crystal { width: 28px; height: 40px; flex-basis: 28px; margin: 4px 7px 0; }
+.journalBodyIcon,
+.journalPersonIcon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(92,61,32,.24);
+  border-radius: 4px;
+  background: rgba(235,213,172,.72);
+  color: #6a4a2e;
+  font-family: Georgia, serif;
+  font-size: 22px;
+  font-weight: 800;
+}
+.journalEmpty {
+  padding: 54px 10px;
+  color: rgba(77,54,34,.58);
+  font-family: Georgia, serif;
+  font-size: 14px;
+  font-style: italic;
+  text-align: center;
+}
+
+/* Item icons needed by the journal and inventory/hotbar. */
+.itemIcon.journal {
+  position: relative;
+  width: 28px;
+  height: 34px;
+  border-radius: 3px 6px 6px 3px;
+  background: linear-gradient(135deg,#704b31,#493022);
+  border: 1px solid rgba(35,20,12,.62);
+  box-shadow: inset 3px 0 0 rgba(255,255,255,.08), 0 0 10px rgba(71,43,25,.22);
+}
+.itemIcon.journal::before {
+  content: '';
+  position: absolute;
+  left: 5px; top: 5px;
+  width: 15px; height: 23px;
+  border-radius: 1px 4px 4px 1px;
+  background: #e4d2a8;
+  box-shadow: inset -2px 0 0 rgba(74,48,30,.15);
+}
+.itemIcon.journal::after {
+  content: '';
+  position: absolute;
+  left: 9px; top: 10px;
+  width: 8px; height: 1px;
+  background: #8b6945;
+  box-shadow: 0 5px 0 #8b6945, 0 10px 0 #8b6945;
+  opacity: .7;
+}
+.itemIcon.moon_quartz {
+  position: relative;
+  width: 31px; height: 39px;
+  background: linear-gradient(145deg,#ffffff,#dbe4f3 62%,#aebbd0);
+  clip-path: polygon(50% 0%, 86% 24%, 70% 100%, 30% 100%, 14% 25%);
+  box-shadow: 0 0 14px rgba(213,228,255,.72);
+  filter: drop-shadow(0 3px 6px rgba(115,132,159,.28));
+}
+.itemIcon.upgraded_engine {
+  position: relative;
+  width: 35px; height: 35px;
+  border-radius: 50%;
+  background: linear-gradient(145deg,#8e979e,#343a40);
+  border: 2px solid #20252a;
+  box-shadow: inset 0 2px 0 rgba(255,255,255,.16), 0 4px 10px rgba(0,0,0,.28);
+}
+.itemIcon.upgraded_engine::before {
+  content: '';
+  position: absolute;
+  left: 7px; top: 7px;
+  width: 15px; height: 15px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 42% 38%, #7de0ff 0 18%, #37a9cf 19% 48%, #173949 49% 100%);
+  border: 2px solid #1e252a;
+  box-shadow: 0 0 8px rgba(75,196,239,.45);
+}
+.itemIcon.upgraded_engine::after {
+  content: '';
+  position: absolute;
+  left: 4px; right: 4px; bottom: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #d96b2b;
+  box-shadow: 0 0 7px rgba(217,107,43,.62);
+}
+
+@media (max-width: 700px) {
+  #journalPanel { width: 97vw; height: 92vh; }
+  #journalHeader { padding: 18px 18px 10px; }
+  #journalHeader h1 { font-size: 22px; }
+  #journalHeader h1::after { display: none; }
+  #journalTabs { padding: 0 12px; }
+  #journalTabs button { min-width: 0; flex: 1; padding: 9px 7px; font-size: 10px; }
+  #journalList { padding: 16px 14px 22px; margin: 0 8px 8px; }
+}
