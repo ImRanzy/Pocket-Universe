@@ -31,6 +31,10 @@
   ];
   let axeModelTemplate = null;
   let pickaxeModelTemplate = null;
+  let rocketModelTemplate = null;
+  let furnaceModelTemplate = null;
+  let jerrycanModelTemplate = null;
+  let scytheModelTemplate = null;
 
   const SUPABASE_URL = "https://ktzhvnpbksngleegdikd.supabase.co";
   const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hrbbTSn2zhmFaejsrJd_ig_6RMF4k7G";
@@ -44,6 +48,124 @@
       el.onerror = () => reject(new Error("failed to load " + src));
       document.head.appendChild(el);
     });
+  }
+
+  function resolveObjIndex(rawIndex, length) {
+    const n = Number(rawIndex);
+    return n < 0 ? length + n : n - 1;
+  }
+
+  async function buildEmbeddedRocketFromObj() {
+    const source = window.PocketUniverseRocketOBJ;
+    if (typeof source !== 'string' || !source.trim()) return null;
+
+    const vertices = [];
+    const uvs = [];
+    const normals = [];
+    const expandedPositions = [];
+    const expandedUVs = [];
+    const expandedNormals = [];
+
+    const pushVertex = (token) => {
+      const parts = token.split('/');
+      const vi = resolveObjIndex(parts[0], vertices.length);
+      const ti = parts[1] ? resolveObjIndex(parts[1], uvs.length) : -1;
+      const ni = parts[2] ? resolveObjIndex(parts[2], normals.length) : -1;
+      const v = vertices[vi];
+      if (!v) return false;
+      expandedPositions.push(v[0], v[1], v[2]);
+      if (ti >= 0 && uvs[ti]) expandedUVs.push(uvs[ti][0], uvs[ti][1]);
+      else expandedUVs.push(0, 0);
+      if (ni >= 0 && normals[ni]) expandedNormals.push(normals[ni][0], normals[ni][1], normals[ni][2]);
+      else expandedNormals.push(0, 0, 0);
+      return true;
+    };
+
+    const lines = source.split(/\r?\n/);
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const parts = line.split(/\s+/);
+      if (parts[0] === 'v' && parts.length >= 4) {
+        vertices.push([Number(parts[1]), Number(parts[2]), Number(parts[3])]);
+      } else if (parts[0] === 'vt' && parts.length >= 3) {
+        uvs.push([Number(parts[1]), Number(parts[2])]);
+      } else if (parts[0] === 'vn' && parts.length >= 4) {
+        normals.push([Number(parts[1]), Number(parts[2]), Number(parts[3])]);
+      } else if (parts[0] === 'f' && parts.length >= 4) {
+        const face = parts.slice(1);
+        // Triangulate arbitrary polygons as a fan while preserving the original OBJ winding.
+        for (let i = 1; i < face.length - 1; i++) {
+          const tri = [face[0], face[i], face[i + 1]];
+          pushVertex(tri[0]);
+          pushVertex(tri[1]);
+          pushVertex(tri[2]);
+        }
+      }
+    }
+
+    if (!expandedPositions.length) return null;
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(expandedPositions, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(expandedUVs, 2));
+
+    let haveCompleteNormals = expandedNormals.length === expandedPositions.length;
+    if (haveCompleteNormals) {
+      let anyNonZero = false;
+      for (let i = 0; i < expandedNormals.length; i += 3) {
+        if (expandedNormals[i] * expandedNormals[i] + expandedNormals[i+1] * expandedNormals[i+1] + expandedNormals[i+2] * expandedNormals[i+2] > 1e-8) {
+          anyNonZero = true; break;
+        }
+      }
+      haveCompleteNormals = anyNonZero;
+    }
+    if (haveCompleteNormals) geometry.setAttribute('normal', new THREE.Float32BufferAttribute(expandedNormals, 3));
+    else geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+
+    let texture = null;
+    try {
+      const dataUrl = window.PocketUniverseRocketTextureDataURL;
+      if (dataUrl) {
+        const image = new Image();
+        await new Promise((resolve, reject) => {
+          image.onload = resolve;
+          image.onerror = reject;
+          image.src = dataUrl;
+        });
+        texture = new THREE.Texture(image);
+        texture.needsUpdate = true;
+        texture.encoding = THREE.sRGBEncoding;
+        texture.anisotropy = 1;
+      }
+    } catch (e) {
+      console.warn('Embedded rocket texture could not be decoded; using solid material.', e);
+    }
+
+    const material = new THREE.MeshStandardMaterial({
+      map: texture,
+      color: 0xffffff,
+      roughness: 0.62,
+      metalness: 0.08,
+      side: THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.frustumCulled = false;
+    const group = new THREE.Group();
+    group.add(mesh);
+    group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(group);
+    if (box.isEmpty()) return null;
+    const center = box.getCenter(new THREE.Vector3());
+    group.position.x -= center.x;
+    group.position.z -= center.z;
+    group.position.y -= box.min.y;
+    group.traverse((node) => {
+      if (node.isMesh) node.frustumCulled = false;
+    });
+    return group;
   }
 
   function loadToolModel(url, mtlUrl) {
@@ -85,6 +207,50 @@
     });
   }
 
+  function decodeBase64Bytes(data) {
+    const binary = atob(data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+
+  function buildEmbeddedScytheModel() {
+    const source = window.PocketUniverseScytheModel;
+    if (!source) return null;
+    const group = new THREE.Group();
+    const parts = [
+      { key: 'handle', color: 0x7a4d2c, roughness: 0.88, metalness: 0.03 },
+      { key: 'blade', color: 0xb8bcc1, roughness: 0.42, metalness: 0.55 }
+    ];
+    for (const part of parts) {
+      const data = source[part.key];
+      if (!data || !data.positions || !data.indices) continue;
+      const positionBytes = decodeBase64Bytes(data.positions);
+      const indexBytes = decodeBase64Bytes(data.indices);
+      const positions = new Float32Array(positionBytes.buffer, positionBytes.byteOffset, positionBytes.byteLength / 4);
+      const indices = new Uint32Array(indexBytes.buffer, indexBytes.byteOffset, indexBytes.byteLength / 4);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+      geometry.computeVertexNormals();
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+      const material = new THREE.MeshStandardMaterial({
+        name: part.key,
+        color: part.color,
+        roughness: part.roughness,
+        metalness: part.metalness,
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.name = part.key === 'blade' ? 'ScytheBlade' : 'ScytheHandle';
+      mesh.frustumCulled = false;
+      group.add(mesh);
+    }
+    if (!group.children.length) return null;
+    return group;
+  }
+
   function buildEmbeddedToolModel(modelKey) {
     const source = window.PocketUniverseToolModels && window.PocketUniverseToolModels[modelKey];
     if (!source) return null;
@@ -109,6 +275,211 @@
       group.add(new THREE.Mesh(geometry, material));
     }
     return group.children.length ? group : null;
+  }
+
+
+  async function buildEmbeddedFurnaceFromObj() {
+    const source = window.PocketUniverseFurnaceOBJ;
+    if (typeof source !== 'string' || !source.trim()) return null;
+
+    const vertices = [];
+    const uvs = [];
+    const normals = [];
+    const expandedPositions = [];
+    const expandedUVs = [];
+    const expandedNormals = [];
+
+    const resolveIndex = (rawIndex, length) => {
+      const n = Number(rawIndex);
+      return n < 0 ? length + n : n - 1;
+    };
+
+    const pushVertex = (token) => {
+      const parts = token.split('/');
+      const vi = resolveIndex(parts[0], vertices.length);
+      const ti = parts[1] ? resolveIndex(parts[1], uvs.length) : -1;
+      const ni = parts[2] ? resolveIndex(parts[2], normals.length) : -1;
+      const v = vertices[vi];
+      if (!v) return false;
+      expandedPositions.push(v[0], v[1], v[2]);
+      if (ti >= 0 && uvs[ti]) expandedUVs.push(uvs[ti][0], uvs[ti][1]);
+      else expandedUVs.push(0, 0);
+      if (ni >= 0 && normals[ni]) expandedNormals.push(normals[ni][0], normals[ni][1], normals[ni][2]);
+      else expandedNormals.push(0, 0, 0);
+      return true;
+    };
+
+    for (const raw of source.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const parts = line.split(/\s+/);
+      if (parts[0] === 'v' && parts.length >= 4) {
+        vertices.push([Number(parts[1]), Number(parts[2]), Number(parts[3])]);
+      } else if (parts[0] === 'vt' && parts.length >= 3) {
+        uvs.push([Number(parts[1]), Number(parts[2])]);
+      } else if (parts[0] === 'vn' && parts.length >= 4) {
+        normals.push([Number(parts[1]), Number(parts[2]), Number(parts[3])]);
+      } else if (parts[0] === 'f' && parts.length >= 4) {
+        const face = parts.slice(1);
+        for (let i = 1; i < face.length - 1; i++) {
+          pushVertex(face[0]);
+          pushVertex(face[i]);
+          pushVertex(face[i + 1]);
+        }
+      }
+    }
+
+    if (!expandedPositions.length) return null;
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(expandedPositions, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(expandedUVs, 2));
+
+    let haveCompleteNormals = expandedNormals.length === expandedPositions.length;
+    if (haveCompleteNormals) {
+      let anyNonZero = false;
+      for (let i = 0; i < expandedNormals.length; i += 3) {
+        const x = expandedNormals[i], y = expandedNormals[i + 1], z = expandedNormals[i + 2];
+        if (x * x + y * y + z * z > 1e-8) { anyNonZero = true; break; }
+      }
+      haveCompleteNormals = anyNonZero;
+    }
+    if (haveCompleteNormals) geometry.setAttribute('normal', new THREE.Float32BufferAttribute(expandedNormals, 3));
+    else geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+
+    let texture = null;
+    try {
+      const dataUrl = window.PocketUniverseFurnaceTextureDataURL;
+      if (dataUrl) {
+        const image = new Image();
+        await new Promise((resolve, reject) => {
+          image.onload = resolve;
+          image.onerror = reject;
+          image.src = dataUrl;
+        });
+        texture = new THREE.Texture(image);
+        texture.needsUpdate = true;
+        texture.encoding = THREE.sRGBEncoding;
+        texture.anisotropy = 1;
+      }
+    } catch (e) {
+      console.warn('Embedded furnace texture could not be decoded; using solid material.', e);
+    }
+
+    const material = new THREE.MeshStandardMaterial({
+      map: texture,
+      color: 0xffffff,
+      roughness: 0.82,
+      metalness: 0.03,
+      side: THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.frustumCulled = false;
+    const group = new THREE.Group();
+    group.add(mesh);
+    group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(group);
+    if (box.isEmpty()) return null;
+    const center = box.getCenter(new THREE.Vector3());
+    group.position.x -= center.x;
+    group.position.z -= center.z;
+    group.position.y -= box.min.y;
+    group.traverse((node) => {
+      if (node.isMesh) node.frustumCulled = false;
+    });
+    return group;
+  }
+
+  async function buildEmbeddedJerrycanFromObj() {
+    const groups = window.PocketUniverseJerrycanGroups;
+    if (!groups || typeof groups !== 'object') return null;
+
+    const materialTextureData = {};
+    const loadTextureData = async (dataUrl) => {
+      if (!dataUrl) return null;
+      const image = new Image();
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+        image.src = dataUrl;
+      });
+      const texture = new THREE.Texture(image);
+      texture.needsUpdate = true;
+      texture.encoding = THREE.sRGBEncoding;
+      texture.anisotropy = 1;
+      return texture;
+    };
+
+    try {
+      materialTextureData.body = await loadTextureData(window.PocketUniverseJerrycanTextureDataURL);
+    } catch (e) {
+      console.warn('Embedded jerrycan body texture could not be decoded; using solid material.', e);
+      materialTextureData.body = null;
+    }
+    try {
+      materialTextureData.handle = await loadTextureData(window.PocketUniverseJerrycanHandleTextureDataURL);
+    } catch (e) {
+      console.warn('Embedded jerrycan handle texture could not be decoded; using solid material.', e);
+      materialTextureData.handle = null;
+    }
+
+    const group = new THREE.Group();
+    let meshCount = 0;
+    for (const [materialName, data] of Object.entries(groups)) {
+      if (!data || !Array.isArray(data.positions) || !data.positions.length) continue;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
+      if (Array.isArray(data.uvs) && data.uvs.length === (data.positions.length / 3) * 2) {
+        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(data.uvs, 2));
+      }
+
+      let completeNormals = Array.isArray(data.normals) && data.normals.length === data.positions.length;
+      if (completeNormals) {
+        let anyNonZero = false;
+        for (let i = 0; i < data.normals.length; i += 3) {
+          const x = data.normals[i], y = data.normals[i + 1], z = data.normals[i + 2];
+          if (x*x + y*y + z*z > 1e-8) { anyNonZero = true; break; }
+        }
+        completeNormals = anyNonZero;
+      }
+      if (completeNormals) geometry.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
+      else geometry.computeVertexNormals();
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+
+      const lower = materialName.toLowerCase();
+      const isHandle = lower.includes('9825c62f') || lower.includes('handle');
+      const material = new THREE.MeshStandardMaterial({
+        map: isHandle ? materialTextureData.handle : materialTextureData.body,
+        color: 0xffffff,
+        roughness: isHandle ? 0.86 : 0.72,
+        metalness: 0.04,
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.frustumCulled = false;
+      group.add(mesh);
+      meshCount++;
+    }
+
+    if (!meshCount) return null;
+
+    // Normalize the supplied Blockbench asset so its base is at y=0 and it is
+    // centered like the other world/held item models. The model itself remains
+    // unchanged; only its Three.js wrapper transform is adjusted.
+    group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(group);
+    if (box.isEmpty()) return null;
+    const center = box.getCenter(new THREE.Vector3());
+    group.position.x -= center.x;
+    group.position.z -= center.z;
+    group.position.y -= box.min.y;
+    group.traverse((node) => {
+      if (node.isMesh) node.frustumCulled = false;
+    });
+    return group;
   }
 
   function loadToolModels() {
@@ -156,6 +527,18 @@
       try { await loadToolModels(); } catch (toolError) {
         console.warn("Tool models unavailable; procedural fallback will be used.", toolError);
       }
+      try { rocketModelTemplate = await buildEmbeddedRocketFromObj(); } catch (rocketError) {
+        console.warn("Rocket model unavailable; procedural fallback will be used.", rocketError);
+      }
+      try { furnaceModelTemplate = await buildEmbeddedFurnaceFromObj(); } catch (furnaceError) {
+        console.warn("Furnace model unavailable; procedural fallback will be used.", furnaceError);
+      }
+      try { jerrycanModelTemplate = await buildEmbeddedJerrycanFromObj(); } catch (jerrycanError) {
+        console.warn("Jerrycan model unavailable; procedural fallback will be used.", jerrycanError);
+      }
+      try { scytheModelTemplate = buildEmbeddedScytheModel(); } catch (scytheError) {
+        console.warn("Scythe model unavailable; procedural fallback will be used.", scytheError);
+      }
       runGame();
     } catch (e) {
       showFatalError("Something went wrong starting the game: " + (e && e.message ? e.message : e));
@@ -165,7 +548,8 @@
 
   function runGame() {
     // ---------- tunable constants ----------
-    const PLANET_RADIUS = 120;
+    const PLANET_RADIUS = 240; // v0.8B Day 9 world-size expansion: 2x Ivis radius
+
     const EYE_HEIGHT = 1.7;
     const MOVE_SPEED = 9;                // units per second, walking
     const SPRINT_MULTIPLIER = 1.9;
@@ -188,11 +572,15 @@
     const FLASHLIGHT_INTENSITY = 7;
 
     // terrain: gentle hills/valleys everywhere, plus 4 tall mountains
-    const HILL_AMPLITUDE = 4;
-    const MOUNTAIN_HEIGHT = 20;                  // reduced so mountains feel proportional to the planet and leave room for future flight
+    const HILL_AMPLITUDE = 8;
+
+    const MOUNTAIN_HEIGHT = 40;
+                  // reduced so mountains feel proportional to the planet and leave room for future flight
     const MOUNTAIN_ANGULAR_RADIUS = 0.34;   // slightly narrower mountains for a more natural silhouette   // radians, ~23 degrees of arc
-    const ROCK_LEVEL = 8;                  // elevation where grass gives way to rock
-    const SNOW_LEVEL = 16;                 // keeps snowy peaks after the mountain height reduction                 // elevation where rock gives way to snow
+    const ROCK_LEVEL = 16;
+                  // elevation where grass gives way to rock
+    const SNOW_LEVEL = 32;
+                 // keeps snowy peaks after the mountain height reduction                 // elevation where rock gives way to snow
 
     // 4 mountains, evenly spread out like a tetrahedron so none overlap
     const MOUNTAIN_DIRS = [
@@ -204,7 +592,8 @@
 
     // broad valley basins: one roughly opposite each mountain, well clear of all of them
     const VALLEY_ANGULAR_RADIUS = 0.55;
-    const VALLEY_DEPTH = 10;
+    const VALLEY_DEPTH = 20;
+
     const VALLEY_DIRS = [
       new THREE.Vector3(-1, -1, -1).normalize(),
       new THREE.Vector3(-1, 1, 1).normalize(),
@@ -218,7 +607,8 @@
     // the second mountain, as if it disappears underground, rather than climbing it.
     const RIVER_FLAT_HALF_WIDTH = 0.02;
     const RIVER_BLEND_HALF_WIDTH = 0.045;
-    const RIVER_DEPTH = 3;
+    const RIVER_DEPTH = 6;
+
     const RIVER_FROM = MOUNTAIN_DIRS[0];
     const RIVER_TO = MOUNTAIN_DIRS[2];
 
@@ -374,7 +764,8 @@
     // Main-menu planet preview camera.
     // Its yaw/playerState.pitch are controlled by dragging the cursor, so the player can inspect
     // every side of the planet before starting the game.
-    const MENU_CAM_DISTANCE = 420;
+    const MENU_CAM_DISTANCE = 840;
+
     const MENU_ROTATE_SENSITIVITY = 0.005;
     const MENU_MAX_PITCH = Math.PI / 2 - 0.12;
     // Menu drag state is shared through systemState.
@@ -413,7 +804,8 @@
     const mapCamera = new THREE.PerspectiveCamera(50, 1, 1, 3000);
     const MAP_MIN_ZOOM = 178;
     const MAP_MAX_ZOOM = 610;
-    let mapCameraDistance = 420;
+    let mapCameraDistance = 840;
+
     let mapOrbitYaw = 0;
     let mapOrbitPitch = 0.28;
     let mapDragging = false;
@@ -568,6 +960,87 @@
       else openPlanetMap();
     }
 
+
+    // ---------- space navigation map / warp drive ----------
+    const spaceMapOverlay = document.getElementById('spaceMapOverlay');
+    const spaceMapViewportWrap = document.getElementById('spaceMapViewportWrap');
+    const spaceMapCanvas = document.getElementById('spaceMapCanvas');
+    const spaceMapClose = document.getElementById('spaceMapClose');
+    const spaceMapWarpStatus = document.getElementById('spaceMapWarpStatus');
+    const warpOverlay = document.getElementById('warpOverlay');
+    const warpOverlayText = document.getElementById('warpOverlayText');
+    const warpOverlaySubtext = document.getElementById('warpOverlaySubtext');
+    const spaceMapCtx = spaceMapCanvas.getContext('2d');
+    let spaceMapOpen=false, pendingWarpBody=null, warpInProgress=false, warpStartedAt=0, warpDurationSeconds=0, warpTargetId=null;
+    // During a warp the normal 3D gameplay view is hidden while the dedicated warp overlay
+    // remains visible. This makes the hyperspace effect the entire visual focus of the trip.
+    function setWarpGameplayVisibility(hidden){
+      canvas.style.visibility = hidden ? 'hidden' : '';
+    }
+    const SPACE_BODY_META={
+      // Use getters here because this navigation block is defined before the later
+      // celestial-body constants are initialized. Reading the radius is therefore
+      // deferred until the map/warp code actually runs, avoiding a TDZ boot error.
+      sun:{name:'SUN',color:'#ffd34f',get radius(){return SUN_RADIUS;},offset:1000},
+      ivis:{name:'IVIS',color:'#54d978',get radius(){return PLANET_RADIUS;},offset:500},
+      moon:{name:'MOON',color:'#b7beca',get radius(){return MOON_RADIUS;},offset:500},
+      cordelia:{name:'CORDELIA',color:'#e98f43',get radius(){return CORDELIA_RADIUS;},offset:500}
+    };
+    const spaceMapStarSeeds=Array.from({length:220},(_,i)=>({
+      x:(Math.sin(i*12.9898)*43758.5453)%1, y:(Math.sin(i*78.233+4.7)*12489.123)%1,
+      a:.25+((Math.sin(i*3.17+1.4)+1)/2)*.7, r:i%9===0?1.4:(i%3===0?1:.6)
+    })).map(s=>({...s,x:(s.x+1)%1,y:(s.y+1)%1}));
+    function getSpaceBodyPosition(id,out=new THREE.Vector3()){ if(id==='ivis') return out.set(0,0,0); if(id==='sun') return out.copy(sunMesh.position); if(id==='moon') return moonMesh.getWorldPosition(out); if(id==='cordelia') return cordeliaMesh.getWorldPosition(out); return out.set(0,0,0); }
+    function prepareSpaceMapCanvas(){ const rect=spaceMapViewportWrap.getBoundingClientRect(), dpr=Math.min(devicePixelRatio||1,2), w=Math.max(1,Math.floor(rect.width)), h=Math.max(1,Math.floor(rect.height)); if(spaceMapCanvas.width!==Math.floor(w*dpr)||spaceMapCanvas.height!==Math.floor(h*dpr)){spaceMapCanvas.width=Math.floor(w*dpr);spaceMapCanvas.height=Math.floor(h*dpr);spaceMapCanvas.style.width=w+'px';spaceMapCanvas.style.height=h+'px';} return {w,h,dpr}; }
+    function drawSpaceMap(){
+      if(!spaceMapOpen) return; const {w,h,dpr}=prepareSpaceMapCanvas(); spaceMapCtx.setTransform(dpr,0,0,dpr,0,0); spaceMapCtx.clearRect(0,0,w,h);
+      const bg=spaceMapCtx.createRadialGradient(w*.5,h*.52,20,w*.5,h*.52,Math.max(w,h)*.72); bg.addColorStop(0,'#081226'); bg.addColorStop(.55,'#020814'); bg.addColorStop(1,'#000207'); spaceMapCtx.fillStyle=bg; spaceMapCtx.fillRect(0,0,w,h);
+      for(const s of spaceMapStarSeeds){spaceMapCtx.globalAlpha=s.a;spaceMapCtx.fillStyle='#eaf3ff';spaceMapCtx.beginPath();spaceMapCtx.arc(s.x*w,s.y*h,s.r,0,Math.PI*2);spaceMapCtx.fill();} spaceMapCtx.globalAlpha=1;
+      const positions={}; for(const id of Object.keys(SPACE_BODY_META)) positions[id]=getSpaceBodyPosition(id,new THREE.Vector3());
+      const xs=Object.values(positions).map(p=>p.x), zs=Object.values(positions).map(p=>p.z), minX=Math.min(...xs),maxX=Math.max(...xs),minZ=Math.min(...zs),maxZ=Math.max(...zs), pad=1700;
+      const spanX=Math.max(1,maxX-minX+pad*2), spanZ=Math.max(1,maxZ-minZ+pad*2), scale=Math.min((w-120)/spanX,(h-100)/spanZ), cx=(minX+maxX)/2, cz=(minZ+maxZ)/2;
+      const toScreen=p=>({x:w/2+(p.x-cx)*scale,y:h/2+(p.z-cz)*scale});
+      spaceMapCtx.save();spaceMapCtx.setLineDash([5,7]);spaceMapCtx.lineWidth=1;spaceMapCtx.strokeStyle='rgba(142,175,225,.27)';
+      let iv=toScreen(positions.ivis);spaceMapCtx.beginPath();spaceMapCtx.ellipse(iv.x,iv.y,MOON_ORBIT_RADIUS*scale,MOON_ORBIT_RADIUS*scale*.92,0,0,Math.PI*2);spaceMapCtx.stroke();
+      let su=toScreen(positions.sun);spaceMapCtx.beginPath();spaceMapCtx.ellipse(su.x,su.y,CORDELIA_SUN_DISTANCE*scale,CORDELIA_SUN_DISTANCE*scale*.98,0,0,Math.PI*2);spaceMapCtx.stroke();spaceMapCtx.restore();
+      if(playerState.inRocket){const rp=toScreen(flightPosition);spaceMapCtx.fillStyle='#fff';spaceMapCtx.shadowColor='#9fd6ff';spaceMapCtx.shadowBlur=10;spaceMapCtx.beginPath();spaceMapCtx.arc(rp.x,rp.y,5,0,Math.PI*2);spaceMapCtx.fill();spaceMapCtx.shadowBlur=0;}
+      for(const [id,meta] of Object.entries(SPACE_BODY_META)){const p=toScreen(positions[id]), radius=id==='sun'?18:10;spaceMapCtx.save();spaceMapCtx.shadowColor=meta.color;spaceMapCtx.shadowBlur=id==='sun'?24:14;spaceMapCtx.fillStyle=meta.color;spaceMapCtx.beginPath();spaceMapCtx.arc(p.x,p.y,radius,0,Math.PI*2);spaceMapCtx.fill();if(id==='sun'){spaceMapCtx.strokeStyle='rgba(255,236,160,.75)';spaceMapCtx.lineWidth=2;spaceMapCtx.stroke();}spaceMapCtx.restore();spaceMapCtx.fillStyle='rgba(238,244,255,.86)';spaceMapCtx.font='800 11px Segoe UI,sans-serif';spaceMapCtx.textAlign='center';spaceMapCtx.fillText(meta.name,p.x,p.y+radius+16);}
+      spaceMapCanvas._spaceMapLayout={positions,toScreen};
+    }
+    function getWarpDriveRocket(){ if(!playerState.inRocket||playerState.rocketLanded||!flightRocket||!flightPad) return null; return (flightRocket.warpDrive||flightPad.warpDrive)?flightRocket:null; }
+    function openSpaceMap(){
+      if(!getWarpDriveRocket()){showFlightPrompt('Warp Drive required for the Space Map.');return false;}
+      if(state.gameState!=='playing'||state.paused||!playerState.rocketInSpace||warpInProgress)return false;
+      if(document.pointerLockElement===canvas)document.exitPointerLock();clearPhysicalKeys();for(const k in systemState.keys)systemState.keys[k]=false;
+      spaceMapOpen=true;pendingWarpBody=null;spaceMapWarpStatus.classList.add('hidden');spaceMapOverlay.classList.remove('hidden');state.paused=true;document.body.classList.add('map-open');drawSpaceMap();return true;
+    }
+    function closeSpaceMap(){if(!spaceMapOpen)return;spaceMapOpen=false;pendingWarpBody=null;spaceMapOverlay.classList.add('hidden');spaceMapWarpStatus.classList.add('hidden');document.body.classList.remove('map-open');if(state.gameState==='playing'&&!warpInProgress){state.paused=false;attemptPointerLock();}}
+    function toggleSpaceMap(){if(spaceMapOpen)closeSpaceMap();else openSpaceMap();}
+    function formatWarpSeconds(sec){const s=Math.max(0,Math.ceil(sec)),m=Math.floor(s/60),r=s%60;return m+':'+String(r).padStart(2,'0');}
+    function showWarpConfirmation(bodyId){
+      if(!SPACE_BODY_META[bodyId])return; const center=getSpaceBodyPosition(bodyId,new THREE.Vector3()), distance=flightPosition.distanceTo(center), duration=distance/2000, hasQuartz=getInventoryCount('moon_quartz')>=1; pendingWarpBody=bodyId;
+      spaceMapWarpStatus.innerHTML='<div>Warp to '+SPACE_BODY_META[bodyId].name+'?</div><div style="margin-top:5px;color:rgba(225,235,255,.68);font-weight:600;">Distance: '+Math.round(distance).toLocaleString()+'u · Time: '+formatWarpSeconds(duration)+' · Cost: 1 Moon Quartz</div><div style="margin-top:11px;font-size:10px;color:'+(hasQuartz?'rgba(185,244,209,.9)':'rgba(255,145,145,.92)')+';">'+(hasQuartz?'Click again to confirm':'NOT ENOUGH MOON QUARTZ')+'</div>';
+      spaceMapWarpStatus.classList.remove('hidden');
+    }
+    function getWarpArrivalPosition(targetId){const center=getSpaceBodyPosition(targetId,new THREE.Vector3()),dir0=flightPosition.clone().sub(center),dir=dir0.lengthSq()>.001?dir0.normalize():new THREE.Vector3(1,0,0);const meta=SPACE_BODY_META[targetId];return center.addScaledVector(dir,meta.radius+meta.offset);}
+    function startWarp(targetId){
+      if(!getWarpDriveRocket()||!SPACE_BODY_META[targetId])return false;
+      if(getInventoryCount('moon_quartz')<1){closeSpaceMap();showFlightPrompt('NOT ENOUGH MOON QUARTZ');return true;}
+      const center=getSpaceBodyPosition(targetId,new THREE.Vector3()),distance=flightPosition.distanceTo(center);warpDurationSeconds=Math.max(.05,distance/2000);warpStartedAt=performance.now();warpTargetId=targetId;warpInProgress=true;
+      removeItemsFromInventory('moon_quartz',1);refreshEquippedItem();updateHotbarUI();updateInventoryUI();closeSpaceMap();clearPhysicalKeys();for(const k in systemState.keys)systemState.keys[k]=false;state.paused=false;
+      setWarpGameplayVisibility(true);
+      setLoopAudioMode('rocketIdle',false);setLoopAudioMode('rocketThrust',false);rocketEngineMode='off';setLoopAudioMode('warpDrive',true,.24,1);warpOverlay.classList.remove('hidden');warpOverlayText.textContent='WARPING TO '+SPACE_BODY_META[targetId].name;warpOverlaySubtext.textContent=formatWarpSeconds(warpDurationSeconds)+' REMAINING';return true;
+    }
+    function finishWarp(){
+      const targetId=warpTargetId,target=getWarpArrivalPosition(targetId),center=getSpaceBodyPosition(targetId,new THREE.Vector3()),up=target.clone().sub(center).normalize();let forward=flightForward.clone();forward.addScaledVector(up,-forward.dot(up));if(forward.lengthSq()<.0001){const ref=Math.abs(up.y)<.9?new THREE.Vector3(0,1,0):new THREE.Vector3(1,0,0);forward.copy(ref).addScaledVector(up,-ref.dot(up));}forward.normalize();const right=new THREE.Vector3().crossVectors(forward,up).normalize();flightShipBasis.makeBasis(right,up,forward.clone().negate());flightRocketQuat.setFromRotationMatrix(flightShipBasis);
+      flightPosition.copy(target);playerState.rocketLanded=false;playerState.rocketInSpace=true;moonGravityActive=targetId==='moon';cordeliaGravityActive=targetId==='cordelia';freeSpacePlaneActive=targetId==='sun';
+      if(targetId==='moon')recordCelestialBodyVisit('moon');if(targetId==='cordelia')recordCelestialBodyVisit('cordelia');if(flightRocket){flightRocket.root.position.copy(flightPosition);flightRocket.root.quaternion.copy(flightRocketQuat);}player.position.copy(flightPosition);
+      setLoopAudioMode('warpDrive',false);warpOverlay.classList.add('hidden');setWarpGameplayVisibility(false);warpInProgress=false;warpTargetId=null;setRocketFlightUI();showFlightPrompt('WARP COMPLETE · 1 Moon Quartz used');
+    }
+    spaceMapClose.addEventListener('click',closeSpaceMap);
+    spaceMapCanvas.addEventListener('click',(e)=>{if(!spaceMapOpen||warpInProgress)return;const rect=spaceMapCanvas.getBoundingClientRect(),x=e.clientX-rect.left,y=e.clientY-rect.top,layout=spaceMapCanvas._spaceMapLayout;if(!layout)return;let picked=null,best=Infinity;for(const [id,pos] of Object.entries(layout.positions)){const p=layout.toScreen(pos),d=Math.hypot(x-p.x,y-p.y),hit=id==='sun'?26:18;if(d<=hit&&d<best){best=d;picked=id;}}if(!picked){spaceMapWarpStatus.innerHTML='<div>Select a celestial body to warp there.</div>';spaceMapWarpStatus.classList.remove('hidden');return;}if(pendingWarpBody===picked)startWarp(picked);else showWarpConfirmation(picked);});
+    window.addEventListener('resize',()=>{if(spaceMapOpen)drawSpaceMap();});
+
     mapClose.addEventListener('click', closePlanetMap);
     mapViewportWrap.addEventListener('pointerdown', (e) => {
       if (!mapOpen || e.button !== 0) return;
@@ -642,11 +1115,12 @@
     scene.add(cloudMesh);
 
     // ---------- low cloud layer ----------
-    // Simple stylized cloud clusters circling the planet at roughly 60 units above the
-    // planet's 120-unit base radius. Each cluster is made from a few soft white spheres
-    // flattened into little puffs and placed on a spherical shell at radius 180.
+    // Simple stylized cloud clusters circling the planet at roughly 120 units above the
+    // planet's new 240-unit base radius. Each cluster is made from a few soft white spheres
+    // flattened into little puffs and placed on a spherical shell at radius 360.
     // The layer rotates slowly around the planet independently from the planet itself.
-    const CLOUD_LAYER_RADIUS = 180;
+    const CLOUD_LAYER_RADIUS = 360;
+
     const cloudLayer = new THREE.Group();
     scene.add(cloudLayer);
 
@@ -1249,7 +1723,9 @@
     // The sun stays fixed in space while the planet rotates around its own axis.
     // This is the more natural setup for the game: later, the spaceship can fly around
     // the same stationary sun while the planet keeps spinning underneath it.
-    const SUN_DISTANCE = 5000;
+    const SUN_DISTANCE = 10000;
+    // v0.8B Day 9 celestial-spacing expansion: Ivis-to-Sun distance doubled,
+    // Ivis-to-Moon orbital radius doubled, and Sun-to-Cordelia distance doubled.
     const DAY_LENGTH_SECONDS = 300;
     // A crystal comes back after the planet has completed two full rotations: two complete
     // day/night cycles. Keeping this tied to the same constant means the respawn time can
@@ -1266,15 +1742,16 @@
     const CRYSTAL_PICKUP_RADIUS = 3.2;
 
 
-    // The Sun is now a real celestial object in Pocket Universe. It sits 5000 units from
+    // The Sun is now a real celestial object in Pocket Universe. It sits 10000 units from
     // Ivis's center and is 7x Ivis's radius (840 units across as a radius, matching the
     // requested 7x-size visual scale). The visible sphere is still accompanied by the
     // same directional light used by the original Sun, so all existing lighting, sky,
     // sunset, night, World Control, and day/night behavior continue to work.
-    const SUN_RADIUS = PLANET_RADIUS * 7;
+    const SUN_RADIUS = PLANET_RADIUS * 7; // 1680: twice the previous 840-unit Sun radius
+
     // Celestial bodies live far beyond the local atmospheric fog range. Keep the Sun's
     // material outside scene fog so its emissive yellow appearance remains stable at
-    // 5000+ units instead of being blended into the blue/space fog.
+    // 10000+ units instead of being blended into the blue/space fog.
     const sunMaterial = new THREE.MeshBasicMaterial({
       color: 0xffd45c,
       fog: false
@@ -1360,6 +1837,7 @@
 
       resetContinuousSurvivalAchievementRun();
       resetInventory();
+      setLoopAudioMode('warpDrive', false); setWarpGameplayVisibility(false); warpInProgress=false; warpTargetId=null;
       playerState.inRocket = false;
       playerState.rocketInSpace = false;
       playerState.rocketLanded = false;
@@ -1584,9 +2062,10 @@
 
     // ---------- moon / lunar body ----------
     // Ivis's Moon is a real scene object: 1/4 of Ivis's radius and on a true
-    // circular 700-unit orbit around Ivis's center, independent from Ivis's spin.
-    const MOON_RADIUS = PLANET_RADIUS * 0.25;
-    const MOON_ORBIT_RADIUS = 700;
+    // circular 1400-unit orbit around Ivis's center, independent from Ivis's spin.
+    const MOON_RADIUS = PLANET_RADIUS * 0.25; // 60 units
+
+    const MOON_ORBIT_RADIUS = 1400;
     const MOON_ORBIT_PERIOD = 180; // seconds per full orbit
     const MOON_ORBIT_TILT = THREE.MathUtils.degToRad(12);
     const MOON_COLLISION_RADIUS = MOON_RADIUS + 2.4;
@@ -1630,14 +2109,15 @@
       }));
       mesh.name = 'IvisMoon';
 
-      // Large surface crater overlays make the impact basins readable from Ivis.
+      // Large surface crater overlays make the impact basins readable from Ivis; their
+      // radii are doubled along with the Moon so the visual scale stays proportional.
       const craterVisuals = [
-        { dir: new THREE.Vector3(0.38, 0.62, 0.25), r: 3.8 },
-        { dir: new THREE.Vector3(-0.55, 0.28, 0.34), r: 4.6 },
-        { dir: new THREE.Vector3(0.66, -0.10, -0.24), r: 3.1 },
-        { dir: new THREE.Vector3(-0.18, -0.56, 0.36), r: 5.1 },
-        { dir: new THREE.Vector3(0.06, 0.20, -0.68), r: 3.5 },
-        { dir: new THREE.Vector3(-0.62, -0.18, -0.28), r: 2.7 }
+        { dir: new THREE.Vector3(0.38, 0.62, 0.25), r: 7.6 },
+        { dir: new THREE.Vector3(-0.55, 0.28, 0.34), r: 9.2 },
+        { dir: new THREE.Vector3(0.66, -0.10, -0.24), r: 6.2 },
+        { dir: new THREE.Vector3(-0.18, -0.56, 0.36), r: 10.2 },
+        { dir: new THREE.Vector3(0.06, 0.20, -0.68), r: 7.0 },
+        { dir: new THREE.Vector3(-0.62, -0.18, -0.28), r: 5.4 }
       ];
       for (const c of craterVisuals) {
         const d = c.dir.clone().normalize();
@@ -1663,6 +2143,7 @@
     const moonMesh = createMoon();
     scene.add(moonMesh);
     const moonQuartzSpawns = [];
+    const moonTungstenSpawns = [];
     function spawnMoonQuartz(dir) {
       const group = new THREE.Group();
       const visual = createMoonQuartzVisual(1.0 + Math.random() * 0.25, false);
@@ -1675,7 +2156,7 @@
       moonMesh.add(group);
       moonQuartzSpawns.push({ root: group, visual, ghost, direction: dir.clone(), collected: false, respawnAtSpin: 0 });
     }
-    function scatterMoonQuartz(count = 60) {
+    function scatterMoonQuartz(count = 120) {
       for (let i = 0; i < count; i++) {
         const dir = new THREE.Vector3(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize();
         spawnMoonQuartz(dir);
@@ -1685,8 +2166,9 @@
     const moonOrbitPosition = new THREE.Vector3();
     const moonWorldPosition = new THREE.Vector3();
     const cordeliaWorldPosition = new THREE.Vector3();
-    const MOON_GRAVITY_SWITCH_DISTANCE = 180;
-    const MOON_GRAVITY_EXIT_DISTANCE = 215; // hysteresis prevents boundary chatter
+    const MOON_GRAVITY_SWITCH_DISTANCE = 360;
+
+    const MOON_GRAVITY_EXIT_DISTANCE = 430; // doubled with the Moon's 2x gravity radius; preserves hysteresis
     let moonGravityActive = false;
     // Beyond Ivis' local gravity region the ship stops using any celestial center as its
     // reference. Instead, a single random "down" direction is chosen when the ship first
@@ -1702,6 +2184,12 @@
     let moonLandingPad = null;
     let moonLandingArmed = true;
     let moonDustTimer = 0;
+    // The landed rocket is parked slightly inside the flight collision shell so it sits
+    // convincingly on the Moon. A short dedicated takeoff phase clears that shell before
+    // normal flight collision checks resume.
+    let moonTakeoffActive = false;
+    const MOON_TAKEOFF_RELEASE_DISTANCE = 76;
+    const MOON_TAKEOFF_BOOST = 34;
     let cordeliaGravityActive = false;
     let cordeliaWalking = false;
     let cordeliaLandedRocket = null;
@@ -1714,15 +2202,20 @@
     const CORDELIA_TAKEOFF_CLEARANCE = 34;
     const CORDELIA_TAKEOFF_RELEASE_DISTANCE = 58;
     const CORDELIA_TAKEOFF_BOOST = 42;
-    const MOON_LANDING_SURFACE_DISTANCE = 35.0;
+    // Landing must trigger at or just outside the Moon's collision shell. The old 35-unit
+    // threshold was inside that shell after the Moon was enlarged, so flight collision blocked
+    // the rocket before it could ever reach the landing trigger.
+    const MOON_LANDING_SURFACE_DISTANCE = MOON_COLLISION_RADIUS + 2.5;
     const MOON_LANDING_REARM_DISTANCE = 50.0;
     const MOON_PLAYER_GROUND_RADIUS = MOON_RADIUS;
     const MOON_JUMP_SPEED = JUMP_SPEED * Math.SQRT2; // exactly 2x the normal jump height
-    const CORDELIA_GRAVITY_SWITCH_DISTANCE = 800;
-    const CORDELIA_GRAVITY_EXIT_DISTANCE = 850;
+    const CORDELIA_GRAVITY_SWITCH_DISTANCE = 1600;
+
+    const CORDELIA_GRAVITY_EXIT_DISTANCE = 1700; // doubled with Cordelia's 2x gravity radius
     const CORDELIA_LANDING_SURFACE_DISTANCE = 14;
     const CORDELIA_LANDING_REARM_DISTANCE = 28;
-    const CORDELIA_PLAYER_GROUND_RADIUS = 110;
+    const CORDELIA_PLAYER_GROUND_RADIUS = 220;
+
     const CORDELIA_JUMP_SPEED = JUMP_SPEED;
 
     function updateMoon(delta) {
@@ -1738,7 +2231,7 @@
     }
 
     // The Moon is a real physical body, not just a sky prop. Once the ship is within
-    // 180 units of the Moon's center, the local "down" direction switches from Ivis'
+    // 360 units of the Moon's center, the local "down" direction switches from Ivis'
     // center to the Moon's center. This controls the ship's up-vector/orientation while
     // still keeping free-flight movement fully under the pilot's control.
     function updateSpacePlaneState(position) {
@@ -1770,7 +2263,8 @@
       moonMesh.getWorldPosition(moonWorldPosition);
       const moonDistance = position.distanceTo(moonWorldPosition);
 
-      // The Moon still takes priority whenever the ship is close to it.
+      // The Moon still takes priority whenever the ship is close to it. Its exit radius is
+      // larger than its entry radius, providing proper hysteresis after the 2x world scaling.
       if (!moonGravityActive && moonDistance <= MOON_GRAVITY_SWITCH_DISTANCE) {
         moonGravityActive = true;
       } else if (moonGravityActive && moonDistance > MOON_GRAVITY_EXIT_DISTANCE) {
@@ -1779,6 +2273,7 @@
       if (moonGravityActive) return out.copy(moonWorldPosition);
 
       // Cordelia takes over from planar space flight once the ship is close to the desert planet.
+      // Entry/exit use a deliberate hysteresis band so the larger body cannot chatter at the boundary.
       cordeliaMesh.getWorldPosition(cordeliaWorldPosition);
       const cordeliaDistance = position.distanceTo(cordeliaWorldPosition);
       if (!cordeliaGravityActive && cordeliaDistance <= CORDELIA_GRAVITY_SWITCH_DISTANCE) {
@@ -1793,13 +2288,14 @@
     updateMoon(0);
 
     // ---------- Cordelia: desert planet ----------
-    // Cordelia orbits the real Sun at a fixed 3000-unit distance. It is intentionally
+    // Cordelia orbits the real Sun at a fixed 6000-unit distance. It is intentionally
     // independent of Ivis' rotating planetSystem so its position remains a true world-space
     // celestial body, just like the Sun and Moon.
-    const CORDELIA_RADIUS = 110;
-    const CORDELIA_SUN_DISTANCE = 3000;
+    const CORDELIA_RADIUS = 220; // 2x the previous 110-unit radius
+
+    const CORDELIA_SUN_DISTANCE = 6000;
     const CORDELIA_ORBIT_PERIOD = 1800; // 30 minutes per full orbit
-    const CORDELIA_DUNE_HEIGHT = 13;
+    const CORDELIA_DUNE_HEIGHT = 26;
     const CORDELIA_COLLISION_CLEARANCE = 2.6;
     const CORDELIA_COLLISION_RADIUS = CORDELIA_RADIUS + CORDELIA_DUNE_HEIGHT + CORDELIA_COLLISION_CLEARANCE;
     const cordeliaMesh = new THREE.Group();
@@ -1844,17 +2340,35 @@
       }
       geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
       geometry.computeVertexNormals();
-      const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1.0, metalness: 0.0, fog: false });
+      // Keep the deformed sphere robust from every viewing angle.  The geometry is
+      // modified after SphereGeometry is created, so refresh its bounds and explicitly
+      // disable child frustum culling; otherwise an oblique view can make Cordelia's
+      // surface appear to pop/cut away at the edge of the camera frustum.
+      geometry.computeBoundingSphere();
+      const material = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 1.0,
+        metalness: 0.0,
+        fog: false,
+        side: THREE.DoubleSide,
+        // A tiny warm ambient lift keeps Cordelia's night side visibly readable instead
+        // of looking like a hard half-cut when the directional Sun is behind it.
+        emissive: 0x24170d,
+        emissiveIntensity: 0.08,
+      });
       const surface = new THREE.Mesh(geometry, material);
       surface.name = 'CordeliaSurface';
+      surface.frustumCulled = false;
       cordeliaMesh.add(surface);
 
       // A subtle dust-color shell gives the planet a softer silhouette without adding a
-      // separate atmosphere simulation.
+      // separate atmosphere simulation.  It is also excluded from frustum culling so the
+      // shell cannot vanish independently of the surface at oblique viewing angles.
       const shell = new THREE.Mesh(
         new THREE.SphereGeometry(CORDELIA_RADIUS + CORDELIA_DUNE_HEIGHT + 0.45, 64, 48),
         new THREE.MeshBasicMaterial({ color: 0xd7a96a, transparent: true, opacity: 0.08, fog: false, side: THREE.BackSide, depthWrite: false })
       );
+      shell.frustumCulled = false;
       shell.name = 'CordeliaDustShell';
       cordeliaMesh.add(shell);
 
@@ -1875,7 +2389,8 @@
     const cordeliaPlayerDir = new THREE.Vector3();
     const cordeliaSunDir = new THREE.Vector3();
     const cordeliaCenterWorld = new THREE.Vector3();
-    const CORDELIA_ATMOSPHERE_RANGE = 300;
+    const CORDELIA_ATMOSPHERE_RANGE = 600;
+
     let onCordeliaAtmosphere = false;
 
     function playerIsInCordeliaAtmosphere(worldPos) {
@@ -1966,8 +2481,9 @@
     }
 
     const cordeliaRockSpawns = [];
+    const cordeliaTungstenSpawns = [];
     const cordeliaCrystalSpawns = [];
-    function scatterCordeliaCacti(count = 70) {
+    function scatterCordeliaCacti(count = 140) {
       for (let i = 0; i < count; i++) {
         let dir;
         for (let tries = 0; tries < 20; tries++) {
@@ -1989,7 +2505,7 @@
       return mesh;
     }
 
-    function scatterCordeliaBoulders(count = 50) {
+    function scatterCordeliaBoulders(count = 100) {
       for (let i = 0; i < count; i++) {
         const dir = new THREE.Vector3(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize();
         const rock = createCordeliaBoulderVisual();
@@ -2019,13 +2535,13 @@
       const commonTypes = ['topaz', 'diamond', 'amethyst'];
       const rareOther = ['ruby', 'jasper', 'emerald', 'lapis', 'onyx'];
       for (const typeId of commonTypes) {
-        for (let i = 0; i < 15; i++) {
+        for (let i = 0; i < 30; i++) {
           const dir = new THREE.Vector3(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize();
           spawnCordeliaCrystal(typeId, dir);
         }
       }
       for (const typeId of rareOther) {
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < 6; i++) {
           const dir = new THREE.Vector3(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize();
           spawnCordeliaCrystal(typeId, dir);
         }
@@ -2122,8 +2638,8 @@
       if (sunset > 0) tempSkyColor.lerp(SUNSET_SKY, sunset * 0.72);
 
       // As the rocket climbs above the upper atmosphere, gradually blend the daytime/night
-      // sky into a deep space sky. The transition starts at the old boundary (~180 units)
-      // and completes at the new Karman-line-style boundary (300 units).
+      // sky into a deep space sky. The transition now runs from 360 to 600 units from Ivis
+      // center, keeping the atmospheric band proportional to the doubled planet size.
       const playerRadius = playerWorldPos.length();
       const atmosphereBlendForStorm = THREE.MathUtils.smoothstep(playerRadius, ROCKET_ATMOSPHERE_FADE_START, ROCKET_ATMOSPHERE_RADIUS);
       const weatherUnderClouds = playerRadius < CLOUD_LAYER_RADIUS - 1;
@@ -2332,12 +2848,16 @@
 
     // Enough grass and flowers to give the whole grassy planet a natural amount of detail.
     // They are intentionally much more numerous than the large trees, but remain tiny.
-    scatterGrass(650);
-    scatterFlowers(240);
+    scatterGrass(1300);
+    scatterFlowers(480);
 
     // Every tree is registered so the starter axe can identify nearby trees and remove them.
     // The size is stored as a gameplay value too: larger trees give proportionally more planks.
     const treeSpawns = worldState.trees;
+    // Each chopped tree leaves behind a living sapling that grows back into that same tree
+    // over four full Ivis day/night cycles. Saplings are tracked separately from the tree
+    // array so the original tree size/orientation and its saved identity remain stable.
+    const saplingSpawns = [];
     // Decorative boulders are also mineable. Each boulder can be mined once and yields 1 Stone.
     const rockSpawns = worldState.rocks;
     const ironOreSpawns = worldState.ironOres;
@@ -2354,7 +2874,10 @@
     function createFurnaceObject(dir, yaw = Math.random() * Math.PI * 2) {
       const group = createFurnaceVisual(1.05);
       const h = heightAt(dir);
-      group.position.copy(dir).multiplyScalar(PLANET_RADIUS + h + 0.32);
+      // The supplied Blockbench furnace sits about 2 world units too high in the
+      // world model. Keep inventory/drop previews unchanged and lower only the
+      // placed furnace along the surface normal so it sits correctly on the ground.
+      group.position.copy(dir).multiplyScalar(PLANET_RADIUS + h + 0.32 - 1.0);
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
       group.rotateY(yaw);
       planetSystem.add(group);
@@ -2533,6 +3056,11 @@
     // Compact rocket icon/model used by inventory and dropped-item visuals.
     // Kept unchanged so the inventory appearance stays the same.
     function createRocketVisual(scale = 1) {
+      if (rocketModelTemplate) {
+        const actual = rocketModelTemplate.clone(true);
+        actual.scale.setScalar(scale);
+        return actual;
+      }
       const group = new THREE.Group();
       const bodyMat = new THREE.MeshStandardMaterial({ color: 0xe7edf2, roughness: 0.42, metalness: 0.08 });
       const noseMat = new THREE.MeshStandardMaterial({ color: 0xf06470, roughness: 0.45 });
@@ -2551,6 +3079,11 @@
     // Full-size mounted rocket. This is deliberately separate from createRocketVisual so
     // improving the world model cannot change the inventory icon/drop model.
     function createMountedRocketVisual(scale = 1) {
+      if (rocketModelTemplate) {
+        const actual = rocketModelTemplate.clone(true);
+        actual.scale.setScalar(scale);
+        return actual;
+      }
       const group = new THREE.Group();
       const bodyMat = new THREE.MeshStandardMaterial({ color: 0xe9eef2, roughness: 0.48, metalness: 0.08 });
       const seamMat = new THREE.MeshStandardMaterial({ color: 0xc6cdd3, roughness: 0.55, metalness: 0.12 });
@@ -2635,7 +3168,7 @@
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
       group.rotateY(yaw);
       planetSystem.add(group);
-      const pad = { root: group, direction: dir.clone(), yaw, rocket: null, fuel: 0, engineType: 'standard' };
+      const pad = { root: group, direction: dir.clone(), yaw, rocket: null, fuel: 0, engineType: 'standard', warpDrive: false };
       launchPads.push(pad);
       return pad;
     }
@@ -2645,7 +3178,7 @@
       const root = createMountedRocketVisual(0.92);
       root.position.set(0, 0.18, 0);
       pad.root.add(root);
-      pad.rocket = { root, pad, engineType: pad.engineType || 'standard' };
+      pad.rocket = { root, pad, engineType: pad.engineType || 'standard', warpDrive: !!pad.warpDrive };
       if (pad.engineType === 'upgraded') addUpgradedEngineVisual(pad.rocket);
       return true;
     }
@@ -2746,6 +3279,10 @@
         group.add(createUpgradedEngineVisual(0.64));
       } else if (typeId === 'moon_quartz') {
         group.add(createMoonQuartzVisual(0.75));
+      } else if (typeId === 'warp_drive') {
+        const core = new THREE.Mesh(new THREE.SphereGeometry(0.24,12,10), new THREE.MeshStandardMaterial({color:0x4fc8ff,emissive:0x1a89bd,emissiveIntensity:1.2,metalness:.35,roughness:.28}));
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.32,0.055,8,20), new THREE.MeshStandardMaterial({color:0x9eeaff,emissive:0x2b8bb6,emissiveIntensity:.8,metalness:.6,roughness:.25}));
+        ring.rotation.x=Math.PI/2; group.add(core,ring);
       } else if (typeId === 'rocket') {
         group.add(createRocketVisual(0.42));
       } else if (typeId === 'launch_pad') {
@@ -2757,11 +3294,12 @@
       } else {
         let color = item.css || '#a0a5aa';
         let geo = new THREE.BoxGeometry(0.28, 0.20, 0.28);
-        if (typeId === 'iron_ore' || typeId === 'copper_ore' || typeId === 'stone') geo = new THREE.DodecahedronGeometry(0.22, 0);
+        if (typeId === 'iron_ore' || typeId === 'copper_ore' || typeId === 'tungsten_ore' || typeId === 'stone') geo = new THREE.DodecahedronGeometry(0.22, 0);
         else if (typeId === 'planks') geo = new THREE.BoxGeometry(0.34, 0.16, 0.24);
         else if (typeId === 'sticks') geo = new THREE.CylinderGeometry(0.045, 0.045, 0.32, 8);
         else if (typeId === 'iron_ingot') { geo = new THREE.BoxGeometry(0.34, 0.11, 0.17); color = '#666c72'; }
         else if (typeId === 'copper_ingot') { geo = new THREE.BoxGeometry(0.34, 0.11, 0.17); color = '#c8753d'; }
+        else if (typeId === 'tungsten_ingot') { geo = new THREE.BoxGeometry(0.34, 0.11, 0.17); color = '#5e5b58'; }
         else if (typeId === 'copper_wire') { geo = new THREE.TorusGeometry(0.11, 0.025, 6, 14); color = '#d47a3d'; }
         const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.8, metalness: 0.05 }));
         if (typeId === 'sticks') mesh.rotation.z = Math.PI / 2;
@@ -2936,6 +3474,115 @@
       }
     }
 
+    function createTreeSapling(tree, treeIndex) {
+      if (!tree || !tree.root) return null;
+
+      let sapling = saplingSpawns.find(s => s.treeIndex === treeIndex);
+      if (sapling) {
+        sapling.active = true;
+        sapling.plantedAtSpin = state.planetSpinAngle;
+        sapling.root.visible = true;
+        updateTreeSaplingVisual(sapling, 0);
+        return sapling;
+      }
+
+      const root = new THREE.Group();
+      root.name = 'TreeSapling';
+      const trunk = new THREE.Mesh(treeTrunkGeo, treeTrunkMat);
+      const leaves = new THREE.Mesh(treeLeafGeo, treeLeafMat);
+      trunk.position.y = 0.7;
+      leaves.position.y = 2.0;
+      root.add(trunk);
+      root.add(leaves);
+
+      const dir = tree.direction.clone().normalize();
+      const h = heightAt(dir);
+      root.position.copy(dir).multiplyScalar(PLANET_RADIUS + h);
+      root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      root.rotateY(tree.yaw);
+      planetSystem.add(root);
+
+      sapling = {
+        root,
+        treeIndex,
+        direction: dir.clone(),
+        size: tree.size,
+        yaw: tree.yaw,
+        plantedAtSpin: state.planetSpinAngle,
+        active: true
+      };
+      saplingSpawns.push(sapling);
+      updateTreeSaplingVisual(sapling, 0);
+      return sapling;
+    }
+
+    function updateTreeSaplingVisual(sapling, progress) {
+      if (!sapling || !sapling.root) return;
+      const growth = 0.24 + 0.76 * THREE.MathUtils.clamp(progress, 0, 1);
+      const trunk = sapling.root.children[0];
+      const leaves = sapling.root.children[1];
+      if (trunk) {
+        trunk.scale.setScalar(sapling.size * growth);
+        trunk.position.y = 0.7 * sapling.size * growth;
+      }
+      if (leaves) {
+        leaves.scale.setScalar(sapling.size * growth);
+        leaves.position.y = 2.0 * sapling.size * growth;
+      }
+      sapling.root.visible = !!sapling.active;
+    }
+
+    function updateTreeSaplings() {
+      // Saplings only grow while the world is actively being played. Opening the main
+      // menu or pausing the game must not consume their four in-game days.
+      if (state.gameState !== 'playing' || state.paused) return;
+      const growthSpin = Math.PI * 8; // 4 full in-game day/night cycles.
+      for (const sapling of saplingSpawns) {
+        if (!sapling.active) continue;
+        const tree = treeSpawns[sapling.treeIndex];
+        if (!tree) {
+          sapling.active = false;
+          sapling.root.visible = false;
+          continue;
+        }
+        // Keep the sapling attached to the same surface point even if the world is reloaded.
+        const dir = sapling.direction.clone().normalize();
+        const h = heightAt(dir);
+        sapling.root.position.copy(dir).multiplyScalar(PLANET_RADIUS + h);
+        sapling.root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+        sapling.root.rotateY(sapling.yaw);
+
+        const progress = THREE.MathUtils.clamp((state.planetSpinAngle - sapling.plantedAtSpin) / growthSpin, 0, 1);
+        if (progress >= 1) {
+          // The sapling becomes the original tree again, preserving its saved size/orientation.
+          tree.chopped = false;
+          tree.root.visible = true;
+          sapling.active = false;
+          sapling.root.visible = false;
+          updateTreeRootVisual(tree);
+        } else {
+          updateTreeSaplingVisual(sapling, progress);
+        }
+      }
+    }
+
+    function updateTreeRootVisual(tree) {
+      if (!tree || !tree.root) return;
+      if (tree.root.children[0]) {
+        tree.root.children[0].scale.setScalar(tree.size);
+        tree.root.children[0].position.y = 0.7 * tree.size;
+      }
+      if (tree.root.children[1]) {
+        tree.root.children[1].scale.setScalar(tree.size);
+        tree.root.children[1].position.y = 2.0 * tree.size;
+      }
+      const dir = tree.direction.clone().normalize();
+      const h = heightAt(dir);
+      tree.root.position.copy(dir).multiplyScalar(PLANET_RADIUS + h);
+      tree.root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      tree.root.rotateY(tree.yaw);
+    }
+
     function scatterRocks(count) {
       let placed = 0, attempts = 0;
       while (placed < count && attempts < count * 20) {
@@ -3000,9 +3647,9 @@
       }
     }
 
-    scatterTrees(260);
-    scatterRocks(190);
-    scatterIronOre(24);
+    scatterTrees(520);
+    scatterRocks(380);
+    scatterIronOre(48);
 
     // ---------- meteor crash site ----------
     // One random impact site is generated for each new game. It is a large dark-grey
@@ -3100,15 +3747,15 @@
         new THREE.MeshStandardMaterial({ color: 0x2fb9a7, roughness: 1.0 })
       ];
 
-      for (let i = 0; i < 20; i++) {
-        const angle = (i / 20) * Math.PI * 2 + (Math.random() - 0.5) * 0.24;
+      for (let i = 0; i < 40; i++) {
+        const angle = (i / 40) * Math.PI * 2 + (Math.random() - 0.5) * 0.24;
         const radial = 5.8 + Math.random() * 7.4;
         const oreDir = dir.clone()
           .addScaledVector(tangentA, Math.cos(angle) * radial / PLANET_RADIUS)
           .addScaledVector(tangentB, Math.sin(angle) * radial / PLANET_RADIUS)
           .normalize();
         const oreH = heightAt(oreDir);
-        const oreType = i < 10 ? 'iron_ore' : 'copper_ore';
+        const oreType = i < 20 ? 'iron_ore' : 'copper_ore';
 
         const group = new THREE.Group();
         const base = new THREE.Mesh(
@@ -3185,6 +3832,9 @@
       { id: 'copper_wire', name: 'Copper Wire', kind: 'copper_wire', css: '#d47a3d', maxStack: 10 },
       { id: 'moon_quartz', name: 'Moon Quartz', kind: 'moon_quartz', css: '#e9eef7', maxStack: 10 },
       { id: 'upgraded_engine', name: 'Upgraded Rocket Engine', kind: 'upgraded_engine', maxStack: 1 },
+      { id: 'tungsten_ore', name: 'Tungsten Ore', kind: 'tungsten_ore', css: '#7c6c61', maxStack: 10 },
+      { id: 'tungsten_ingot', name: 'Tungsten Ingot', kind: 'tungsten_ingot', css: '#5e5b58', maxStack: 10 },
+      { id: 'warp_drive', name: 'Warp Drive', kind: 'warp_drive', maxStack: 1 },
       { id: 'drill', name: 'Drill', kind: 'drill', maxStack: 1, tool: true },
       { id: 'planks', name: 'Planks', kind: 'planks', css: '#c88748', maxStack: 10 },
       { id: 'sticks', name: 'Sticks', kind: 'sticks', css: '#b9824c', maxStack: 10 },
@@ -3231,6 +3881,9 @@
       copper_wire: { description: 'Several thin copper wires bundled together.', how: 'Craft wires from copper ingots.', used: 'A key component of the Upgraded Rocket Engine.' },
       moon_quartz: { description: 'A pale mineral naturally found on the Moon.', how: 'Collect Moon Quartz from its lunar deposits.', used: 'Can be sold to the merchant and is required for the Upgraded Rocket Engine.' },
       upgraded_engine: { description: 'An improved rocket engine capable of carrying a larger fuel reserve.', how: 'Craft it from a Rocket Engine, Moon Quartz, and Copper Wires.', used: 'Install it into a rocket to increase fuel capacity to 200%.' },
+      tungsten_ore: { description: 'A dense ore with dark orange and grey patches.', how: 'Mine the scarce deposits on the Moon or the common deposits on Cordelia with an Iron Pickaxe or Drill.', used: 'Smelt it in a furnace into Tungsten Ingots.' },
+      tungsten_ingot: { description: 'A heavy, heat-resistant metal bar.', how: 'Smelt Tungsten Ore in a furnace.', used: 'Used with Iron Ingots and Amethyst to craft a Warp Drive.' },
+      warp_drive: { description: 'A compact drive that folds the distance between celestial bodies.', how: 'Craft it from 5 Tungsten Ingots, 3 Iron Ingots, and 1 Amethyst.', used: 'Install it as a ship upgrade to unlock the Space Map and long-distance warping.' },
       drill: { description: 'A powered mining drill for tougher resource gathering.', how: 'Find and collect a placed or dropped Drill when available.', used: 'Mines rocks and ore quickly and can be used for resource gathering.' },
       planks: { description: 'Processed wooden boards used throughout early crafting.', how: 'Chop trees with an axe.', used: 'Used for tools, furnaces, fuel, and other crafting.' },
       sticks: { description: 'Small wooden sticks prepared for crafting.', how: 'Craft them from Planks.', used: 'Used in many tools and the Rocket Engine.' },
@@ -3390,7 +4043,7 @@
     const SELL_PRICES = Object.freeze({
       ruby: 50, topaz: 40, jasper: 38, emerald: 65, diamond: 150, lapis: 55, amethyst: 85, onyx: 120,
       axe: 20, wooden_axe: 35, wooden_pickaxe: 35, stone_axe: 55, stone_pickaxe: 55, iron_axe: 100, iron_pickaxe: 115, wooden_scythe: 35, stone_scythe: 55, iron_scythe: 100, copper_wire: 8, moon_quartz: 500, drill: 180,
-      planks: 3, sticks: 2, stone: 2, iron_ore: 12, copper_ore: 14, iron_ingot: 30, copper_ingot: 36, furnace: 75, rocket_engine: 220, rocket: 500, launch_pad: 150, jerrycan: 80
+      planks: 3, sticks: 2, stone: 2, iron_ore: 12, copper_ore: 14, tungsten_ore: 85, iron_ingot: 30, copper_ingot: 36, tungsten_ingot: 220, furnace: 75, rocket_engine: 220, rocket: 500, launch_pad: 150, jerrycan: 80, warp_drive: 0
     });
     const BUY_PRICES = Object.freeze({
       ruby: 100, topaz: 80, jasper: 76, emerald: 130, diamond: 300, lapis: 110, amethyst: 170, onyx: 240,
@@ -3409,8 +4062,10 @@
     }
     economyState.drillRefueling = null;
     economyState.drillRefuelingStartedAt = 0;
-    const ROCKET_ATMOSPHERE_RADIUS = 300;
-    const ROCKET_ATMOSPHERE_FADE_START = 180;
+    const ROCKET_ATMOSPHERE_RADIUS = 600;
+
+    const ROCKET_ATMOSPHERE_FADE_START = 360;
+
 
     const ROCKET_FLIGHT_SPEED = 28;
     const ROCKET_VERTICAL_SPEED = 24;
@@ -3493,6 +4148,15 @@
     const cordelia = createCordelia();
     scatterCordeliaCacti();
     scatterCordeliaBoulders();
+
+    function spawnCordeliaTungsten(dir, scale=.95) {
+      const root=createTungstenOreVisual(scale); placeCordeliaProp(root,dir,.10); cordeliaMesh.add(root);
+      cordeliaTungstenSpawns.push({root,direction:dir.clone(),mined:false,oreType:'tungsten_ore'});
+    }
+    function scatterCordeliaTungsten(count=100) {
+      for (let i=0;i<count;i++) { const dir=new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).normalize(); spawnCordeliaTungsten(dir,.72+Math.random()*.5); }
+    }
+    scatterCordeliaTungsten(100);
     scatterCordeliaCrystals();
     scene.add(cordeliaMesh);
 
@@ -3970,6 +4634,7 @@
     function equipCosmeticHat(hatId){ accountCosmetics.equippedHat = accountCosmetics.equippedHat===hatId ? null : hatId; applyPlayerCosmetics(); persistAchievementState(); updateHomeGemsAndCosmeticsUI(); }
     function openCosmeticShop(){
       markJournalPersonMet('helna');
+      chooseHelnaLine();
       if(!currentAccountUser){ openAccount(); return true; }
       cosmeticShopOpen=true; state.paused=true; if(document.pointerLockElement===canvas)document.exitPointerLock();
       cosmeticOverlay.classList.remove('hidden'); cosmeticOverlay.setAttribute('aria-hidden','false'); ensureCosmeticPreview(); renderCosmeticShop(); updateCosmeticPreview();
@@ -3989,7 +4654,7 @@
     const crystalSpawns = worldState.crystals;
     // Cordelia's collectibles join the existing pickup/respawn system once that list exists.
     for (const spawn of cordeliaCrystalSpawns) crystalSpawns.push(spawn);
-    const CRYSTALS_PER_TYPE = 6;
+    const CRYSTALS_PER_TYPE = 12;
     const crystalPlacementUp = new THREE.Vector3(0, 1, 0);
 
     function spawnCrystal(typeId, dir) {
@@ -4035,7 +4700,30 @@
       }
     }
 
-    scatterMoonQuartz(60);
+    scatterMoonQuartz(120);
+
+    function createTungstenOreVisual(scale = 1) {
+      const group = new THREE.Group();
+      const base = new THREE.Mesh(new THREE.DodecahedronGeometry(0.82,0), new THREE.MeshStandardMaterial({color:0x6b665f,roughness:.92,metalness:.05,flatShading:true}));
+      group.add(base);
+      const spotMat = new THREE.MeshStandardMaterial({color:0x9a5a3b,roughness:.86,metalness:.08,flatShading:true});
+      for (let i=0;i<3;i++) {
+        const spot = new THREE.Mesh(new THREE.SphereGeometry(.25+Math.random()*.12,6,4), spotMat);
+        const a=i/3*Math.PI*2+Math.random()*.7;
+        spot.position.set(Math.cos(a)*.42,(Math.random()-.5)*.34,Math.sin(a)*.42);
+        spot.scale.set(1.25,.6,.7); spot.rotation.set(Math.random(),Math.random(),Math.random()); group.add(spot);
+      }
+      group.scale.setScalar(scale); return group;
+    }
+    function spawnMoonTungsten(dir, scale=.92) {
+      const root=createTungstenOreVisual(scale); root.position.copy(dir).multiplyScalar(MOON_RADIUS+.22); root.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),dir); moonMesh.add(root);
+      moonTungstenSpawns.push({root,direction:dir.clone(),mined:false,oreType:'tungsten_ore'});
+    }
+    function scatterMoonTungsten(count=8) {
+      for (let i=0;i<count;i++) { const dir=new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).normalize(); spawnMoonTungsten(dir,.72+Math.random()*.45); }
+    }
+    scatterMoonTungsten(8);
+
 
     // ---------- player ----------
     const player = new THREE.Object3D();
@@ -4281,6 +4969,13 @@
 
 
     function createFurnaceVisual(scale = 1) {
+      if (furnaceModelTemplate) {
+        const actual = furnaceModelTemplate.clone(true);
+        // The supplied Blockbench mesh is 0.75 world units tall at scale 1;
+        // boost it so the in-game furnace keeps approximately its old footprint.
+        actual.scale.setScalar(scale * 1.30);
+        return actual;
+      }
       const group = new THREE.Group();
       const body = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.75, 0.85), new THREE.MeshStandardMaterial({ color: 0x5a5d60, roughness: 0.9, metalness: 0.08 }));
       body.position.y = 0.38;
@@ -4300,6 +4995,14 @@
     }
 
     function createJerrycanVisual(scale = 1) {
+      if (jerrycanModelTemplate) {
+        const actual = jerrycanModelTemplate.clone(true);
+        // The Blockbench source is ~1.67 world units tall at scale 1. A 0.63
+        // wrapper factor keeps the in-game proportions close to the old can.
+        actual.scale.setScalar(scale * 0.63);
+        actual.rotation.y = Math.PI;
+        return actual;
+      }
       const group = new THREE.Group();
       const bodyMat = new THREE.MeshStandardMaterial({ color: 0xd0ad37, roughness: 0.7, metalness: 0.18 });
       const darkMat = new THREE.MeshStandardMaterial({ color: 0x4b4f54, roughness: 0.7, metalness: 0.45 });
@@ -4397,6 +5100,10 @@
         const headType = typeId === 'stone_scythe' ? 'stone' : (typeId === 'iron_scythe' ? 'iron' : 'wood');
         fpModel = createScytheVisual(0.88, headType);
         tpModel = createScytheVisual(0.64, headType);
+        // Lower the scythe slightly in the hand so the long shaft/blade sit lower in
+        // the first-person view instead of appearing to float in the middle of the screen.
+        fpModel.position.y -= 0.12;
+        tpModel.position.y -= 0.05;
       } else if (typeId === 'drill') {
         fpModel = createDrillVisual(0.90);
         tpModel = createDrillVisual(0.64);
@@ -4412,6 +5119,9 @@
       } else if (typeId === 'journal') {
         fpModel = createJournalVisual(0.86);
         tpModel = createJournalVisual(0.62);
+      } else if (typeId === 'warp_drive') {
+        const warpVisual = (scale) => { const g=new THREE.Group(); const core=new THREE.Mesh(new THREE.SphereGeometry(.22,12,10),new THREE.MeshStandardMaterial({color:0x59ceff,emissive:0x198ac1,emissiveIntensity:1.4,metalness:.35,roughness:.25})); const ring=new THREE.Mesh(new THREE.TorusGeometry(.3,.05,8,20),new THREE.MeshStandardMaterial({color:0xdaf5ff,emissive:0x3f9fc8,emissiveIntensity:.8,metalness:.55,roughness:.25})); ring.rotation.x=Math.PI/2; g.add(core,ring); g.scale.setScalar(scale); return g; };
+        fpModel=warpVisual(.9); tpModel=warpVisual(.65);
       } else {
         return;
       }
@@ -4423,10 +5133,34 @@
     }
 
     function createScytheVisual(scale = 1, headType = 'wood') {
-      const group = new THREE.Group();
+      if (scytheModelTemplate) {
+        const actual = scytheModelTemplate.clone(true);
+        actual.traverse((node) => {
+          if (!node.isMesh) return;
+          if (node.material && node.material.clone) node.material = node.material.clone();
+          const mat = node.material;
+          if (!mat || !mat.color) return;
+          if (node.name === 'ScytheBlade' || String(mat.name || '').toLowerCase().includes('blade')) {
+            const bladeColor = headType === 'wood' ? 0x6b462f : headType === 'stone' ? 0x90979d : 0x4b525a;
+            mat.color.setHex(bladeColor);
+            mat.roughness = headType === 'wood' ? 0.74 : 0.42;
+            mat.metalness = headType === 'wood' ? 0.06 : 0.55;
+          } else {
+            mat.color.setHex(0x7a4d2c);
+            mat.roughness = 0.88;
+            mat.metalness = 0.03;
+          }
+          mat.side = THREE.DoubleSide;
+        });
+        // The supplied model is held with the blade facing inward in the source pose.
+        // Rotate the finished scythe 180 degrees around its vertical axis so the crescent
+        // blade points outward from the player's hand while keeping the shaft upright.
+        actual.scale.setScalar(scale * 0.055);
+        actual.rotation.set(0, Math.PI, -0.10);
+        return actual;
+      }
 
-      // Keep the handle as one continuous piece. The old blade was made from three
-      // independent boxes, so small transform changes could make it look detached.
+      const group = new THREE.Group();
       const handleMat = new THREE.MeshStandardMaterial({ color: 0x8b5a32, roughness: 0.82 });
       const handle = new THREE.Mesh(
         new THREE.CylinderGeometry(0.048, 0.068, 1.42, 10),
@@ -4436,15 +5170,12 @@
       handle.position.set(-0.02, -0.08, 0);
       group.add(handle);
 
-      // A short collar makes the blade/handle connection read as one solid tool.
       const mat = makeToolHeadMaterial(headType, 0.52);
       const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.13, 10), mat);
       collar.rotation.z = Math.PI / 2;
       collar.position.set(0.09, 0.62, 0);
       group.add(collar);
 
-      // Build the blade as one continuous crescent rather than disconnected blocks.
-      // This keeps the silhouette stable in both first- and third-person views.
       const bladeShape = new THREE.Shape();
       bladeShape.moveTo(0.07, 0.66);
       bladeShape.quadraticCurveTo(0.46, 0.78, 0.84, 0.64);
@@ -4590,23 +5321,64 @@
         return;
       }
 
-      // Smooth out/back arc: quick strike, then a softer return to the resting pose.
-      const strike = Math.sin(Math.PI * t);
       const s = toolSwingState.strength;
+      const isScytheSwing = isScythe(selected);
 
-      heldCrystalFirstPerson.position.copy(toolSwingBase.fpPosition);
-      heldCrystalFirstPerson.position.y -= strike * 0.10 * s;
-      heldCrystalFirstPerson.position.z -= strike * 0.10 * s;
-      heldCrystalFirstPerson.rotation.copy(toolSwingBase.fpRotation);
-      heldCrystalFirstPerson.rotation.x -= strike * 1.05 * s;
-      heldCrystalFirstPerson.rotation.z += strike * 0.20 * s;
+      if (isScytheSwing) {
+        // Give the scythe a genuine harvesting swing: a small wind-up, a fast
+        // side-to-side cutting sweep, then a soft return to the resting pose.
+        let arc = 0;
+        let sweep = 0;
+        if (t < 0.28) {
+          const p = t / 0.28;
+          const eased = 1 - Math.pow(1 - p, 3);
+          arc = THREE.MathUtils.lerp(0, 0.62, eased);
+          sweep = eased;
+        } else if (t < 0.72) {
+          const p = (t - 0.28) / 0.44;
+          const eased = p * p * (3 - 2 * p);
+          arc = THREE.MathUtils.lerp(0.62, -0.98, eased);
+          sweep = 1 + eased;
+        } else {
+          const p = (t - 0.72) / 0.28;
+          const eased = 1 - Math.pow(1 - p, 3);
+          arc = THREE.MathUtils.lerp(-0.98, 0, eased);
+          sweep = 2 - eased;
+        }
 
-      heldCrystalThirdPerson.position.copy(toolSwingBase.tpPosition);
-      heldCrystalThirdPerson.position.y -= strike * 0.09 * s;
-      heldCrystalThirdPerson.position.z -= strike * 0.08 * s;
-      heldCrystalThirdPerson.rotation.copy(toolSwingBase.tpRotation);
-      heldCrystalThirdPerson.rotation.x -= strike * 0.90 * s;
-      heldCrystalThirdPerson.rotation.z += strike * 0.16 * s;
+        heldCrystalFirstPerson.position.copy(toolSwingBase.fpPosition);
+        heldCrystalFirstPerson.position.x += (sweep - 1) * 0.055 * s;
+        heldCrystalFirstPerson.position.y -= Math.sin(Math.PI * t) * 0.035 * s;
+        heldCrystalFirstPerson.position.z -= Math.sin(Math.PI * t) * 0.055 * s;
+        heldCrystalFirstPerson.rotation.copy(toolSwingBase.fpRotation);
+        heldCrystalFirstPerson.rotation.z += arc * s;
+        heldCrystalFirstPerson.rotation.x -= Math.sin(Math.PI * t) * 0.22 * s;
+
+        heldCrystalThirdPerson.position.copy(toolSwingBase.tpPosition);
+        heldCrystalThirdPerson.position.x += (sweep - 1) * 0.045 * s;
+        heldCrystalThirdPerson.position.y -= Math.sin(Math.PI * t) * 0.03 * s;
+        heldCrystalThirdPerson.position.z -= Math.sin(Math.PI * t) * 0.045 * s;
+        heldCrystalThirdPerson.rotation.copy(toolSwingBase.tpRotation);
+        heldCrystalThirdPerson.rotation.z += arc * 0.82 * s;
+        heldCrystalThirdPerson.rotation.x -= Math.sin(Math.PI * t) * 0.16 * s;
+      } else {
+        // Smooth out/back arc: quick strike, then a softer return to the resting pose.
+        const strike = Math.sin(Math.PI * t);
+
+        heldCrystalFirstPerson.position.copy(toolSwingBase.fpPosition);
+        heldCrystalFirstPerson.position.y -= strike * 0.10 * s;
+        heldCrystalFirstPerson.position.z -= strike * 0.10 * s;
+        heldCrystalFirstPerson.rotation.copy(toolSwingBase.fpRotation);
+        heldCrystalFirstPerson.rotation.x -= strike * 1.05 * s;
+        heldCrystalFirstPerson.rotation.z += strike * 0.20 * s;
+
+        heldCrystalThirdPerson.position.copy(toolSwingBase.tpPosition);
+        heldCrystalThirdPerson.position.y -= strike * 0.09 * s;
+        heldCrystalThirdPerson.position.z -= strike * 0.08 * s;
+        heldCrystalThirdPerson.rotation.copy(toolSwingBase.tpRotation);
+        heldCrystalThirdPerson.rotation.x -= strike * 0.90 * s;
+        heldCrystalThirdPerson.rotation.z += strike * 0.16 * s;
+      }
 
       const impactPulse = getToolImpactPulse();
       if (impactPulse > 0) {
@@ -4953,6 +5725,9 @@
         icon.style.background = data.css;
         icon.style.boxShadow = '0 0 12px ' + data.css;
       }
+      if (data.kind === 'tungsten_ore') { icon.style.background = 'linear-gradient(135deg,#8e857b 0%,#6c6057 50%,#a45f3d 51%,#4d4947 100%)'; icon.style.boxShadow = '0 0 10px rgba(164,95,61,.35)'; }
+      if (data.kind === 'tungsten_ingot') { icon.style.background = 'linear-gradient(145deg,#928c87,#4e4b49 72%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.18),0 0 8px rgba(120,116,110,.25)'; }
+      if (data.kind === 'warp_drive') { icon.style.background = 'radial-gradient(circle at 50% 50%,#f5fbff 0 10%,#66cfff 12% 24%,#174a78 27% 45%,#1b1f27 47% 100%)'; icon.style.boxShadow = '0 0 14px rgba(70,190,255,.65)'; }
       // Dedicated CSS icons are used for special multi-part items too.
       // Keeping this function data-driven means inventory, hotbar, and journal
       // entries all render the same item identity.
@@ -5089,7 +5864,7 @@
       if (ref.type === 'backpack') return item.typeId !== 'backpack';
       if (ref.type !== 'furnace' || !activeFurnace) return false;
       if (ref.key === 'fuel') return item.typeId === 'planks';
-      if (ref.key === 'input') return item.typeId === 'iron_ore' || item.typeId === 'copper_ore';
+      if (ref.key === 'input') return item.typeId === 'iron_ore' || item.typeId === 'copper_ore' || item.typeId === 'tungsten_ore';
       if (ref.key === 'output') return item.typeId === 'iron_ingot' || item.typeId === 'copper_ingot';
       return false;
     }
@@ -5264,11 +6039,9 @@
       clearHeldItem(heldCrystalFirstPerson);
       clearHeldItem(heldCrystalThirdPerson);
       // A brand-new player starts with the Starter Axe and Journal.
-      // Journal discoveries are intentionally NOT reset here because resetInventory() is also
-      // used for emergency recoveries inside an existing world. New-world journal state is
-      // initialized explicitly by startGame() below.
       inventorySlots[INVENTORY_MAIN_SLOTS] = { typeId: 'axe', count: 1, durability: TOOL_MAX_DURABILITY };
       inventorySlots[INVENTORY_MAIN_SLOTS + 1] = { typeId: 'journal', count: 1 };
+      journalDiscoveredItems = new Set(['journal', 'axe']);
       uiState.selectedHotbarSlot = 0;
       refreshEquippedItem();
       updateHotbarUI();
@@ -5454,6 +6227,12 @@
         name: 'Upgraded Rocket Engine',
         ingredients: [{ typeId: 'moon_quartz', count: 2 }, { typeId: 'rocket_engine', count: 1 }, { typeId: 'copper_wire', count: 3 }],
         output: { typeId: 'upgraded_engine', count: 1 }
+      },
+      {
+        id: 'warp_drive',
+        name: 'Warp Drive',
+        ingredients: [{ typeId: 'tungsten_ingot', count: 5 }, { typeId: 'iron_ingot', count: 3 }, { typeId: 'amethyst', count: 1 }],
+        output: { typeId: 'warp_drive', count: 1 }
       },
       {
         id: 'woven_grass_fiber',
@@ -5778,11 +6557,11 @@
       const status=document.getElementById('furnaceStatus');
       if (!activeFurnace) { status.textContent=''; return; }
       const fuel=activeFurnace.inventory.fuel, input=activeFurnace.inventory.input, output=activeFurnace.inventory.output;
-      if (input && (input.typeId==='iron_ore' || input.typeId==='copper_ore') && fuel && fuel.typeId==='planks' && (!output || ((output.typeId==='iron_ingot' || output.typeId==='copper_ingot') && output.count<10))) {
+      if (input && (input.typeId==='iron_ore' || input.typeId==='copper_ore' || input.typeId==='tungsten_ore') && fuel && fuel.typeId==='planks' && (!output || ((output.typeId==='iron_ingot' || output.typeId==='copper_ingot' || output.typeId==='tungsten_ingot') && output.count<10))) {
         const pct=activeFurnace && activeFurnace.smeltStartedAt ? Math.min(100, ((performance.now()-activeFurnace.smeltStartedAt)/2000)*100) : 0;
-        const oreLabel = input.typeId==='copper_ore' ? 'Copper Ore' : 'Iron Ore';
+        const oreLabel = input.typeId==='copper_ore' ? 'Copper Ore' : (input.typeId==='tungsten_ore' ? 'Tungsten Ore' : 'Iron Ore');
         status.textContent='Smelting ' + oreLabel + '… ' + Math.round(pct) + '%';
-      } else status.textContent='1 Plank + 1 Iron/Copper Ore → 1 Ingot';
+      } else status.textContent='1 Plank + 1 Ore → 1 Ingot';
     }
 
     function swapFurnaceWithInventory(index) {
@@ -5796,14 +6575,14 @@
       // which meant valid fuel/ore was always rejected and immediately swapped back.
       const validForSlot = !inventoryItem ||
         (key === 'fuel' && inventoryItem.typeId === 'planks') ||
-        (key === 'input' && (inventoryItem.typeId === 'iron_ore' || inventoryItem.typeId === 'copper_ore')) ||
-        (key === 'output' && (inventoryItem.typeId === 'iron_ingot' || inventoryItem.typeId === 'copper_ingot'));
+        (key === 'input' && (inventoryItem.typeId === 'iron_ore' || inventoryItem.typeId === 'copper_ore' || inventoryItem.typeId === 'tungsten_ore')) ||
+        (key === 'output' && (inventoryItem.typeId === 'iron_ingot' || inventoryItem.typeId === 'copper_ingot' || inventoryItem.typeId === 'tungsten_ingot'));
       if (!validForSlot) {
         const status = document.getElementById('furnaceStatus');
         if (status) {
           status.textContent = key === 'fuel' ? 'Only Planks can be used as fuel' :
-            key === 'input' ? 'Only Iron Ore or Copper Ore can be smelted here' :
-            'Only Iron or Copper Ingots can be taken from the output slot';
+            key === 'input' ? 'Only Iron, Copper, or Tungsten Ore can be smelted here' :
+            'Only Iron, Copper, or Tungsten Ingots can be taken from the output slot';
         }
         return;
       }
@@ -5822,8 +6601,8 @@
       if (!furnace) return false;
       const f=furnace.inventory;
       return !!(f.fuel && f.fuel.typeId==='planks' && f.fuel.count>0 &&
-        f.input && (f.input.typeId==='iron_ore' || f.input.typeId==='copper_ore') && f.input.count>0 &&
-        (!f.output || ((f.input.typeId==='copper_ore' ? f.output.typeId==='copper_ingot' : f.output.typeId==='iron_ingot') && f.output.count<10)));
+        f.input && (f.input.typeId==='iron_ore' || f.input.typeId==='copper_ore' || f.input.typeId==='tungsten_ore') && f.input.count>0 &&
+        (!f.output || ((f.input.typeId==='copper_ore' ? f.output.typeId==='copper_ingot' : (f.input.typeId==='tungsten_ore' ? f.output.typeId==='tungsten_ingot' : f.output.typeId==='iron_ingot')) && f.output.count<10)));
     }
 
     function startFurnaceSmeltingIfReady() {
@@ -5840,7 +6619,7 @@
         if (now-furnace.smeltStartedAt < 2000) continue;
         const f=furnace.inventory;
         f.fuel.count--; if (f.fuel.count<=0) f.fuel=null;
-        const resultType = f.input.typeId==='copper_ore' ? 'copper_ingot' : 'iron_ingot';
+        const resultType = f.input.typeId==='copper_ore' ? 'copper_ingot' : (f.input.typeId==='tungsten_ore' ? 'tungsten_ingot' : 'iron_ingot');
         if (resultType === 'iron_ingot') awardAchievement('first_iron_ingot');
         f.input.count--; if (f.input.count<=0) f.input=null;
         if (!f.output) f.output={typeId:resultType,count:1}; else f.output.count++;
@@ -6280,6 +7059,7 @@
       land2: new Audio('audio/land2.mp3'),
       drill: new Audio('audio/drill.mp3'),
       achievement: new Audio('audio/achievement-unlock.mp3'),
+      warpDrive: new Audio('audio/warp-drive.mp3'),
     };
     audioBank.footsteps.loop = true;
     audioBank.river.loop = true;
@@ -6288,6 +7068,7 @@
     audioBank.furnace.loop = true;
     audioBank.wind.loop = true;
     audioBank.rain.loop = true;
+    audioBank.warpDrive.loop = true;
     for (const key of Object.keys(audioBank)) audioBank[key].preload = 'auto';
 
     function playAudio(key, volume = 1, playbackRate = 1, maxDurationMs = 0) {
@@ -6421,7 +7202,6 @@
     const playButton = document.getElementById("playButton");
     const homeSettingsButton = document.getElementById("homeSettingsButton");
     const loadGameButton = document.getElementById("loadGameButton");
-    const homeFullscreenButton = document.getElementById("homeFullscreenButton");
 
     // ---------- achievements (account-wide, stored with the Supabase account) ----------
     // Gems are awarded from the achievement difficulty score discussed for each advancement.
@@ -7157,6 +7937,8 @@
     const rocketFlightTime = document.getElementById("rocketFlightTime");
     const rocketFlightSpeed = document.getElementById("rocketFlightSpeed");
     const rocketFlightConsumption = document.getElementById("rocketFlightConsumption");
+    const rocketFlightUpgradeStats = document.getElementById("rocketFlightUpgradeStats");
+    const rocketFlightUpgrades = document.getElementById("rocketFlightUpgrades");
     const rocketNearbyEngine = document.getElementById("rocketNearbyEngine");
     const rocketNearbyTank = document.getElementById("rocketNearbyTank");
     const rocketFlightContext = document.getElementById("rocketFlightContext");
@@ -7293,7 +8075,63 @@
     const merchantSellButton = document.getElementById('merchantSellButton');
     const merchantStatus = document.getElementById('merchantStatus');
     const merchantClose = document.getElementById('merchantClose');
+    const merchantNpcLine = document.getElementById('merchantNpcLine');
     const creditsDisplay = document.getElementById('creditsDisplay');
+    const helnaNpcLine = document.getElementById('helnaNpcLine');
+
+    // Helna's welcome lines appear in the small dialogue bubble every time the hat shop opens.
+    const HELNA_MERCHANT_LINES = Object.freeze([
+      'Hey! Take a look around.',
+      'Anything catch your eye?',
+      'I got a few new things in. Let me know what you like.',
+      'That one is pretty nice, honestly.',
+      'Oh, I like that color too.',
+      'You can never really have too many hats, right?',
+      'The wizard hats are a little ridiculous... I love them.',
+      'Need something for your next trip into space?',
+      'Jaecob keeps an eye on the credits. I just make sure you look good.',
+      'He says I spend too much time making hats. He might be right.',
+      'Take your time. There is no rush.',
+      'Good to see you again! Anything new you want to try?'
+    ]);
+    let lastHelnaLineIndex = -1;
+
+    function chooseHelnaLine() {
+      if (!helnaNpcLine || HELNA_MERCHANT_LINES.length === 0) return;
+      let index = Math.floor(Math.random() * HELNA_MERCHANT_LINES.length);
+      if (HELNA_MERCHANT_LINES.length > 1 && index === lastHelnaLineIndex) {
+        index = (index + 1 + Math.floor(Math.random() * (HELNA_MERCHANT_LINES.length - 1))) % HELNA_MERCHANT_LINES.length;
+      }
+      lastHelnaLineIndex = index;
+      helnaNpcLine.textContent = HELNA_MERCHANT_LINES[index];
+    }
+
+    // Jaecob's welcome lines appear in the small dialogue bubble every time the shop opens.
+    const JAECOB_MERCHANT_LINES = Object.freeze([
+      'Hey! What can I do for you?',
+      'Got anything you want to sell?',
+      'Need supplies?',
+      'Back again? Nice to see you.',
+      'Those crystals look pretty valuable.',
+      'I should have what you need... probably.',
+      'Heading back out there? You might want some extra fuel.',
+      "If you found something interesting, let's see it.",
+      'Have a look. Take your time.',
+      'Helna keeps telling me to charge more. I think my prices are fine.',
+      'You looking for anything in particular?',
+      'Let me know if you need a hand finding something.'
+    ]);
+    let lastJaecobLineIndex = -1;
+
+    function chooseJaecobLine() {
+      if (!merchantNpcLine || JAECOB_MERCHANT_LINES.length === 0) return;
+      let index = Math.floor(Math.random() * JAECOB_MERCHANT_LINES.length);
+      if (JAECOB_MERCHANT_LINES.length > 1 && index === lastJaecobLineIndex) {
+        index = (index + 1 + Math.floor(Math.random() * (JAECOB_MERCHANT_LINES.length - 1))) % JAECOB_MERCHANT_LINES.length;
+      }
+      lastJaecobLineIndex = index;
+      merchantNpcLine.textContent = JAECOB_MERCHANT_LINES[index];
+    }
 
     function updateCreditsUI() {
       const credits = Math.max(0, Math.floor(economyState.credits));
@@ -7550,6 +8388,7 @@
       economyState.merchantSection = 'dialogue';
       state.paused = true;
       merchantOverlay.classList.remove('hidden');
+      chooseJaecobLine();
       setMerchantView('dialogue');
       updateCreditsUI();
       if (document.pointerLockElement === canvas) document.exitPointerLock();
@@ -7801,6 +8640,7 @@
       moonLandedRocket = flightRocket;
       moonLandingPad = flightPad;
       moonLandingArmed = false;
+      moonTakeoffActive = false;
       if (rocketFlightElapsedSeconds >= 300) awardAchievement('long_spaceflight_land');
       if (rocketFlightHasMoved) awardAchievement('safe_flight');
       rocketFlightElapsedSeconds = 0;
@@ -7852,6 +8692,7 @@
       playerState.exhausted = false;
       moonWalking = true;
       moonGravityActive = true;
+      moonTakeoffActive = false;
       playerBody.visible = true;
       document.body.classList.remove('rocket-flight');
       heldCrystalFirstPerson.visible = !playerState.thirdPerson;
@@ -8099,10 +8940,16 @@
       const visible = active || showNearby;
 
       rocketFlightStatus.classList.toggle('hidden', !visible);
-      if (!visible) return;
+      if (!visible) { rocketFlightUpgradeStats.classList.add('hidden'); return; }
 
       rocketFlightFlightStats.classList.toggle('hidden', !active);
       rocketFlightNearbyStats.classList.toggle('hidden', !showNearby);
+      rocketFlightUpgradeStats.classList.remove('hidden');
+      const upgradeSource = active ? flightPad : nearbyPad;
+      const upgradeList = [];
+      if (upgradeSource?.engineType === 'upgraded') upgradeList.push('UPGRADED ENGINE');
+      if (upgradeSource?.warpDrive || upgradeSource?.rocket?.warpDrive) upgradeList.push('WARP DRIVE');
+      rocketFlightUpgrades.textContent = upgradeList.length ? upgradeList.join(' · ') : 'NONE';
 
       if (active) {
         const rawFuel = flightPad ? Math.max(0, Number(flightPad.fuel) || 0) : 0;
@@ -8699,11 +9546,11 @@
       }
 
       // Moon collision: the Moon is a solid space object. Always read its WORLD position
-      // so the collision follows the moving/orbiting Moon exactly. The previous collision
-      // check could appear correct in the source but failed once flight was fully in free
-      // space because the space-flight movement branch did not consult this function.
+      // so the collision follows the moving/orbiting Moon exactly. During the brief Moon
+      // takeoff phase the collision is intentionally ignored so the parked rocket can clear
+      // the landing shell before normal flight collision resumes.
       moonMesh.getWorldPosition(moonWorldPosition);
-      if (worldPosition.distanceTo(moonWorldPosition) < MOON_COLLISION_RADIUS) return true;
+      if (!moonTakeoffActive && worldPosition.distanceTo(moonWorldPosition) < MOON_COLLISION_RADIUS) return true;
 
       // Cordelia collision: during the dedicated takeoff phase the rocket is already placed
       // safely outside the surface, so ignore this one collider until the ship reaches the
@@ -8763,6 +9610,7 @@
       moonLandingArmed = false;
       playerState.rocketInSpace = true;
       moonGravityActive = true;
+      moonTakeoffActive = true;
       lastRocketSpaceState = true;
       return true;
     }
@@ -8882,7 +9730,7 @@
       playerState.rocketInSpace = radiusFromCenter >= ROCKET_ATMOSPHERE_RADIUS;
       updateSpacePlaneState(flightPosition);
 
-      // The 300-unit boundary marks the transition into space. Beyond roughly 1000 units
+      // The 600-unit boundary marks the transition into space. Beyond roughly 1000 units
       // from Ivis, there is no planet/star center at all: the ship gets a fixed random down
       // direction and flies on a flat plane until it returns inside the 950-unit hysteresis band.
       // Near the planet, horizontal movement follows the spherical surface while Space/Shift
@@ -8915,10 +9763,25 @@
       if (rocketKeyHeld(...getBoundCodes('jump'))) verticalInput += 1;
       if (rocketKeyHeld(...getBoundCodes('sprint'))) verticalInput -= 1;
 
+      // Dedicated Moon takeoff: always provide an outward escape vector for the first
+      // moments after undocking. Moon collision is ignored during this phase so the rocket can
+      // escape the parked landing shell before normal flight collision checks resume.
+      if (hasFuel && moonTakeoffActive) {
+        const mCenter = moonMesh.getWorldPosition(new THREE.Vector3());
+        const outward = flightPosition.clone().sub(mCenter);
+        if (outward.lengthSq() < 0.0001) outward.set(0, 1, 0);
+        outward.normalize();
+        const takeoffDistance = MOON_TAKEOFF_BOOST * selectedSpeedMode.multiplier * delta;
+        flightPosition.addScaledVector(outward, takeoffDistance);
+        const mDistance = flightPosition.distanceTo(mCenter);
+        if (mDistance >= MOON_TAKEOFF_RELEASE_DISTANCE) {
+          moonTakeoffActive = false;
+          moonLandingArmed = true;
+        }
       // Dedicated Cordelia takeoff: always provide an outward escape vector for the first
       // moments after undocking. This completely separates launch from the ordinary movement
       // solver, so no surface snap can eat the launch.
-      if (hasFuel && cordeliaTakeoffActive) {
+      } else if (hasFuel && cordeliaTakeoffActive) {
         const cCenter = cordeliaMesh.getWorldPosition(new THREE.Vector3());
         const outward = flightPosition.clone().sub(cCenter);
         if (outward.lengthSq() < 0.0001) outward.set(0, 1, 0);
@@ -9045,7 +9908,7 @@
       }
 
       // Play the cinematic boom whenever the ship crosses the atmosphere/space boundary
-      // in either direction. The 300-unit line is the gameplay state change.
+      // in either direction. The 600-unit line is the gameplay state change.
       if (playerState.rocketInSpace !== lastRocketSpaceState) {
         if (playerState.rocketInSpace) awardAchievement('launch_first_space');
         playAudio('spaceAtmosphereBoom', 0.62, 1.0);
@@ -9058,11 +9921,15 @@
       // This prevents an immediate re-snap after takeoff while allowing unlimited future landings.
       moonMesh.getWorldPosition(moonWorldPosition);
       const moonDistanceNow = flightPosition.distanceTo(moonWorldPosition);
-      if (!moonLandingArmed && moonDistanceNow >= MOON_LANDING_REARM_DISTANCE) {
+      // Do not re-arm the Moon landing trigger while the dedicated takeoff phase is
+      // still clearing the landing shell. The parked rocket starts just outside the
+      // 50-unit re-arm threshold, so re-arming here would allow the landing check below
+      // to immediately snap the ship back onto the Moon on the same frame it undocks.
+      if (!moonTakeoffActive && !moonLandingArmed && moonDistanceNow >= MOON_LANDING_REARM_DISTANCE) {
         moonLandingArmed = true;
       }
 
-      if (moonLandingArmed && moonGravityActive && playerState.rocketInSpace && !playerState.rocketLanded) {
+      if (!moonTakeoffActive && moonLandingArmed && moonGravityActive && playerState.rocketInSpace && !playerState.rocketLanded) {
         if (moonDistanceNow <= MOON_LANDING_SURFACE_DISTANCE) {
           landRocketOnMoon();
         }
@@ -9102,8 +9969,8 @@
     // The save is a normal JSON file, so the player can keep it outside the browser and
     // move it between computers. A small browser-local backup is also written whenever
     // we save/leave a world, which is useful if the downloaded file is forgotten.
-    const SAVE_VERSION = 13;
-    const LOCAL_SAVE_KEY = "pocketUniverseSave_v13";
+    const SAVE_VERSION = 14;
+    const LOCAL_SAVE_KEY = "pocketUniverseSave_v14";
 
     function serializeSave() {
       commitActiveBackpackStorage();
@@ -9164,6 +10031,13 @@
           yaw: tree.yaw,
           chopped: tree.chopped
         })),
+        saplings: saplingSpawns.filter(s => s.active).map(s => ({
+          treeIndex: s.treeIndex,
+          direction: s.direction.toArray(),
+          size: s.size,
+          yaw: s.yaw,
+          plantedAtSpin: s.plantedAtSpin
+        })),
         rocks: rockSpawns.map(rock => ({
           direction: rock.direction.toArray(),
           mined: rock.mined
@@ -9179,6 +10053,8 @@
           collected: spawn.collected,
           respawnAtSpin: spawn.respawnAtSpin
         })),
+        moonTungsten: moonTungstenSpawns.map(ore => ({ direction: ore.direction.toArray(), mined: ore.mined })),
+        cordeliaTungsten: cordeliaTungstenSpawns.map(ore => ({ direction: ore.direction.toArray(), mined: ore.mined })),
         furnaces: furnaces.map(furnace => ({
           direction: furnace.direction.toArray(),
           yaw: furnace.yaw,
@@ -9189,7 +10065,8 @@
           yaw: pad.yaw,
           hasRocket: !!pad.rocket,
           fuel: Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(pad.fuel) || 0)),
-          engineType: pad.engineType === 'upgraded' ? 'upgraded' : 'standard'
+          engineType: pad.engineType === 'upgraded' ? 'upgraded' : 'standard',
+          warpDrive: !!pad.warpDrive
         })),
         drills: placedDrills.map(drill => ({ direction: drill.direction.toArray(), yaw: drill.yaw, durability: drill.durability })),
         droppedItems: droppedItems.map(drop => ({ typeId: drop.typeId, count: drop.count, direction: drop.direction.toArray() }))
@@ -9197,7 +10074,7 @@
     }
 
     function applySaveData(data) {
-      if (!data || ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].includes(data.version)) {
+      if (!data || ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].includes(data.version)) {
         throw new Error("Unsupported or invalid save file.");
       }
 
@@ -9295,9 +10172,15 @@
         const saved = data.crystals[i];
         const spawn = crystalSpawns[i];
         const dir = new THREE.Vector3().fromArray(saved.direction).normalize();
-        const h = heightAt(dir);
-        spawn.root.position.copy(dir).multiplyScalar(PLANET_RADIUS + h + 0.02);
-        spawn.root.quaternion.setFromUnitVectors(crystalPlacementUp, dir);
+        if (spawn.root.parent === cordeliaMesh) {
+          // Cordelia crystals live in Cordelia's own local coordinate system. Do not restore
+          // them with Ivis' PLANET_RADIUS/heightAt math or they will float above the surface.
+          placeCordeliaProp(spawn.root, dir, 0.01);
+        } else {
+          const h = heightAt(dir);
+          spawn.root.position.copy(dir).multiplyScalar(PLANET_RADIUS + h + 0.02);
+          spawn.root.quaternion.setFromUnitVectors(crystalPlacementUp, dir);
+        }
         spawn.collected = !!saved.collected;
         spawn.respawnAtSpin = Number.isFinite(saved.respawnAtSpin) ? saved.respawnAtSpin : 0;
         spawn.crystal.visible = !spawn.collected;
@@ -9350,6 +10233,40 @@
         }
       }
 
+      // Restore living tree saplings. Older saves have no saplings field and continue to work.
+      for (const sapling of saplingSpawns) {
+        if (sapling.root && sapling.root.parent) sapling.root.parent.remove(sapling.root);
+      }
+      saplingSpawns.length = 0;
+      if (Array.isArray(data.saplings)) {
+        for (const saved of data.saplings) {
+          const treeIndex = Number.isInteger(saved.treeIndex) ? saved.treeIndex : -1;
+          const tree = treeSpawns[treeIndex];
+          if (!tree || !Array.isArray(saved.direction)) continue;
+          const sapling = {
+            root: null,
+            treeIndex,
+            direction: new THREE.Vector3().fromArray(saved.direction).normalize(),
+            size: Number.isFinite(saved.size) ? Math.max(1.5, Math.min(4, saved.size)) : tree.size,
+            yaw: Number.isFinite(saved.yaw) ? saved.yaw : tree.yaw,
+            plantedAtSpin: Number.isFinite(saved.plantedAtSpin) ? saved.plantedAtSpin : state.planetSpinAngle,
+            active: true
+          };
+          const root = new THREE.Group();
+          root.name = 'TreeSapling';
+          const trunk = new THREE.Mesh(treeTrunkGeo, treeTrunkMat);
+          const leaves = new THREE.Mesh(treeLeafGeo, treeLeafMat);
+          trunk.position.y = 0.7;
+          leaves.position.y = 2.0;
+          root.add(trunk);
+          root.add(leaves);
+          sapling.root = root;
+          planetSystem.add(root);
+          saplingSpawns.push(sapling);
+        }
+      }
+      updateTreeSaplings();
+
       // Restore mined boulders when the save contains rock data. Older saves simply keep
       // their newly generated decorative boulders intact.
       if (Array.isArray(data.rocks) && data.rocks.length === rockSpawns.length) {
@@ -9398,6 +10315,21 @@
         }
       }
 
+      if (Array.isArray(data.moonTungsten) && data.moonTungsten.length === moonTungstenSpawns.length) {
+        for (let i=0;i<moonTungstenSpawns.length;i++) {
+          const saved=data.moonTungsten[i], ore=moonTungstenSpawns[i];
+          if (Array.isArray(saved.direction)) { ore.direction.copy(new THREE.Vector3().fromArray(saved.direction).normalize()); ore.root.position.copy(ore.direction).multiplyScalar(MOON_RADIUS+.22); ore.root.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),ore.direction); }
+          ore.mined=!!saved.mined; ore.root.visible=!ore.mined;
+        }
+      }
+      if (Array.isArray(data.cordeliaTungsten) && data.cordeliaTungsten.length === cordeliaTungstenSpawns.length) {
+        for (let i=0;i<cordeliaTungstenSpawns.length;i++) {
+          const saved=data.cordeliaTungsten[i], ore=cordeliaTungstenSpawns[i];
+          if (Array.isArray(saved.direction)) { ore.direction.copy(new THREE.Vector3().fromArray(saved.direction).normalize()); placeCordeliaProp(ore.root,ore.direction,.10); }
+          ore.mined=!!saved.mined; ore.root.visible=!ore.mined;
+        }
+      }
+
       // Restore placed furnaces and their inventories.
       for (const furnace of furnaces) planetSystem.remove(furnace.root);
       furnaces.length = 0;
@@ -9408,7 +10340,7 @@
           if (saved.inventory && typeof saved.inventory === 'object') {
             for (const key of ['fuel','input','output']) {
               const v=saved.inventory[key];
-              if (v && itemById[v.typeId] && ((key==='fuel' && v.typeId==='planks') || (key==='input' && (v.typeId==='iron_ore' || v.typeId==='copper_ore')) || (key==='output' && (v.typeId==='iron_ingot' || v.typeId==='copper_ingot')))) furnace.inventory[key]={typeId:v.typeId,count:Math.max(1,Math.min(10,Math.floor(v.count||1)))};
+              if (v && itemById[v.typeId] && ((key==='fuel' && v.typeId==='planks') || (key==='input' && (v.typeId==='iron_ore' || v.typeId==='copper_ore' || v.typeId==='tungsten_ore')) || (key==='output' && (v.typeId==='iron_ingot' || v.typeId==='copper_ingot' || v.typeId==='tungsten_ingot')))) furnace.inventory[key]={typeId:v.typeId,count:Math.max(1,Math.min(10,Math.floor(v.count||1)))};
             }
           }
         }
@@ -9423,8 +10355,9 @@
           const pad = createLaunchPadObject(new THREE.Vector3().fromArray(saved.direction).normalize(), Number.isFinite(saved.yaw) ? saved.yaw : 0);
           if (saved.hasRocket) placeRocketOnLaunchPad(pad);
           pad.engineType = saved.engineType === 'upgraded' ? 'upgraded' : 'standard';
+          pad.warpDrive = !!saved.warpDrive;
           pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(saved.fuel) || 0));
-          if (pad.rocket) { pad.rocket.engineType = pad.engineType; ensureRocketEngineVisual(pad.rocket); }
+          if (pad.rocket) { pad.rocket.engineType = pad.engineType; pad.rocket.warpDrive = pad.warpDrive; ensureRocketEngineVisual(pad.rocket); }
         }
       }
 
@@ -9555,22 +10488,6 @@
       }
     });
 
-    homeFullscreenButton.addEventListener("click", async (e) => {
-      e.preventDefault(); e.stopPropagation();
-      try {
-        if (!document.fullscreenElement) {
-          await document.documentElement.requestFullscreen();
-        } else {
-          await document.exitFullscreen();
-        }
-      } catch (err) {
-        console.warn("Fullscreen request failed:", err);
-      }
-    });
-    document.addEventListener("fullscreenchange", () => {
-      homeFullscreenButton.textContent = document.fullscreenElement ? "EXIT FULLSCREEN" : "FULLSCREEN";
-    });
-
     loadGameButton.addEventListener("click", (e) => { e.stopPropagation(); openSaveFilePicker(); });
 
     function tryRestoreLocalBackup() {
@@ -9670,6 +10587,23 @@
       return true;
     }
 
+    function findNearbyTungsten() {
+      const sources=moonTungstenSpawns.concat(cordeliaTungstenSpawns);
+      if (sources.length===0 || (!moonWalking && !cordeliaWalking)) return null;
+      const cameraWorld=camera.getWorldPosition(new THREE.Vector3());
+      const lookDir=camera.getWorldDirection(new THREE.Vector3()).normalize();
+      let best=null,bestScore=Infinity;
+      for (const ore of sources) {
+        if (ore.mined || !ore.root.visible) continue;
+        const oreWorld=ore.root.getWorldPosition(new THREE.Vector3());
+        const to=oreWorld.clone().sub(cameraWorld); const distance=to.length();
+        if (distance>4.8) continue; to.normalize(); const facing=lookDir.dot(to);
+        if (facing<.30) continue; const score=distance-facing*.8;
+        if (score<bestScore) { bestScore=score; best=ore; }
+      }
+      return best;
+    }
+
     function findNearbyUpgradeableRocket() {
       const playerWorld = player.getWorldPosition(new THREE.Vector3());
       if (moonWalking && moonLandedRocket) {
@@ -9682,6 +10616,21 @@
       }
       const pad = findNearbyLaunchPad();
       return pad && pad.rocket ? pad.rocket : null;
+    }
+
+    function tryInstallWarpDriveNearbyRocket() {
+      if (state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen) return false;
+      if (uiState.equippedItemType !== 'warp_drive') return false;
+      const rocket = findNearbyUpgradeableRocket();
+      if (!rocket || !rocket.pad) return false;
+      if (rocket.warpDrive || rocket.pad.warpDrive) { showFlightPrompt('Rocket already has a Warp Drive.'); return true; }
+      const idx = getSelectedHotbarInventoryIndex();
+      if (!inventorySlots[idx] || inventorySlots[idx].typeId !== 'warp_drive') return false;
+      rocket.pad.warpDrive = true; rocket.warpDrive = true; inventorySlots[idx] = null;
+      refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
+      showFlightPrompt('WARP DRIVE INSTALLED · Space Map unlocked');
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 1000);
+      return true;
     }
 
     function tryUpgradeNearbyRocket() {
@@ -9722,7 +10671,7 @@
 
       let best = null;
       let bestScore = Infinity;
-      const mineableRocks = rockSpawns.concat(ironOreSpawns, cordeliaRockSpawns);
+      const mineableRocks = rockSpawns.concat(ironOreSpawns, cordeliaRockSpawns, moonTungstenSpawns, cordeliaTungstenSpawns);
       for (const rock of mineableRocks) {
         if (rock.mined || !rock.root.visible) continue;
         const rockWorld = new THREE.Vector3();
@@ -9924,6 +10873,8 @@
       spawnImpactParticles(getParticleWorldPosition(tree.root, 0.7), 0x8b5a35, { count: 18, life: 0.65, speed: 2.8, size: 0.085, gravity: 5.0 });
       tree.chopped = true;
       tree.root.visible = false;
+      const treeIndex = treeSpawns.indexOf(tree);
+      if (treeIndex >= 0) createTreeSapling(tree, treeIndex);
       awardAchievement('first_tree');
       nearbyTree = null;
 
@@ -10205,7 +11156,9 @@
       }
 
       const tool = getCurrentToolSlot();
-      if (!tool || !isPickaxe(tool.item.id) || (targetRock && (targetRock.oreType === 'iron_ore' || targetRock.oreType === 'copper_ore') && tool.item.id !== 'stone_pickaxe' && tool.item.id !== 'iron_pickaxe' && !isDrill(tool.item.id))) {
+      const tungstenBlocked = targetRock && targetRock.oreType === 'tungsten_ore' && tool.item.id !== 'iron_pickaxe' && !isDrill(tool.item.id);
+      const baseOreBlocked = targetRock && (targetRock.oreType === 'iron_ore' || targetRock.oreType === 'copper_ore') && tool.item.id !== 'stone_pickaxe' && tool.item.id !== 'iron_pickaxe' && !isDrill(tool.item.id);
+      if (!tool || !isPickaxe(tool.item.id) || tungstenBlocked || baseOreBlocked) {
         prompt.classList.remove('hidden');
         prompt.textContent = 'Mining canceled';
         miningRock = null;
@@ -10213,8 +11166,8 @@
         return;
       }
 
-      const minedItemId = targetRock ? ((targetRock.oreType === 'iron_ore' || targetRock.oreType === 'copper_ore') ? targetRock.oreType : 'stone') : 'stone';
-      const minedItemName = minedItemId === 'iron_ore' ? 'Iron Ore' : (minedItemId === 'copper_ore' ? 'Copper Ore' : 'Stone');
+      const minedItemId = targetRock ? ((targetRock.oreType === 'iron_ore' || targetRock.oreType === 'copper_ore' || targetRock.oreType === 'tungsten_ore') ? targetRock.oreType : 'stone') : 'stone';
+      const minedItemName = minedItemId === 'iron_ore' ? 'Iron Ore' : (minedItemId === 'copper_ore' ? 'Copper Ore' : (minedItemId === 'tungsten_ore' ? 'Tungsten Ore' : 'Stone'));
 
       // Put the reserved resource into the inventory only after the mining action succeeds.
       if (!addItemToInventory(minedItemId, 1)) {
@@ -10342,9 +11295,21 @@
       nearbyDroppedItem = null;
 
       const nearbyUpgradeableRocket = findNearbyUpgradeableRocket();
+      if (nearbyUpgradeableRocket && uiState.equippedItemType === 'warp_drive') {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = (nearbyUpgradeableRocket.warpDrive || nearbyUpgradeableRocket.pad?.warpDrive) ? '<span class="promptKey">INSTALLED</span> Warp Drive already installed' : '<span class="promptKey">E</span> Install Warp Drive · Space Map';
+        return;
+      }
       if (nearbyUpgradeableRocket && uiState.equippedItemType === 'upgraded_engine') {
         prompt.classList.remove('hidden');
         prompt.innerHTML = nearbyUpgradeableRocket.engineType === 'upgraded' ? '<span class="promptKey">UPGRADED</span> Rocket already upgraded' : '<span class="promptKey">E</span> Install Upgraded Engine · 2× fuel capacity';
+        return;
+      }
+      const nearbyTungsten=findNearbyTungsten();
+      if (nearbyTungsten && isPickaxe(uiState.equippedItemType)) {
+        prompt.classList.remove('hidden');
+        const canMineTungsten = uiState.equippedItemType==='iron_pickaxe' || uiState.equippedItemType==='drill';
+        prompt.innerHTML = canMineTungsten ? '<span class="promptKey">LMB</span> Mine Tungsten Ore' : '<span class="promptKey">IRON</span> Need an Iron Pickaxe or Drill';
         return;
       }
       nearbyMoonQuartz = findNearbyMoonQuartz();
@@ -10616,22 +11581,15 @@
       state.gameMode = mode === 'freeplay' ? 'freeplay' : 'survival';
       updateInventoryActionButton();
 
-      // Starting a NEW world gets a completely fresh, world-specific Journal. The journal
-      // state is deliberately kept independent from resetInventory(), which is also used
-      // when recovering from hazards inside an existing world.
-      journalDiscoveredItems = new Set(['journal', 'axe']);
-      journalVisitedBodies = new Set(['ivis']);
-      journalMetPeople = new Set();
-
-      // Freeplay is a sandbox, so its new world's Journal opens as a complete encyclopedia.
+      // Starting a new game always begins with the normal fresh-player state.
+      resetPlayerState();
+      // Freeplay is a sandbox, so the Journal opens as a complete encyclopedia.
+      // Survival keeps the normal discovery-based progression.
       if (state.gameMode === 'freeplay') {
         journalDiscoveredItems = new Set(ITEM_TYPES.map(item => item.id));
         journalVisitedBodies = new Set(Object.keys(JOURNAL_BODY_INFO));
         journalMetPeople = new Set(Object.keys(JOURNAL_PERSON_INFO));
       }
-
-      // Starting a new game always begins with the normal fresh-player state.
-      resetPlayerState();
       resetContinuousSurvivalAchievementRun();
       closeModeChooser();
 
@@ -10880,6 +11838,7 @@
         if (openMerchant()) return;
         if (openNearbyHatShop()) return;
         if (tryUpgradeNearbyRocket()) return;
+        if (tryInstallWarpDriveNearbyRocket()) return;
         if (startRocketFueling()) return;
         if (startDrillRefueling()) return;
         // On Moon/Cordelia, only allow re-entry when the player is actually beside the landed
@@ -10944,11 +11903,13 @@
 
       if (isActionEvent(e, 'map') && !e.repeat && state.gameState === "playing" && settingsModal.classList.contains("hidden")) {
         e.preventDefault();
-        togglePlanetMap();
+        if (playerState.inRocket && playerState.rocketInSpace && !playerState.rocketLanded) toggleSpaceMap();
+        else togglePlanetMap();
         return;
       }
 
       if (isActionEvent(e, 'pause')) {
+        if (spaceMapOpen) { closeSpaceMap(); return; }
         if (mapOpen) {
           closePlanetMap();
           return;
@@ -11795,6 +12756,7 @@
         return THREE.MathUtils.smoothstep(-dot, 0.02, 0.42);
       })();
       updateSurvivalAchievementTelemetry(delta, currentNightAmount);
+      updateTreeSaplings();
       updateMoon(delta);
       updateCordelia(delta);
       updateWeather(delta);
@@ -11828,7 +12790,12 @@
       if (state.gameState === "playing") {
         const activeCamera = playerState.inRocket ? flightCamera : camera;
         const cameraDistanceFromOrigin = activeCamera.position.length();
-        const desiredCameraFar = Math.max(10000, cameraDistanceFromOrigin * 4 + 2000);
+        // Day 9 doubled the Sun and celestial-body spacing: Cordelia can now sit
+        // roughly 16,000 units from Ivis, and the enlarged Sun extends beyond 10,000.
+        // A 10,000-unit far plane therefore clipped distant celestial bodies when the
+        // player was still near Ivis, making them appear to be sliced or disappear from
+        // certain viewing angles. Keep a generous minimum far plane for the expanded system.
+        const desiredCameraFar = Math.max(30000, cameraDistanceFromOrigin * 4 + 4000);
         if (activeCamera.far !== desiredCameraFar) {
           activeCamera.far = desiredCameraFar;
           activeCamera.updateProjectionMatrix();
@@ -11847,7 +12814,7 @@
         flashlightStatus.classList.toggle("hidden", !playerState.flashlightOn);
         updatePlayerHatVisibility();
         if (!solarHazardLock && !spaceFuelHazardLock) {
-          if (playerState.inRocket) {
+          if (playerState.inRocket && !warpInProgress) {
             updateRocketFlight(delta);
           } else if (moonWalking) {
             updateMoonPlayer(delta);
@@ -11864,6 +12831,8 @@
           updateMapPlayerMarker();
           mapRenderer.render(mapScene, mapCamera);
         }
+        if (spaceMapOpen) drawSpaceMap();
+        if (warpInProgress) { const elapsedWarp=Math.max(0,(performance.now()-warpStartedAt)/1000); const remainingWarp=Math.max(0,warpDurationSeconds-elapsedWarp); warpOverlaySubtext.textContent=formatWarpSeconds(remainingWarp)+' REMAINING'; if(remainingWarp<=0) finishWarp(); }
       } else {
         scene.fog = null;
         flashlightStatus.classList.add("hidden"); // keep the distant home-screen view of the planet crisp, not hazy

@@ -21,6 +21,9 @@
     <div class="rocketStatusRow"><span>SPEED</span><strong id="rocketFlightSpeed">30u/s</strong></div>
     <div class="rocketStatusRow"><span>CONSUMPTION</span><strong id="rocketFlightConsumption">1% / 5.0s</strong></div>
   </div>
+  <div id="rocketFlightUpgradeStats">
+    <div class="rocketStatusRow"><span>UPGRADES</span><strong id="rocketFlightUpgrades">NONE</strong></div>
+  </div>
   <div id="rocketFlightNearbyStats" class="hidden">
     <div class="rocketStatusRow"><span>ENGINE</span><strong id="rocketNearbyEngine">STANDARD</strong></div>
     <div class="rocketStatusRow"><span>TANK</span><strong id="rocketNearbyTank">0%</strong></div>
@@ -37,6 +40,35 @@
 </div>
 
 <div id="crystalPrompt" class="hidden"></div>
+<div id="spaceMapOverlay" class="hidden" aria-label="Space navigation map">
+  <div id="spaceMapPanel">
+    <div id="spaceMapHeader">
+      <div>
+        <div id="spaceMapTitle">SPACE NAVIGATION</div>
+        <div id="spaceMapSubtitle">WARP DRIVE · SYSTEM OVERVIEW</div>
+      </div>
+      <button id="spaceMapClose" title="Close space map">×</button>
+    </div>
+    <div id="spaceMapViewportWrap">
+      <canvas id="spaceMapCanvas"></canvas>
+      <div id="spaceMapLegend">
+        <div class="spaceLegendRow"><span class="spaceLegendDot sun"></span> SUN</div>
+        <div class="spaceLegendRow"><span class="spaceLegendDot ivis"></span> IVIS</div>
+        <div class="spaceLegendRow"><span class="spaceLegendDot moon"></span> MOON</div>
+        <div class="spaceLegendRow"><span class="spaceLegendDot cordelia"></span> CORDELIA</div>
+      </div>
+      <div id="spaceMapHint">CLICK A CELESTIAL BODY TO WARP</div>
+      <div id="spaceMapWarpStatus" class="hidden"></div>
+    </div>
+  </div>
+</div>
+<div id="warpOverlay" class="hidden" aria-hidden="true">
+  <div class="warpStars warpStarsA"></div>
+  <div class="warpStars warpStarsB"></div>
+  <div class="warpCore"></div>
+  <div id="warpOverlayText">WARPING…</div>
+  <div id="warpOverlaySubtext">0:00</div>
+</div>
 <div id="mapOverlay" class="hidden" aria-label="Planet map">
   <div id="mapPanel">
     <div id="mapHeader">
@@ -135,6 +167,10 @@
   <div id="cosmeticPanel">
     <div id="cosmeticTopTabs">
       <div class="cosmeticShopTitle">SHOP</div>
+      <div id="helnaNpcBubble" aria-live="polite">
+        <div id="helnaNpcName">HELNA</div>
+        <div id="helnaNpcLine">Welcome! Looking for something stylish?</div>
+      </div>
       <div id="cosmeticGemBalance"><span>◆</span><strong id="cosmeticGemAmount">0</strong></div>
       <button id="cosmeticClose" class="cosmeticCloseButton">×</button>
     </div>
@@ -226,14 +262,13 @@
   <div id="homeGems" aria-label="Gems"><span class="homeGemsIcon">◆</span><span id="homeGemsAmount">0</span></div>
   <div id="homeTitle">POCKET UNIVERSE</div>
   <div id="planetHint">Drag to rotate the planet and explore your spawn location</div>
-  <div id="homeLoading"><div class="homeLoadingTitle">LOADING UNIVERSE…</div><div class="homeLoadingBar"><span></span></div><div class="homeVersion">v0.8B</div></div>
+  <div id="homeLoading">Loading planet…</div>
   <div id="homeButtons" class="hidden">
     <button id="playButton">SINGLEPLAYER</button>
     <button id="loadGameButton">LOAD GAME</button>
     <button id="homeSettingsButton">Settings</button>
     <button id="accountButton">ACCOUNT</button>
     <button id="homeAchievementsButton">ACHIEVEMENTS</button>
-    <button id="homeFullscreenButton" type="button">FULLSCREEN</button>
   </div>
   <!-- Hidden file picker used when loading a saved Pocket Universe JSON file. -->
   <input id="saveFileInput" type="file" accept="application/json,.json" hidden />
@@ -425,14 +460,14 @@
         <h1>Update Log</h1>
       </div>
       <div id="settingsUpdateLogContent">
-        <section class="updateLogDay"><h2>0.8B</h2><p>Day 8 brings account statistics, an upgraded rocket status HUD, first-person hat hiding, standardized Moon Quartz behavior, a rebuilt baseball cap and super-long wizard hats, new achievements, corrected third-person camera movement and orientation, an in-game journal, Freeplay-complete journal knowledge, and actual low-poly 3D axe and pickaxe models with tuned sizing and orientation. Version 0.8B marks the current public build.</p></section>
-        <section class="updateLogDay"><h2>0.7B</h2><p>Cordelia gets its own day/night atmosphere and the camera now works consistently across every celestial body. Moon Quartz and the Upgraded Rocket Engine arrive, with 200% fuel capacity. Accounts, achievements, account-wide Gems, rebindable controls, and LMB keybinding are added. A new orange-striped hat stall brings character customization with colors and hats, plus the Credits page. Version 0.7B is complete!</p></section>
-        <section class="updateLogDay"><h2>0.6B</h2><p>Cordelia becomes fully launchable with a dedicated takeoff and escape sequence. Ivis stays visible from deep space, spaceflight now has emergency fuel-loss recovery to prevent softlocks, and the scythe gets a rebuilt curved blade. Version 0.6B is complete!</p></section>
-        <section class="updateLogDay"><h2>0.1B</h2><p>Pocket Universe begins: the small spherical planet, terrain generation, player movement, jumping, sprinting, the day/night cycle, and the first world visuals.</p></section>
-        <section class="updateLogDay"><h2>0.2B</h2><p>Survival systems arrive: crystals, inventory and hotbar, crafting, tools and durability, trees and mining, the furnace, merchant, credits, and a growing set of world interactions.</p></section>
-        <section class="updateLogDay"><h2>0.3B</h2><p>The project is reorganized into a proper multi-file project. Save/load, Survival and Freeplay, the rocket, launch pad, engine and fuel systems, and full spaceflight are added.</p></section>
-        <section class="updateLogDay"><h2>0.4B</h2><p>The world gets atmosphere: weather, clouds, rain and thunderstorms, lightning, stars, space visuals, particles, ambient sounds, tool animations, the World Control menu, and more polish.</p></section>
-        <section class="updateLogDay"><h2>0.5B</h2><p>The Moon is added as a real celestial body with its own collision and gravity. The rocket can land on the Moon, the player can explore it with 2× jumping and lunar dust, and the full Moon ↔ Ivis return loop works. Rocket speed modes add Boosted and WARP travel.</p></section>
+        <section class="updateLogDay"><h2>Version 0.9B</h2><p>Day 9 expands Pocket Universe in a big way: Ivis, the Moon, Cordelia, and the Sun are enlarged, with their terrain, atmospheric layers, orbital spacing, and world details scaled to match. New Blockbench models for the Rocket, Furnace, and Jerrycan are integrated directly into the game. Tungsten Ore and Tungsten Ingots are added as a new resource tier, found on the Moon and Cordelia and smelted in the furnace. The Warp Drive becomes a new rocket upgrade, unlocking the Space Navigation Map and long-distance warp travel between celestial bodies using Moon Quartz. The Moon and Cordelia also receive dedicated takeoff/escape handling so landed rockets can reliably leave their surfaces, including the Moon liftoff fix. Day 9 also strengthens the larger-world fuel, landing, gravity, collision, saving, and rocket systems to support the expanded universe.</p></section>
+        <section class="updateLogDay"><h2>Day 7</h2><p>Cordelia gets its own day/night atmosphere and the camera now works consistently across every celestial body. Moon Quartz and the Upgraded Rocket Engine arrive, with 200% fuel capacity. Accounts, achievements, account-wide Gems, rebindable controls, and LMB keybinding are added. A new orange-striped hat stall brings character customization with colors and hats, plus the Credits page. Day 7 is officially complete!</p></section>
+        <section class="updateLogDay"><h2>Day 6</h2><p>Cordelia becomes fully launchable with a dedicated takeoff and escape sequence. Ivis stays visible from deep space, spaceflight now has emergency fuel-loss recovery to prevent softlocks, and the scythe gets a rebuilt curved blade. Day 6 is officially complete!</p></section>
+        <section class="updateLogDay"><h2>Day 1</h2><p>Pocket Universe begins: the small spherical planet, terrain generation, player movement, jumping, sprinting, the day/night cycle, and the first world visuals.</p></section>
+        <section class="updateLogDay"><h2>Day 2</h2><p>Survival systems arrive: crystals, inventory and hotbar, crafting, tools and durability, trees and mining, the furnace, merchant, credits, and a growing set of world interactions.</p></section>
+        <section class="updateLogDay"><h2>Day 3</h2><p>The project is reorganized into a proper multi-file project. Save/load, Survival and Freeplay, the rocket, launch pad, engine and fuel systems, and full spaceflight are added.</p></section>
+        <section class="updateLogDay"><h2>Day 4</h2><p>The world gets atmosphere: weather, clouds, rain and thunderstorms, lightning, stars, space visuals, particles, ambient sounds, tool animations, the World Control menu, and more polish.</p></section>
+        <section class="updateLogDay"><h2>Day 5</h2><p>The Moon is added as a real celestial body with its own collision and gravity. The rocket can land on the Moon, the player can explore it with 2× jumping and lunar dust, and the full Moon ↔ Ivis return loop works. Rocket speed modes add Boosted and WARP travel.</p></section>
       </div>
     </div>
   </div>
@@ -440,6 +475,10 @@
 
 <script src="js/state/game-state.js"></script>
 <script src="js/tool-model-data.js"></script>
+<script src="js/rocket-asset-data.js"></script>
+<script src="js/furnace-asset-data.js"></script>
+<script src="js/jerrycan-asset-data.js"></script>
+<script src="js/scythe-model-data.js"></script>
   <script src="js/state/player-state.js"></script>
 <script src="js/state/inventory-state.js"></script>
 <script src="js/state/ui-state.js"></script>

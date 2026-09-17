@@ -1,0 +1,6 @@
+# Made in Blockbench 5.1.6
+newmtl m_fbce4cc0-bda0-1368-efab-31a6bc1e7604
+map_Kd texture.png
+newmtl m_9825c62f-bb15-01e7-66b6-a165f97920b5
+map_Kd Handle.png
+newmtl none
