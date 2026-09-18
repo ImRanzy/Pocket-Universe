@@ -16,3 +16,5 @@ Day 9 world-size expansion: Ivis, Moon, Cordelia, and the Sun are now 2x their p
 
 
 Day 9 major feature: Tungsten Ore, Tungsten Ingots, Warp Drive ship upgrade, Space Navigation Map, and long-distance warp travel.
+
+Day 10 ship inventory: right-click a landed rocket with an empty hand to manage/remove equipped upgrades.

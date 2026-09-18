@@ -17,6 +17,8 @@
   <div id="rocketFlightTitle">ROCKET STATUS</div>
   <div id="rocketFlightFlightStats">
     <div class="rocketStatusRow"><span>FUEL LEFT</span><strong id="rocketFlightFuel">0%</strong></div>
+    <div class="rocketStatusRow"><span>ALTITUDE</span><strong id="rocketFlightAltitude">0u</strong></div>
+    <div class="rocketStatusRow"><span>RANGE</span><strong id="rocketFlightRange">—</strong></div>
     <div class="rocketStatusRow"><span>TIME LEFT</span><strong id="rocketFlightTime">0:00</strong></div>
     <div class="rocketStatusRow"><span>SPEED</span><strong id="rocketFlightSpeed">30u/s</strong></div>
     <div class="rocketStatusRow"><span>CONSUMPTION</span><strong id="rocketFlightConsumption">1% / 5.0s</strong></div>
@@ -120,6 +122,21 @@
   </div>
 </div>
 
+
+<div id="shipInventoryOverlay" class="hidden" aria-hidden="true">
+  <div id="shipInventoryPanel" role="dialog" aria-modal="true" aria-labelledby="shipInventoryTitle">
+    <div id="shipInventoryHeader">
+      <div>
+        <div id="shipInventoryEyebrow">ROCKET</div>
+        <h1 id="shipInventoryTitle">Ship Inventory</h1>
+      </div>
+      <button id="shipInventoryClose" title="Close">×</button>
+    </div>
+    <div id="shipInventorySubtitle">EQUIPPED UPGRADES · TAKE THEM BACK INTO YOUR INVENTORY</div>
+    <div id="shipUpgradeList"></div>
+    <div id="shipInventoryStatus" aria-live="polite"></div>
+  </div>
+</div>
 
 <div id="furnaceOverlay" class="hidden">
   <div id="furnacePanel">
@@ -253,7 +270,9 @@
 <div id="controlsToggle" title="Settings">⚙</div>
 
 <div id="transitionFade"></div>
+<div id="saveToast" class="hidden" aria-live="polite">✓ GAME SAVED</div>
 <div id="sunWarningOverlay" aria-live="assertive"><div id="sunWarningText">OUTER HULL MELTING<br><span>GET AWAY FROM THE SUN</span></div></div>
+<div id="syspoWarningOverlay" aria-live="assertive"><div id="syspoWarningText">Enormously strong gravity, Please Get away from the core</div></div>
 <div id="spaceFuelWarningOverlay" aria-live="assertive"><div id="spaceFuelWarningText">ROCKET OUT OF FUEL<br><span>EMERGENCY RECOVERY</span></div></div>
 <div id="sunBlackout"></div>
 
@@ -429,11 +448,59 @@
         <button class="settingsBack" data-settings-back title="Back">←</button>
         <h1>Sound</h1>
       </div>
-      <div class="settingsOptionBlock">
-        <div class="settingsOptionTitle">Game volume</div>
-        <div class="settingsSliderRow">
-          <input id="settingsVolumeSlider" type="range" min="0" max="100" step="1" value="100" aria-label="Game volume">
-          <span id="settingsVolumeValue">100%</span>
+      <div id="settingsSoundContent">
+        <div class="settingsOptionBlock">
+          <div class="settingsOptionTitle">Master volume</div>
+          <div class="settingsOptionDescription">Controls the volume of all game sounds.</div>
+          <div class="settingsSliderRow">
+            <input id="settingsVolumeSlider" type="range" min="0" max="100" step="1" value="100" aria-label="Master volume">
+            <span id="settingsVolumeValue">100%</span>
+          </div>
+        </div>
+
+        <div class="settingsOptionBlock">
+          <div class="settingsOptionTitle">Interaction</div>
+          <div class="settingsOptionDescription">UI, mining, chopping, pickups, and other interaction sounds.</div>
+          <div class="settingsSliderRow">
+            <input id="settingsInteractSlider" type="range" min="0" max="100" step="1" value="100" aria-label="Interaction volume">
+            <span id="settingsInteractValue">100%</span>
+          </div>
+        </div>
+
+        <div class="settingsOptionBlock">
+          <div class="settingsOptionTitle">Player</div>
+          <div class="settingsOptionDescription">Movement, jumping, landing, and rocket sounds.</div>
+          <div class="settingsSliderRow">
+            <input id="settingsPlayerSlider" type="range" min="0" max="100" step="1" value="100" aria-label="Player volume">
+            <span id="settingsPlayerValue">100%</span>
+          </div>
+        </div>
+
+        <div class="settingsOptionBlock">
+          <div class="settingsOptionTitle">Nature</div>
+          <div class="settingsOptionDescription">Wind, rain, river water, and other natural ambience.</div>
+          <div class="settingsSliderRow">
+            <input id="settingsNatureSlider" type="range" min="0" max="100" step="1" value="100" aria-label="Nature volume">
+            <span id="settingsNatureValue">100%</span>
+          </div>
+        </div>
+
+        <div class="settingsOptionBlock">
+          <div class="settingsOptionTitle">World &amp; Special Effects</div>
+          <div class="settingsOptionDescription">Atmospheric booms, achievements, warp effects, and other special world sounds.</div>
+          <div class="settingsSliderRow">
+            <input id="settingsWorldSlider" type="range" min="0" max="100" step="1" value="100" aria-label="World and special effects volume">
+            <span id="settingsWorldValue">100%</span>
+          </div>
+        </div>
+
+        <div class="settingsOptionBlock">
+          <div class="settingsOptionTitle">Music</div>
+          <div class="settingsOptionDescription">Controls the volume of background music. Music is also affected by Master volume.</div>
+          <div class="settingsSliderRow">
+            <input id="settingsMusicSlider" type="range" min="0" max="100" step="1" value="100" aria-label="Music volume">
+            <span id="settingsMusicValue">100%</span>
+          </div>
         </div>
       </div>
     </div>
@@ -460,15 +527,112 @@
         <h1>Update Log</h1>
       </div>
       <div id="settingsUpdateLogContent">
-        <section class="updateLogDay"><h2>Version 0.9B</h2><p>Day 9 expands Pocket Universe in a big way: Ivis, the Moon, Cordelia, and the Sun are enlarged, with their terrain, atmospheric layers, orbital spacing, and world details scaled to match. New Blockbench models for the Rocket, Furnace, and Jerrycan are integrated directly into the game. Tungsten Ore and Tungsten Ingots are added as a new resource tier, found on the Moon and Cordelia and smelted in the furnace. The Warp Drive becomes a new rocket upgrade, unlocking the Space Navigation Map and long-distance warp travel between celestial bodies using Moon Quartz. The Moon and Cordelia also receive dedicated takeoff/escape handling so landed rockets can reliably leave their surfaces, including the Moon liftoff fix. Day 9 also strengthens the larger-world fuel, landing, gravity, collision, saving, and rocket systems to support the expanded universe.</p></section>
-        <section class="updateLogDay"><h2>Day 7</h2><p>Cordelia gets its own day/night atmosphere and the camera now works consistently across every celestial body. Moon Quartz and the Upgraded Rocket Engine arrive, with 200% fuel capacity. Accounts, achievements, account-wide Gems, rebindable controls, and LMB keybinding are added. A new orange-striped hat stall brings character customization with colors and hats, plus the Credits page. Day 7 is officially complete!</p></section>
-        <section class="updateLogDay"><h2>Day 6</h2><p>Cordelia becomes fully launchable with a dedicated takeoff and escape sequence. Ivis stays visible from deep space, spaceflight now has emergency fuel-loss recovery to prevent softlocks, and the scythe gets a rebuilt curved blade. Day 6 is officially complete!</p></section>
-        <section class="updateLogDay"><h2>Day 1</h2><p>Pocket Universe begins: the small spherical planet, terrain generation, player movement, jumping, sprinting, the day/night cycle, and the first world visuals.</p></section>
-        <section class="updateLogDay"><h2>Day 2</h2><p>Survival systems arrive: crystals, inventory and hotbar, crafting, tools and durability, trees and mining, the furnace, merchant, credits, and a growing set of world interactions.</p></section>
-        <section class="updateLogDay"><h2>Day 3</h2><p>The project is reorganized into a proper multi-file project. Save/load, Survival and Freeplay, the rocket, launch pad, engine and fuel systems, and full spaceflight are added.</p></section>
-        <section class="updateLogDay"><h2>Day 4</h2><p>The world gets atmosphere: weather, clouds, rain and thunderstorms, lightning, stars, space visuals, particles, ambient sounds, tool animations, the World Control menu, and more polish.</p></section>
-        <section class="updateLogDay"><h2>Day 5</h2><p>The Moon is added as a real celestial body with its own collision and gravity. The rocket can land on the Moon, the player can explore it with 2× jumping and lunar dust, and the full Moon ↔ Ivis return loop works. Rocket speed modes add Boosted and WARP travel.</p></section>
+        <section class="updateLogDay updateLogLatest">
+          <div class="updateLogBadge">LATEST</div>
+          <h2>Version 1.0A</h2>
+          <p class="updateLogIntro">Day 10: major expansion, audio overhaul, ship upgrades, and the new Syspo planetary system.</p>
+          <ul class="updateLogBullets">
+            <li>Added <strong>Syspo</strong>, a massive gas giant with a three-layer atmosphere and extreme-gravity core hazard.</li>
+            <li>Added two Syspo moons: <strong>Aurora</strong>, a lush habitable world, and <strong>Mileria</strong>, a rocky world rich in Titanium.</li>
+            <li>Added <strong>Titanium Ore / Ingots</strong> and <strong>Rainbow Opal</strong> as new resources.</li>
+            <li>Added <strong>Engine Mark 3</strong> with Supersonic flight, 500 units/s speed, 300% fuel capacity, and 1% fuel use per second.</li>
+            <li>Added <strong>Warp Drive Mark 2</strong> with Rainbow Opal fuel, 50/50 fuel consumption, and faster warp travel.</li>
+            <li>Added the <strong>Ship Inventory</strong> for removing installed rocket upgrades and returning them to the player's inventory.</li>
+            <li>Added the full <strong>Sound Settings</strong> mixer with Master, Interaction, Player, Nature, World &amp; Special Effects, and Music controls.</li>
+            <li>Added the <strong>music system</strong> with 30-second minimum playback, smooth fades, planetary tracks, and exact-position stall music resume.</li>
+            <li>Added new <strong>Space Navigation Map</strong> destinations for Syspo, Aurora, and Mileria.</li>
+            <li>Added performance optimizations for clouds, rain, interaction checks, rendering, and per-frame calculations.</li>
+            <li>Fixed Moon/Cordelia liftoff, rocket HUD visibility, journal selling, Aurora lake rendering, and multiple rocket-flight/menu regressions.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
+          <h2>Version 0.9B</h2>
+          <ul class="updateLogBullets">
+            <li>Expanded Ivis, the Moon, Cordelia, and the Sun to their larger world scale.</li>
+            <li>Added new Blockbench models for the Rocket, Furnace, and Jerrycan.</li>
+            <li>Added Tungsten Ore and Tungsten Ingots as a new resource tier.</li>
+            <li>Added the Warp Drive upgrade and long-distance space warping.</li>
+            <li>Added the Space Navigation Map for travelling between celestial bodies.</li>
+            <li>Improved rocket landing, gravity, fuel, collision, saving, and spaceflight systems.</li>
+            <li>Added dedicated takeoff/escape handling for Moon and Cordelia rockets, including the Moon liftoff fix.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
+          <h2>Version 0.8B</h2>
+          <ul class="updateLogBullets">
+            <li>Added account-wide lifetime statistics for player progression and tracking.</li>
+            <li>Improved the achievement/stat systems around long-term player progress.</li>
+            <li>Added new 3D axe and pickaxe models for the core tool set.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
+          <h2>Version 0.7B</h2>
+          <ul class="updateLogBullets">
+            <li>Added Cordelia's dedicated day/night atmosphere and consistent camera behavior across celestial bodies.</li>
+            <li>Added Moon Quartz and <strong>Engine Mark 2</strong> with 200% fuel capacity.</li>
+            <li>Added accounts, achievements, account-wide Gems, rebindable controls, and LMB keybinding.</li>
+            <li>Added the orange-striped customization stall with hats and colors.</li>
+            <li>Added the Credits page.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
+          <h2>Version 0.6B</h2>
+          <ul class="updateLogBullets">
+            <li>Made Cordelia fully launchable with a dedicated takeoff and escape sequence.</li>
+            <li>Kept Ivis visible from deep space.</li>
+            <li>Added emergency recovery when the rocket runs out of fuel in space.</li>
+            <li>Rebuilt the scythe with its curved blade model.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
+          <h2>Version 0.5B</h2>
+          <ul class="updateLogBullets">
+            <li>Added the Moon as a full celestial body with its own gravity and collisions.</li>
+            <li>Added Moon landings, lunar exploration, lunar dust, and the Moon ↔ Ivis return loop.</li>
+            <li>Added rocket speed modes including Boosted and WARP travel.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
+          <h2>Version 0.4B</h2>
+          <ul class="updateLogBullets">
+            <li>Added atmosphere, weather, clouds, rain, thunderstorms, lightning, stars, and space visuals.</li>
+            <li>Added particles, ambient sounds, tool animations, and the World Control menu.</li>
+            <li>Added camera-relative third-person movement, minimap support, and broader movement/collision polish.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
+          <h2>Version 0.3B</h2>
+          <ul class="updateLogBullets">
+            <li>Reorganized Pocket Universe into a proper multi-file project.</li>
+            <li>Added Save/Load, Survival and Freeplay modes, and the core rocket/launch-pad system.</li>
+            <li>Added engine, fuel, and full spaceflight mechanics.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
+          <h2>Version 0.2B</h2>
+          <ul class="updateLogBullets">
+            <li>Added crystals, inventory, hotbar, crafting, tools, durability, trees, and mining.</li>
+            <li>Added the furnace, merchant, credits, and a growing set of world interactions.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
+          <h2>Version 0.1B</h2>
+          <ul class="updateLogBullets">
+            <li>Introduced Pocket Universe with a spherical planet and procedural terrain.</li>
+            <li>Added player movement, jumping, sprinting, the day/night cycle, and the first world visuals.</li>
+          </ul>
+        </section>
       </div>
+
     </div>
   </div>
 </div>

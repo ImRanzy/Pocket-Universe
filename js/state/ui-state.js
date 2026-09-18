@@ -15,6 +15,7 @@
     craftingOpen: false,
     freeplayInventoryOpen: false,
     backpackOpen: false,
-    furnaceOpen: false
+    furnaceOpen: false,
+    shipInventoryOpen: false
   });
 })();

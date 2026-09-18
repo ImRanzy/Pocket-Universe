@@ -705,6 +705,37 @@
   }
   #transitionFade.show { opacity: 1; }
 
+/* ---------- small UI polish ---------- */
+@keyframes uiPanelIn {
+  from { opacity: 0; transform: translateY(7px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+#pausePanel, #settingsPanel, #inventoryPanel, #craftingPanel, #furnacePanel, #merchantPanel, #journalPanel, #achievementsPanel, #creditsPanel, #cosmeticPanel, #weatherControlPanel, #spaceMapPanel, #mapPanel {
+  animation: uiPanelIn .18s ease-out both;
+}
+.settingsPage:not(.hidden) { animation: uiPanelIn .16s ease-out both; }
+
+#saveToast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  z-index: 500;
+  transform: translate(-50%, -14px);
+  padding: 9px 15px;
+  border: 1px solid rgba(118,230,157,.30);
+  border-radius: 999px;
+  background: rgba(9,20,14,.88);
+  color: #c9ffd9;
+  font: 800 11px/1 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: 1.1px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.32);
+  backdrop-filter: blur(8px);
+  transition: opacity .2s ease, transform .2s ease;
+  pointer-events: none;
+}
+#saveToast:not(.hidden) { opacity: 1; transform: translate(-50%, 0); }
+#saveToast.hidden { opacity: 0; transform: translate(-50%, -14px); }
+
 /* ---------- solar danger ---------- */
 #sunWarningOverlay {
   position: fixed;
@@ -718,6 +749,20 @@
   transition: opacity 0.15s ease;
 }
 #sunWarningOverlay.active { opacity: 1; }
+
+#syspoWarningOverlay {
+  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  pointer-events: none; opacity: 0; transition: opacity .12s ease; z-index: 95;
+  background: radial-gradient(circle at center, rgba(38,18,92,.02), rgba(56,8,78,.13) 48%, rgba(65,8,74,.22));
+}
+#syspoWarningOverlay.active { opacity: 1; animation: syspoWarningPulse .62s steps(2, jump-none) infinite; }
+#syspoWarningText {
+  text-align: center; font-weight: 900; letter-spacing: .10em; color: #e9d9ff;
+  text-shadow: 0 0 10px rgba(178,106,255,.9), 0 0 28px rgba(74,35,142,.75);
+  font-size: clamp(16px, 2.1vw, 28px);
+}
+#syspoWarningText span { font-size: .76em; color: #ffffff; letter-spacing: .08em; }
+@keyframes syspoWarningPulse { 0%,100%{filter:brightness(.92)} 50%{filter:brightness(1.38)} }
 #sunWarningText {
   width: min(92vw, 900px);
   padding: 18px 24px;
@@ -1242,6 +1287,7 @@
   .settingsBack:hover { background: rgba(255,255,255,0.15); }
 
   #settingsContent,
+  #settingsSoundContent,
   #settingsUpdateLogContent {
     max-height: min(610px, calc(86vh - 105px));
     overflow-y: auto;
@@ -2329,3 +2375,203 @@ body.achievements-open #controlsToggle { pointer-events: none; }
 @keyframes warpPulse { 0%,100% { opacity:.45; transform:scale(.8); } 50% { opacity:.9; transform:scale(1.35); } }
 @keyframes warpCorePulse { from { transform:scale(.82); } to { transform:scale(1.12); } }
 @media (max-width:700px) { #spaceMapOverlay { padding:10px; } #spaceMapPanel { width:100%; height:94vh; } #spaceMapLegend { top:8px; left:8px; } #spaceMapWarpStatus { min-width:0; width:min(92%,380px); } }
+
+/* ---------- ship inventory / equipped upgrades ---------- */
+#shipInventoryOverlay {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.72);
+  z-index: 58;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  transition: opacity .2s ease;
+}
+#shipInventoryPanel {
+  width: min(540px, 92vw);
+  max-height: min(76vh, 620px);
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid rgba(255,255,255,.11);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(24,29,38,.98), rgba(10,14,20,.98));
+  box-shadow: 0 24px 80px rgba(0,0,0,.68), inset 0 1px 0 rgba(255,255,255,.04);
+  color: #eef3f8;
+  backdrop-filter: blur(10px);
+}
+#shipInventoryHeader {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+}
+#shipInventoryEyebrow {
+  font-size: 10px; font-weight: 800; letter-spacing: .16em; color: rgba(168,184,204,.62);
+}
+#shipInventoryTitle {
+  margin: 2px 0 0; font-size: 24px; font-weight: 800; letter-spacing: .2px; color: #f7f9fc;
+}
+#shipInventoryClose {
+  width: 34px; height: 34px; border: 0; border-radius: 9px;
+  background: rgba(255,255,255,.06); color: rgba(240,245,250,.78);
+  font-size: 24px; line-height: 1; cursor: pointer;
+}
+#shipInventoryClose:hover { background: rgba(255,255,255,.12); color: #fff; }
+#shipInventorySubtitle {
+  margin: 7px 0 16px; font-size: 10px; line-height: 1.5; font-weight: 700; letter-spacing: .11em;
+  color: rgba(210,222,235,.52);
+}
+#shipUpgradeList { display: grid; gap: 9px; }
+.shipUpgradeEmpty {
+  padding: 28px 20px; text-align: center; border: 1px dashed rgba(255,255,255,.12);
+  border-radius: 12px; color: rgba(218,227,238,.55); font-size: 12px;
+}
+.shipUpgradeCard {
+  display: grid; grid-template-columns: 54px 1fr auto; align-items: center; gap: 13px;
+  padding: 12px; border: 1px solid rgba(255,255,255,.09); border-radius: 13px;
+  background: rgba(255,255,255,.035);
+}
+.shipUpgradeIcon {
+  width: 54px; height: 54px; display: grid; place-items: center; border-radius: 11px;
+  background: rgba(8,12,18,.72); border: 1px solid rgba(255,255,255,.08);
+}
+.shipUpgradeBody { min-width: 0; }
+.shipUpgradeName { font-size: 14px; font-weight: 800; color: #f6f8fb; }
+.shipUpgradeDescription { margin-top: 4px; font-size: 11px; line-height: 1.4; color: rgba(211,221,232,.62); }
+.shipUpgradeTakeOut {
+  border: 1px solid rgba(104,215,255,.22); border-radius: 9px; padding: 9px 11px;
+  background: rgba(66,170,214,.11); color: #d9f6ff; font-size: 10px; font-weight: 900; letter-spacing: .08em; cursor: pointer;
+  white-space: nowrap;
+}
+.shipUpgradeTakeOut:hover { background: rgba(66,170,214,.20); border-color: rgba(104,215,255,.42); }
+.shipUpgradeTakeOut:disabled { opacity: .42; cursor: not-allowed; }
+#shipInventoryStatus { min-height: 18px; margin-top: 10px; font-size: 11px; color: rgba(214,226,239,.62); }
+@media (max-width: 520px) {
+  .shipUpgradeCard { grid-template-columns: 44px 1fr; }
+  .shipUpgradeIcon { width: 44px; height: 44px; }
+  .shipUpgradeTakeOut { grid-column: 2; justify-self: start; }
+}
+
+/* ---------- holographic update log ---------- */
+#settingsUpdateLogPage {
+  display: flex;
+  flex-direction: column;
+  height: min(610px, calc(86vh - 105px));
+  min-height: 0;
+}
+#settingsUpdateLogPage .settingsSubHeader {
+  flex: 0 0 auto;
+}
+#settingsUpdateLogContent {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 0;
+  max-height: none;
+  padding: 2px 10px 8px 2px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(89, 220, 255, 0.45) rgba(255,255,255,0.05);
+  scrollbar-width: thin;
+}
+#settingsUpdateLogContent::-webkit-scrollbar { width: 7px; }
+#settingsUpdateLogContent::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.035);
+  border-radius: 10px;
+}
+#settingsUpdateLogContent::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(90,225,255,0.62), rgba(95,133,255,0.36));
+  border: 1px solid rgba(135,240,255,0.26);
+  border-radius: 10px;
+}
+
+.updateLogDay {
+  position: relative;
+  margin: 0 0 12px;
+  padding: 16px 16px 15px 18px;
+  border: 1px solid rgba(92, 214, 255, 0.17);
+  border-radius: 12px;
+  border-bottom: 1px solid rgba(92, 214, 255, 0.17);
+  background:
+    linear-gradient(135deg, rgba(35, 110, 145, 0.10), rgba(27, 36, 70, 0.16) 55%, rgba(12, 20, 34, 0.34)),
+    rgba(8, 14, 24, 0.50);
+  box-shadow:
+    inset 0 1px 0 rgba(180, 245, 255, 0.06),
+    inset 0 0 24px rgba(53, 174, 218, 0.035),
+    0 8px 24px rgba(0,0,0,0.18);
+  overflow: hidden;
+}
+.updateLogDay::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, rgba(91,231,255,0.9), rgba(111,123,255,0.18));
+  box-shadow: 0 0 10px rgba(68, 213, 255, 0.35);
+}
+.updateLogDay:last-child { margin-bottom: 0; }
+.updateLogDay h2 {
+  margin: 0 0 7px;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: .03em;
+  color: #ebfbff;
+  text-shadow: 0 0 10px rgba(76, 218, 255, 0.28);
+}
+.updateLogIntro {
+  margin: 0 0 9px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #b6d6df;
+}
+.updateLogBullets {
+  margin: 0;
+  padding: 0 0 0 17px;
+  color: #c7d4dc;
+  font-size: 12.5px;
+  line-height: 1.48;
+}
+.updateLogBullets li {
+  margin: 0 0 6px;
+  padding-left: 3px;
+}
+.updateLogBullets li:last-child { margin-bottom: 0; }
+.updateLogBullets li::marker {
+  color: #66e4ff;
+  text-shadow: 0 0 7px rgba(74, 215, 255, 0.85);
+}
+.updateLogBullets strong {
+  color: #ecfbff;
+  font-weight: 750;
+}
+.updateLogBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  margin: 0 0 8px;
+  padding: 3px 8px;
+  border: 1px solid rgba(95, 230, 255, 0.32);
+  border-radius: 999px;
+  background: rgba(52, 194, 235, 0.10);
+  color: #81ebff;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: .14em;
+  text-shadow: 0 0 8px rgba(75, 218, 255, 0.6);
+  box-shadow: 0 0 14px rgba(48, 189, 225, 0.10), inset 0 0 10px rgba(94,225,255,0.05);
+}
+.updateLogLatest {
+  border-color: rgba(95, 230, 255, 0.34);
+  background:
+    linear-gradient(135deg, rgba(43, 163, 196, 0.15), rgba(48, 69, 139, 0.14) 52%, rgba(8, 19, 33, 0.42)),
+    rgba(8, 16, 28, 0.58);
+  box-shadow:
+    inset 0 1px 0 rgba(195, 250, 255, 0.08),
+    inset 0 0 34px rgba(58, 204, 242, 0.055),
+    0 10px 30px rgba(0,0,0,0.23),
+    0 0 18px rgba(66, 211, 246, 0.055);
+}
+.updateLogLatest::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(112,237,255,0.8), transparent);
+  opacity: .65;
+}
