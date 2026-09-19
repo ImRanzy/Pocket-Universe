@@ -1,0 +1,561 @@
+    }
+
+    playerState.heightOffset = 0;
+    playerState.verticalVelocity = 0;
+
+    playerState.stamina = STAMINA_MAX;
+    playerState.exhausted = false;
+
+    // The inventory is made of 12 real slots: 8 main slots (0-7) and 4 hotbar slots (8-11).
+    // Every item obeys its own maxStack value: resources stack to 10, while tools stack to 1.
+    const INVENTORY_SLOT_COUNT = window.PocketUniverseInventoryState.slotCount;
+    const INVENTORY_MAIN_SLOTS = window.PocketUniverseInventoryState.mainSlotCount;
+    const HOTBAR_SLOT_COUNT = window.PocketUniverseInventoryState.hotbarSlotCount;
+    const MAX_CRYSTALS_PER_STACK = 10;
+    const inventorySlots = window.PocketUniverseInventoryState.slots;
+    const backpackSlots = window.PocketUniverseInventoryState.backpackSlots;
+    let activeBackpackItem = null;
+    let nextBackpackId = 1;
+
+    function createBackpackStorage() {
+      return Array.from({ length: window.PocketUniverseInventoryState.backpackSlotCount }, () => null);
+    }
+
+    function createBackpackItem(storage = null, backpackId = null) {
+      const id = backpackId || ('backpack_' + (nextBackpackId++));
+      const parsedId = /^backpack_(\d+)$/.exec(id);
+      if (parsedId) nextBackpackId = Math.max(nextBackpackId, Number(parsedId[1]) + 1);
+      return {
+        typeId: 'backpack',
+        count: 1,
+        backpackId: id,
+        storage: Array.isArray(storage) && storage.length === backpackSlots.length ? storage.map(slot => slot ? { ...slot } : null) : createBackpackStorage()
+      };
+    }
+
+    function normalizeBackpackItem(item) {
+      if (!item || item.typeId !== 'backpack') return item;
+      if (!item.backpackId || !Array.isArray(item.storage) || item.storage.length !== backpackSlots.length) {
+        const replacement = createBackpackItem(item.storage, item.backpackId);
+        Object.assign(item, replacement);
+      } else {
+        const parsedId = /^backpack_(\d+)$/.exec(item.backpackId);
+        if (parsedId) nextBackpackId = Math.max(nextBackpackId, Number(parsedId[1]) + 1);
+      }
+      return item;
+    }
+
+    function commitActiveBackpackStorage() {
+      if (!activeBackpackItem) return;
+      normalizeBackpackItem(activeBackpackItem);
+      activeBackpackItem.storage = backpackSlots.map(slot => slot ? { ...slot } : null);
+    }
+
+    function loadBackpackStorage(backpackItem) {
+      normalizeBackpackItem(backpackItem);
+      for (let i = 0; i < backpackSlots.length; i++) backpackSlots[i] = backpackItem.storage[i] ? { ...backpackItem.storage[i] } : null;
+    }
+    // Cache backpack UI elements before any early UI refresh can reference them.
+    const backpackStorage = document.getElementById('backpackStorage');
+    const backpackSlotsEl = document.getElementById('backpackSlots');
+    const backpackClose = document.getElementById('backpackClose');
+    // Must exist before the first early backpack UI refresh.
+    let backpackOpen = false;
+
+    function getHotbarInventoryIndex(hotbarIndex) {
+      return INVENTORY_MAIN_SLOTS + hotbarIndex;
+    }
+
+    function getSelectedHotbarInventoryIndex() {
+      return getHotbarInventoryIndex(uiState.selectedHotbarSlot);
+    }
+
+    function getFirstAvailableInventorySlot(typeId) {
+      // First try to add to an existing stack of the same crystal type.
+      for (let i = 0; i < INVENTORY_SLOT_COUNT; i++) {
+        const slot = inventorySlots[i];
+        const maxStack = getItemMaxStack(typeId);
+        if (slot && slot.typeId === typeId && slot.count < maxStack) return i;
+      }
+      // If the existing stacks are full, look for a completely empty slot.
+      for (let i = 0; i < INVENTORY_SLOT_COUNT; i++) {
+        if (!inventorySlots[i]) return i;
+      }
+      return -1;
+    }
+
+    function getItemMaxStack(typeId) {
+      const item = itemById[typeId];
+      return item ? item.maxStack : 0;
+    }
+
+    function countItem(typeId) {
+      return inventorySlots.reduce((sum, slot) => sum + (slot && slot.typeId === typeId ? slot.count : 0), 0);
+    }
+
+    function canAddItemToInventory(typeId, amount) {
+      const item = itemById[typeId];
+      if (!item || amount <= 0) return false;
+      let capacity = 0;
+      for (const slot of inventorySlots) {
+        if (!slot) capacity += item.maxStack;
+        else if (slot.typeId === typeId) capacity += Math.max(0, item.maxStack - slot.count);
+      }
+      return capacity >= amount;
+    }
+
+    function addItemToInventory(typeId, amount = 1, durability = null, pickupFeedback = false) {
+      const item = itemById[typeId];
+      if (!item || amount <= 0) return false;
+      // Any successful pickup/craft/purchase becomes a permanent journal discovery.
+      const journalWasNew = !journalDiscoveredItems.has(typeId);
+      if (typeId === 'backpack') {
+        let remaining = Math.floor(amount);
+        for (let i = 0; i < INVENTORY_SLOT_COUNT && remaining > 0; i++) {
+          if (inventorySlots[i]) continue;
+          inventorySlots[i] = createBackpackItem();
+          remaining--;
+        }
+        updateHotbarUI();
+        updateInventoryUI();
+        refreshEquippedItem();
+        const success = remaining === 0;
+        if (success && journalWasNew) markJournalItemDiscovered(typeId);
+        if (success && pickupFeedback) showInventoryPickupPopup(typeId, amount);
+        return success;
+      }
+
+      // Work out whether the full amount fits before changing anything, so chopping a tree
+      // can fail safely without making the tree disappear when the inventory is too full.
+      let capacity = 0;
+      for (const slot of inventorySlots) {
+        if (!slot) capacity += item.maxStack;
+        else if (slot.typeId === typeId) capacity += Math.max(0, item.maxStack - slot.count);
+      }
+      if (capacity < amount) return false;
+
+      let remaining = amount;
+      for (let i = 0; i < INVENTORY_SLOT_COUNT && remaining > 0; i++) {
+        const slot = inventorySlots[i];
+        if (!slot || slot.typeId !== typeId || slot.count >= item.maxStack) continue;
+        const moved = Math.min(remaining, item.maxStack - slot.count);
+        slot.count += moved;
+        remaining -= moved;
+      }
+      for (let i = 0; i < INVENTORY_SLOT_COUNT && remaining > 0; i++) {
+        if (inventorySlots[i]) continue;
+        const moved = Math.min(remaining, item.maxStack);
+        inventorySlots[i] = {
+          typeId,
+          count: moved,
+          ...(item.tool ? { durability: durability == null ? getToolMaxDurability(item) : Math.max(0, Math.min(getToolMaxDurability(item), Math.floor(durability))) } : {})
+        };
+        remaining -= moved;
+      }
+      updateHotbarUI();
+      updateInventoryUI();
+      refreshEquippedItem();
+      const success = remaining === 0;
+      if (success && journalWasNew) markJournalItemDiscovered(typeId);
+      if (success && pickupFeedback) showInventoryPickupPopup(typeId, amount);
+      return success;
+    }
+
+    function hasItemType(typeId) {
+      return inventorySlots.some(slot => slot && slot.typeId === typeId);
+    }
+
+    function selectHotbarSlot(index) {
+      if (index < 0 || index >= HOTBAR_SLOT_COUNT) return;
+      uiState.selectedHotbarSlot = index;
+      const slot = inventorySlots[getSelectedHotbarInventoryIndex()];
+      uiState.equippedItemType = slot ? slot.typeId : null;
+      setHeldItem(uiState.equippedItemType);
+      updateHotbarUI();
+      if (uiState.inventoryOpen) updateInventoryUI();
+    }
+
+    function swapInventoryWithSelectedHotbar(slotIndex) {
+      if (slotIndex < 0 || slotIndex >= INVENTORY_MAIN_SLOTS) return;
+      const hotbarIndex = getSelectedHotbarInventoryIndex();
+      const temp = inventorySlots[slotIndex];
+      inventorySlots[slotIndex] = inventorySlots[hotbarIndex];
+      inventorySlots[hotbarIndex] = temp;
+      selectHotbarSlot(uiState.selectedHotbarSlot);
+      updateInventoryUI();
+    }
+
+    function makeItemIconElement(typeId, className) {
+      const data = itemById[typeId];
+      const icon = document.createElement('div');
+      icon.className = className + ' itemIcon ' + data.kind
+        + ((typeId === 'wooden_axe' || typeId === 'wooden_pickaxe') ? ' woodenTool' : '')
+        + ((typeId === 'stone_axe' || typeId === 'stone_pickaxe') ? ' stoneTool' : '')
+        + ((typeId === 'iron_axe' || typeId === 'iron_pickaxe' || typeId === 'iron_scythe') ? ' ironTool' : '')
+        + ((typeId === 'wooden_scythe') ? ' woodenTool' : '')
+        + ((typeId === 'stone_scythe') ? ' stoneTool' : '');
+      if (data.kind === 'crystal') {
+        icon.style.background = data.css;
+        icon.style.boxShadow = '0 0 12px ' + data.css;
+      }
+      if (data.kind === 'tungsten_ore') { icon.style.background = 'linear-gradient(135deg,#8e857b 0%,#6c6057 50%,#a45f3d 51%,#4d4947 100%)'; icon.style.boxShadow = '0 0 10px rgba(164,95,61,.35)'; }
+      if (data.kind === 'tungsten_ingot') { icon.style.background = 'linear-gradient(145deg,#928c87,#4e4b49 72%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.18),0 0 8px rgba(120,116,110,.25)'; }
+      if (data.kind === 'titanium_ore') { icon.style.background = 'linear-gradient(135deg,#d7e6f2 0%,#8196a8 38%,#c4d8e6 56%,#5d7182 100%)'; icon.style.boxShadow = '0 0 10px rgba(160,200,230,.45)'; }
+      if (data.kind === 'titanium_ingot') { icon.style.background = 'linear-gradient(145deg,#eef7ff,#9eb0bf 65%,#dce8f0)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.45),0 0 10px rgba(190,220,240,.36)'; }
+      if (data.kind === 'iron_plate') { icon.style.background = 'linear-gradient(145deg,#cbd0d5 0%,#6e747a 62%,#aeb5bb 100%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.25),0 0 8px rgba(160,170,180,.24)'; }
+      if (data.kind === 'titanium_plate') { icon.style.background = 'linear-gradient(145deg,#f7fcff 0%,#9eb2c1 58%,#dce8ef 100%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.4),0 0 9px rgba(180,215,235,.34)'; }
+      if (data.kind === 'wrench') { icon.classList.add(data.wrenchTier === 'titanium' ? 'titaniumWrench' : 'ironWrench'); icon.innerHTML = '<span class="wrenchIconGlyph"></span>'; }
+      if (data.kind === 'blueprint') {
+        icon.style.backgroundImage = 'url("models/Blueprint.png")';
+        icon.style.backgroundSize = 'contain';
+        icon.style.backgroundPosition = 'center';
+        icon.style.backgroundRepeat = 'no-repeat';
+        icon.style.imageRendering = 'pixelated';
+        icon.style.backgroundColor = '#1737a8';
+        icon.style.boxShadow = '0 0 14px rgba(68,120,255,.58)';
+      }
+      if (data.kind === 'warp_drive') { icon.style.background = 'radial-gradient(circle at 50% 50%,#f5fbff 0 10%,#66cfff 12% 24%,#174a78 27% 45%,#1b1f27 47% 100%)'; icon.style.boxShadow = '0 0 14px rgba(70,190,255,.65)'; }
+      if (data.kind === 'warp_drive_mk2') { icon.style.background = 'radial-gradient(circle at 50% 50%,#fff1ff 0 10%,#ff82ea 12% 24%,#6f2d75 27% 45%,#211927 47% 100%)'; icon.style.boxShadow = '0 0 14px rgba(255,108,232,.62)'; }
+      if (data.kind === 'engine_mark_3') { icon.style.background = 'linear-gradient(145deg,#f5fbff 0%,#9ed9ef 42%,#d7eef8 60%,#6f8794 100%)'; icon.style.boxShadow = '0 0 12px rgba(175,225,245,.5)'; }
+      // Dedicated CSS icons are used for special multi-part items too.
+      // Keeping this function data-driven means inventory, hotbar, and journal
+      // entries all render the same item identity.
+      icon.title = data.name;
+      return icon;
+    }
+
+    function updateHotbarUI() {
+      const slots = document.querySelectorAll('.hotbarSlot');
+      slots.forEach((slot, index) => {
+        slot.classList.toggle('selected', index === uiState.selectedHotbarSlot);
+        slot.innerHTML = '<div class="hotbarNumber">' + (index + 1) + '</div>';
+
+        const inventorySlot = inventorySlots[getHotbarInventoryIndex(index)];
+        if (inventorySlot) {
+          slot.appendChild(makeItemIconElement(inventorySlot.typeId, 'hotbarGem'));
+          const count = document.createElement('div');
+          count.className = 'hotbarCount';
+          count.textContent = inventorySlot.count;
+          slot.appendChild(count);
+
+          const itemInfo = itemById[inventorySlot.typeId];
+          if (itemInfo.tool) {
+            const durability = document.createElement('div');
+            durability.className = 'toolDurability';
+            const maxDurability = getToolMaxDurability(itemInfo);
+            const d = Math.max(0, Math.min(maxDurability, inventorySlot.durability == null ? maxDurability : inventorySlot.durability));
+            durability.style.setProperty('--durability', (d / maxDurability * 100) + '%');
+            slot.appendChild(durability);
+          }
+        } else {
+          const empty = document.createElement('div');
+          empty.className = 'hotbarEmpty';
+          empty.textContent = 'EMPTY';
+          slot.appendChild(empty);
+        }
+        slot.addEventListener('contextmenu', (e) => {
+          const held = inventorySlots[getHotbarInventoryIndex(index)];
+          if (held && held.typeId === 'journal') { e.preventDefault(); e.stopPropagation(); openJournal(false); return; }
+          if (held && held.typeId === 'backpack') {
+            e.preventDefault(); e.stopPropagation(); openBackpackStorage(held);
+          }
+        });
+      });
+    }
+
+    let inventoryFeedbackInitialized = false;
+    let previousInventoryFeedback = [];
+
+    function inventoryFeedbackSignature(slotData) {
+      if (!slotData) return 'empty';
+      return [slotData.typeId || '', slotData.count || 0, slotData.durability == null ? '' : slotData.durability].join('|');
+    }
+
+    function hideInventoryTooltip() {
+      const tooltip = document.getElementById('inventoryTooltip');
+      if (!tooltip) return;
+      tooltip.classList.remove('show');
+      tooltip.classList.add('hidden');
+      tooltip.setAttribute('aria-hidden', 'true');
+    }
+
+    function positionInventoryTooltip(clientX, clientY) {
+      const tooltip = document.getElementById('inventoryTooltip');
+      if (!tooltip || tooltip.classList.contains('hidden')) return;
+      if (typeof clientX !== 'number' || typeof clientY !== 'number') return;
+      const pad = 12;
+      const gap = 14;
+      const rect = tooltip.getBoundingClientRect();
+      // Follow the actual mouse cursor, keeping the tooltip fully inside the viewport.
+      let left = clientX + gap;
+      let top = clientY + gap;
+      if (left + rect.width > window.innerWidth - pad) left = clientX - rect.width - gap;
+      if (top + rect.height > window.innerHeight - pad) top = clientY - rect.height - gap;
+      left = Math.max(pad, Math.min(left, window.innerWidth - rect.width - pad));
+      top = Math.max(pad, Math.min(top, window.innerHeight - rect.height - pad));
+      tooltip.style.left = left + 'px';
+      tooltip.style.top = top + 'px';
+    }
+
+    function showInventoryTooltip(slotData, slotEl, event) {
+      const tooltip = document.getElementById('inventoryTooltip');
+      if (!tooltip || !slotData || !slotEl || !event) return;
+      // Keep the tooltip directly under <body>. The inventory panel uses backdrop-filter,
+      // which can establish a containing block for position:fixed descendants.
+      // Appending it to body guarantees clientX/clientY use the same viewport as the cursor.
+      if (tooltip.parentElement !== document.body) document.body.appendChild(tooltip);
+      const item = itemById[slotData.typeId];
+      if (!item) return;
+      const journalInfo = JOURNAL_ITEM_INFO[slotData.typeId];
+      const parts = ['x' + slotData.count];
+      if (item.tool) {
+        const maxDurability = getToolMaxDurability(item);
+        const durability = Math.max(0, Math.min(maxDurability, slotData.durability == null ? maxDurability : slotData.durability));
+        parts.push('DURABILITY ' + durability + '/' + maxDurability);
+      }
+      tooltip.innerHTML = '<div class="inventoryTooltipName">' + item.name + '</div>' +
+        '<div class="inventoryTooltipDescription">' + (journalInfo?.description || 'An item stored in your inventory.') + '</div>' +
+        '<div class="inventoryTooltipMeta"><span>' + parts.join('</span><span>') + '</span></div>';
+      tooltip.classList.remove('hidden');
+      tooltip.setAttribute('aria-hidden', 'false');
+      requestAnimationFrame(() => {
+        tooltip.classList.add('show');
+        positionInventoryTooltip(event.clientX, event.clientY);
+      });
+    }
+
+    function showInventoryPickupPopup(typeId, amount = 1) {
+      const stack = document.getElementById('inventoryPickupStack');
+      const item = itemById[typeId];
+      if (!stack || !item || amount <= 0) return;
+      const popup = document.createElement('div');
+      popup.className = 'inventoryPickupPopup';
+
+      const iconWrap = document.createElement('div');
+      iconWrap.className = 'inventoryPickupPopupIcon';
+      iconWrap.appendChild(makeItemIconElement(typeId, 'inventoryPickupPopupItem'));
+      popup.appendChild(iconWrap);
+
+      const textWrap = document.createElement('div');
+      textWrap.className = 'inventoryPickupPopupText';
+      const label = document.createElement('div');
+      label.className = 'inventoryPickupPopupLabel';
+      label.textContent = 'PICKED UP';
+      const name = document.createElement('div');
+      name.className = 'inventoryPickupPopupName';
+      name.textContent = item.name;
+      textWrap.appendChild(label);
+      textWrap.appendChild(name);
+      popup.appendChild(textWrap);
+
+      const amountEl = document.createElement('div');
+      amountEl.className = 'inventoryPickupPopupAmount';
+      amountEl.textContent = '+' + amount;
+      popup.appendChild(amountEl);
+
+      stack.appendChild(popup);
+      while (stack.children.length > 4) stack.removeChild(stack.firstElementChild);
+      requestAnimationFrame(() => popup.classList.add('show'));
+      setTimeout(() => {
+        popup.classList.remove('show');
+        popup.classList.add('closing');
+        setTimeout(() => popup.remove(), 260);
+      }, 1250);
+    }
+
+    function updateInventoryUI() {
+      const grid = document.getElementById('inventoryGrid');
+      if (!grid) return;
+      grid.innerHTML = '';
+      hideInventoryTooltip();
+      const currentFeedback = inventorySlots.map(inventoryFeedbackSignature);
+
+      for (let i = 0; i < INVENTORY_SLOT_COUNT; i++) {
+        const slotData = inventorySlots[i];
+        const slot = document.createElement('div');
+        slot.className = 'inventorySlot' + (i >= INVENTORY_MAIN_SLOTS ? ' hotbarInventorySlot' : '');
+        if (i === getSelectedHotbarInventoryIndex()) slot.classList.add('selectedHotbar');
+        // Use the custom inventory tooltip instead of the browser-native title popup.
+        slot.title = '';
+
+        if (slotData) {
+          slot.appendChild(makeItemIconElement(slotData.typeId, 'inventoryGem'));
+
+          const name = document.createElement('div');
+          name.className = 'inventorySlotName';
+          name.textContent = itemById[slotData.typeId].name;
+          slot.appendChild(name);
+
+          const count = document.createElement('div');
+          count.className = 'inventoryStackCount';
+          count.textContent = slotData.count;
+          slot.appendChild(count);
+
+          const itemInfo = itemById[slotData.typeId];
+          if (itemInfo.tool) {
+            const durability = document.createElement('div');
+            durability.className = 'toolDurability';
+            const maxDurability = getToolMaxDurability(itemInfo);
+            const d = Math.max(0, Math.min(maxDurability, slotData.durability == null ? maxDurability : slotData.durability));
+            durability.style.setProperty('--durability', (d / maxDurability * 100) + '%');
+            slot.appendChild(durability);
+          }
+        } else {
+          const empty = document.createElement('div');
+          empty.className = 'inventoryEmptyLabel';
+          empty.textContent = 'EMPTY';
+          slot.appendChild(empty);
+        }
+
+        const slotChanged = inventoryFeedbackInitialized && currentFeedback[i] !== previousInventoryFeedback[i];
+        if (slotChanged) slot.classList.add('inventoryFeedbackPulse');
+        if (slotData) {
+          slot.addEventListener('mouseenter', (event) => showInventoryTooltip(slotData, slot, event));
+          slot.addEventListener('mousemove', (event) => positionInventoryTooltip(event.clientX, event.clientY));
+          slot.addEventListener('mouseleave', hideInventoryTooltip);
+        }
+
+        bindDragSlot(slot, { type: 'inventory', index: i });
+        slot.addEventListener('click', () => {
+          // A plain click on a hotbar slot still equips/selects it; item movement uses drag.
+          if (i >= INVENTORY_MAIN_SLOTS && !lastDragMoved) {
+            selectHotbarSlot(i - INVENTORY_MAIN_SLOTS);
+          }
+        });
+        slot.addEventListener('contextmenu', (e) => {
+          const held = inventorySlots[i];
+          if (held && held.typeId === 'journal') { e.preventDefault(); e.stopPropagation(); openJournal(true); return; }
+          if (held && held.typeId === 'backpack') { e.preventDefault(); e.stopPropagation(); openBackpackStorage(held); }
+        });
+        grid.appendChild(slot);
+      }
+      previousInventoryFeedback = currentFeedback;
+      inventoryFeedbackInitialized = true;
+    }
+
+    // Keep the dedicated backpack row synchronized with the normal inventory.
+    updateBackpackUI();
+
+    // ---------- drag-and-drop inventory/furnace items ----------
+    // Items can be click-held and dragged between inventory slots and furnace slots.
+    // The destination highlights under the cursor, and releasing places/merges/swaps the item.
+    let itemDrag = null;
+    let lastDragMoved = false;
+    let activeDragTargetEl = null;
+    let hoveredItemRef = null;
+
+    function getDragRefData(ref) {
+      if (!ref) return null;
+      if (ref.type === 'inventory') return inventorySlots[ref.index] || null;
+      if (ref.type === 'backpack') return backpackSlots[ref.index] || null;
+      if (ref.type === 'furnace') return activeFurnace ? activeFurnace.inventory[ref.key] || null : null;
+      return null;
+    }
+
+    function setDragRefData(ref, value) {
+      if (ref.type === 'inventory') inventorySlots[ref.index] = value;
+      else if (ref.type === 'backpack') backpackSlots[ref.index] = value;
+      else if (ref.type === 'furnace' && activeFurnace) activeFurnace.inventory[ref.key] = value;
+    }
+
+    function canDropItemOnRef(item, ref) {
+      if (!item || !ref) return false;
+      if (ref.type === 'inventory') return true;
+      if (ref.type === 'backpack') return item.typeId !== 'backpack';
+      if (ref.type !== 'furnace' || !activeFurnace) return false;
+      if (ref.key === 'fuel') return item.typeId === 'planks';
+      if (ref.key === 'input') return item.typeId === 'iron_ore' || item.typeId === 'copper_ore' || item.typeId === 'tungsten_ore' || item.typeId === 'titanium_ore';
+      if (ref.key === 'output') return item.typeId === 'iron_ingot' || item.typeId === 'copper_ingot';
+      return false;
+    }
+
+    function refsEqual(a, b) {
+      return !!a && !!b && a.type === b.type && (a.type === 'inventory' || a.type === 'backpack' ? a.index === b.index : a.key === b.key);
+    }
+
+    function clearDragHighlight() {
+      if (activeDragTargetEl) activeDragTargetEl.classList.remove('drag-over');
+      activeDragTargetEl = null;
+      document.querySelectorAll('.inventorySlot.drag-source, .furnaceSlot.drag-source').forEach(el => el.classList.remove('drag-source'));
+    }
+
+    function findDragTargetAt(x, y) {
+      const el = document.elementFromPoint(x, y);
+      if (!el) return { ref: null, el: null };
+      const slotEl = el.closest && el.closest('.inventorySlot, .furnaceSlot, .backpackSlot');
+      if (!slotEl) return { ref: null, el: null };
+      if (slotEl.closest('#backpackSlots')) {
+        const index = Number(slotEl.dataset.backpackIndex);
+        if (Number.isInteger(index)) return { ref: { type: 'backpack', index }, el: slotEl };
+      }
+      if (slotEl.closest('#inventoryGrid')) {
+        const index = Number(slotEl.dataset.inventoryIndex);
+        if (Number.isInteger(index)) return { ref: { type: 'inventory', index }, el: slotEl };
+      }
+      if (slotEl.closest('#furnaceTop')) {
+        const key = slotEl.dataset.furnaceKey;
+        if (key) return { ref: { type: 'furnace', key }, el: slotEl };
+      }
+      if (slotEl.closest('#furnaceInventoryGrid')) {
+        const index = Number(slotEl.dataset.inventoryIndex);
+        if (Number.isInteger(index)) return { ref: { type: 'inventory', index }, el: slotEl };
+      }
+      return { ref: null, el: null };
+    }
+
+    function moveDraggedItem(sourceRef, targetRef) {
+      if (!sourceRef || !targetRef || refsEqual(sourceRef, targetRef)) return false;
+      const source = getDragRefData(sourceRef);
+      if (!source) return false;
+      const target = getDragRefData(targetRef);
+
+      if (!canDropItemOnRef(source, targetRef)) return false;
+
+      const sourceItem = itemById[source.typeId];
+      if (!sourceItem) return false;
+
+      // Merge compatible resource stacks first.
+      if (target && target.typeId === source.typeId && sourceItem.maxStack > 1) {
+        const space = Math.max(0, sourceItem.maxStack - target.count);
+        if (space <= 0) return false;
+        const moved = Math.min(space, source.count);
+        target.count += moved;
+        source.count -= moved;
+        if (source.count <= 0) setDragRefData(sourceRef, null);
+        return moved > 0;
+      }
+
+      // Empty destination: move the whole stack/tool.
+      if (!target) {
+        setDragRefData(targetRef, source);
+        setDragRefData(sourceRef, null);
+        return true;
+      }
+
+      // Filled destination: swap only when both items are valid for their new homes.
+      if (!canDropItemOnRef(target, sourceRef)) return false;
+      setDragRefData(sourceRef, target);
+      setDragRefData(targetRef, source);
+      return true;
+    }
+
+    function dropOneItemFromRef(ref) {
+      const source = getDragRefData(ref);
+      if (!source) return false;
+      const typeId = source.typeId;
+      source.count -= 1;
+      if (source.count <= 0) setDragRefData(ref, null);
+      spawnDroppedItem(typeId, 1);
+      rerenderOpenItemUIs();
+      if (uiState.furnaceOpen) startFurnaceSmeltingIfReady();
+      return true;
+    }
+
+    function bindDragSlot(slotEl, ref) {
+      slotEl.dataset.inventoryIndex = ref.type === 'inventory' ? String(ref.index) : '';
+      slotEl.dataset.backpackIndex = ref.type === 'backpack' ? String(ref.index) : '';
+      if (ref.type === 'furnace') slotEl.dataset.furnaceKey = ref.key;
+      slotEl.addEventListener('mouseenter', () => { hoveredItemRef = { ...ref }; });
+      slotEl.addEventListener('mouseleave', () => { if (hoveredItemRef && refsEqual(hoveredItemRef, ref)) hoveredItemRef = null; });
+      const hasItem = !!getDragRefData(ref);
+      if (!hasItem) return;

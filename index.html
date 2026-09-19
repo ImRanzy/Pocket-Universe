@@ -49,7 +49,7 @@
         <div id="spaceMapTitle">SPACE NAVIGATION</div>
         <div id="spaceMapSubtitle">WARP DRIVE · SYSTEM OVERVIEW</div>
       </div>
-      <button id="spaceMapClose" title="Close space map">×</button>
+      <div id="spaceMapHeaderActions"><button id="spaceMapReset" title="Reset map view"><span class="spaceMapResetIcon">↺</span><span>RESET VIEW</span></button><button id="spaceMapClose" title="Close space map">×</button></div>
     </div>
     <div id="spaceMapViewportWrap">
       <canvas id="spaceMapCanvas"></canvas>
@@ -58,8 +58,11 @@
         <div class="spaceLegendRow"><span class="spaceLegendDot ivis"></span> IVIS</div>
         <div class="spaceLegendRow"><span class="spaceLegendDot moon"></span> MOON</div>
         <div class="spaceLegendRow"><span class="spaceLegendDot cordelia"></span> CORDELIA</div>
+        <div class="spaceLegendRow"><span class="spaceLegendDot syspo"></span> SYSPO</div>
+        <div class="spaceLegendRow"><span class="spaceLegendDot aurora"></span> AURORA</div>
+        <div class="spaceLegendRow"><span class="spaceLegendDot mileria"></span> MILERIA</div>
       </div>
-      <div id="spaceMapHint">CLICK A CELESTIAL BODY TO WARP</div>
+      <div id="spaceMapHint">DRAG TO PAN · SCROLL TO ZOOM · CLICK A BODY TO WARP</div>
       <div id="spaceMapWarpStatus" class="hidden"></div>
     </div>
   </div>
@@ -118,7 +121,7 @@
       <div id="backpackSlots"></div>
     </div>
     <div id="inventoryHotbarHint">12 slots total • stacks hold up to 10 • click a slot to swap it with the selected hotbar slot</div>
-    <div id="inventoryGrid"></div>
+    <div id="inventoryGrid"></div><div id="inventoryTooltip" class="inventoryTooltip hidden" role="tooltip" aria-hidden="true"></div>
   </div>
 </div>
 
@@ -135,6 +138,24 @@
     <div id="shipInventorySubtitle">EQUIPPED UPGRADES · TAKE THEM BACK INTO YOUR INVENTORY</div>
     <div id="shipUpgradeList"></div>
     <div id="shipInventoryStatus" aria-live="polite"></div>
+  </div>
+</div>
+
+<div id="containerOverlay" class="hidden" aria-hidden="true">
+  <div id="containerPanel" role="dialog" aria-modal="true" aria-labelledby="containerTitle">
+    <div id="containerHeader">
+      <div>
+        <div id="containerEyebrow">STORAGE UNIT</div>
+        <h1 id="containerTitle">Container</h1>
+      </div>
+      <button id="containerClose" title="Close">×</button>
+    </div>
+    <div id="containerSubtitle">20 SLOTS · EACH CONTAINER HAS ITS OWN INVENTORY</div>
+    <div class="containerSectionLabel">CONTAINER STORAGE</div>
+    <div id="containerGrid"></div>
+    <div class="containerSectionLabel">YOUR INVENTORY</div>
+    <div id="containerPlayerInventoryGrid"></div>
+    <div id="containerHint">Drag items between your inventory and the container. Containers cannot be stored inside containers.</div>
   </div>
 </div>
 
@@ -270,6 +291,13 @@
 <div id="controlsToggle" title="Settings">⚙</div>
 
 <div id="transitionFade"></div>
+<div id="travelTransition" aria-hidden="true">
+  <div id="travelTransitionCard">
+    <div id="travelTransitionEyebrow">ATMOSPHERIC TRANSITION</div>
+    <div id="travelTransitionTitle">ENTERING DEEP SPACE</div>
+    <div id="travelTransitionSubtext">STANDBY</div>
+  </div>
+</div>
 <div id="saveToast" class="hidden" aria-live="polite">✓ GAME SAVED</div>
 <div id="sunWarningOverlay" aria-live="assertive"><div id="sunWarningText">OUTER HULL MELTING<br><span>GET AWAY FROM THE SUN</span></div></div>
 <div id="syspoWarningOverlay" aria-live="assertive"><div id="syspoWarningText">Enormously strong gravity, Please Get away from the core</div></div>
@@ -529,13 +557,39 @@
       <div id="settingsUpdateLogContent">
         <section class="updateLogDay updateLogLatest">
           <div class="updateLogBadge">LATEST</div>
+          <h2>Version 1.1A</h2>
+          <p class="updateLogIntro">Day 11: polish, planetary motion, new crafting technology, storage, and major quality-of-life improvements.</p>
+          <ul class="updateLogBullets">
+            <li>Added polished holographic <strong>UI feedback</strong>, including smoother panels, button feedback, tooltips, and inventory slot animations.</li>
+            <li>Added <strong>Space Map pan and zoom</strong>, plus a redesigned Reset View button and improved map presentation.</li>
+            <li>Added <strong>planet-to-space transition effects</strong> and renamed the old random-plane state to <strong>Deep Space</strong>.</li>
+            <li>Added <strong>inventory hover tooltips</strong> with cursor-following positioning and automatic screen-edge handling.</li>
+            <li>Added <strong>inventory pickup popups</strong> for clear item collection feedback.</li>
+            <li>Added a permanent <strong>Ivis solar orbit</strong>, with the Moon continuing to orbit Ivis while Ivis orbits the Sun.</li>
+            <li>Added <strong>planetary rotation flight assistance</strong>, allowing rockets to naturally follow a world's rotation while inside its gravity region and stop carrying at Deep Space.</li>
+            <li>Extended landed-rocket and placeable-object attachment to <strong>Ivis, the Moon, Cordelia, Aurora, and Mileria</strong>, so rockets and placeables stay with their celestial body.</li>
+            <li>Added <strong>Iron Wrench</strong> and <strong>Titanium Wrench</strong> tools for installing different tiers of rocket upgrades.</li>
+            <li>Added <strong>Iron Plates</strong> and <strong>Titanium Plates</strong> with ingot-to-plate crafting.</li>
+            <li>Added the full <strong>Blueprint system</strong>: six permanent blueprints sold by Jaecob and required to unlock Rocket, Engine Mark 1–3, and Warp Drive Mark 1–2 recipes.</li>
+            <li>Added the <strong>Container</strong>: a craftable 20-slot storage block with separate inventories per container, using the new metallic storage UI.</li>
+            <li>Added and refined <strong>Titanium processing</strong>, including Titanium smelting, tougher Titanium deposits, and dedicated Titanium mining/collection feedback.</li>
+            <li>Added dedicated <strong>Rainbow Opal collection audio</strong> and Titanium deposit mining audio using the standard crystal-pickup and mining sound sets.</li>
+            <li>Smoothed <strong>Mileria's terrain</strong> and evenly distributed Titanium deposits across its surface.</li>
+            <li>Improved <strong>Aurora lakes</strong> and expanded its lush environmental presentation.</li>
+            <li>Improved the <strong>Space Navigation Map</strong> orbit presentation so Syspo's displayed orbit aligns with its actual planetary path.</li>
+            <li>Reduced <strong>Engine Mark 3 Supersonic speed</strong> to 200 units/s for smoother high-speed flight.</li>
+            <li>Added multiple <strong>rocket, camera, landing, and Syspo recovery fixes</strong> to keep moving celestial bodies and their surface interactions stable.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
           <h2>Version 1.0A</h2>
-          <p class="updateLogIntro">Day 10: major expansion, audio overhaul, ship upgrades, and the new Syspo planetary system.</p>
+          <p class="updateLogIntro">Day 10: major expansion, audio overhaul, ship upgrades, and the Syspo planetary system.</p>
           <ul class="updateLogBullets">
             <li>Added <strong>Syspo</strong>, a massive gas giant with a three-layer atmosphere and extreme-gravity core hazard.</li>
             <li>Added two Syspo moons: <strong>Aurora</strong>, a lush habitable world, and <strong>Mileria</strong>, a rocky world rich in Titanium.</li>
             <li>Added <strong>Titanium Ore / Ingots</strong> and <strong>Rainbow Opal</strong> as new resources.</li>
-            <li>Added <strong>Engine Mark 3</strong> with Supersonic flight, 500 units/s speed, 300% fuel capacity, and 1% fuel use per second.</li>
+            <li>Added <strong>Engine Mark 3</strong> with Supersonic flight, 200 units/s speed, 300% fuel capacity, and 1% fuel use per second.</li>
             <li>Added <strong>Warp Drive Mark 2</strong> with Rainbow Opal fuel, 50/50 fuel consumption, and faster warp travel.</li>
             <li>Added the <strong>Ship Inventory</strong> for removing installed rocket upgrades and returning them to the player's inventory.</li>
             <li>Added the full <strong>Sound Settings</strong> mixer with Master, Interaction, Player, Nature, World &amp; Special Effects, and Music controls.</li>
@@ -643,6 +697,9 @@
 <script src="js/furnace-asset-data.js"></script>
 <script src="js/jerrycan-asset-data.js"></script>
 <script src="js/scythe-model-data.js"></script>
+<script src="js/wrench-model-data.js"></script>
+<script src="js/blueprint-model-data.js"></script>
+<script src="js/container-model-data.js"></script>
   <script src="js/state/player-state.js"></script>
 <script src="js/state/inventory-state.js"></script>
 <script src="js/state/ui-state.js"></script>
@@ -653,5 +710,6 @@
   <script src="js/state/index.js"></script>
 <script src="js/main.js"></script>
 
+<div id="inventoryPickupStack" class="inventoryPickupStack" aria-live="polite" aria-atomic="false"></div>
 </body>
 </html>

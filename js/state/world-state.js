@@ -15,6 +15,7 @@
     crystals: [],
     furnaces: [],
     launchPads: [],
+    containers: [],
     droppedItems: []
   };
 })();

@@ -35,6 +35,9 @@
   let furnaceModelTemplate = null;
   let jerrycanModelTemplate = null;
   let scytheModelTemplate = null;
+  let wrenchModelTemplate = null;
+  let blueprintModelTemplate = null;
+  let containerModelTemplate = null;
 
   const SUPABASE_URL = "https://ktzhvnpbksngleegdikd.supabase.co";
   const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hrbbTSn2zhmFaejsrJd_ig_6RMF4k7G";
@@ -212,6 +215,39 @@
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes;
+  }
+
+  function buildEmbeddedWrenchModel() {
+    const source = window.PocketUniverseWrenchModel;
+    if (!source || !Array.isArray(source.positions) || !source.positions.length) return null;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(source.positions, 3));
+    if (Array.isArray(source.normals) && source.normals.length === source.positions.length) {
+      geometry.setAttribute('normal', new THREE.Float32BufferAttribute(source.normals, 3));
+    } else {
+      geometry.computeVertexNormals();
+    }
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    const box = geometry.boundingBox;
+    const center = box.getCenter(new THREE.Vector3());
+    geometry.translate(-center.x, -(box.min.y), -center.z);
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    const group = new THREE.Group();
+    const material = new THREE.MeshStandardMaterial({
+      name: 'WrenchMetal',
+      color: 0x8c939a,
+      roughness: 0.34,
+      metalness: 0.86,
+      side: THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = 'WrenchModel';
+    mesh.frustumCulled = false;
+    mesh.rotation.y = -Math.PI / 2;
+    group.add(mesh);
+    return group;
   }
 
   function buildEmbeddedScytheModel() {
@@ -482,14 +518,166 @@
     return group;
   }
 
-  function loadToolModels() {
+  function buildEmbeddedBlueprintModel() {
+    const source = window.PocketUniverseBlueprintModel;
+    if (!source || !Array.isArray(source.parts) || !source.parts.length) return null;
+    const group = new THREE.Group();
+    let meshCount = 0;
+    for (const part of source.parts) {
+      if (!part || !Array.isArray(part.positions) || !part.positions.length) continue;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(part.positions, 3));
+      if (Array.isArray(part.uvs) && part.uvs.length === (part.positions.length / 3) * 2) {
+        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(part.uvs, 2));
+      }
+      if (Array.isArray(part.normals) && part.normals.length === part.positions.length) {
+        geometry.setAttribute('normal', new THREE.Float32BufferAttribute(part.normals, 3));
+      } else {
+        geometry.computeVertexNormals();
+      }
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+
+      let texture = null;
+      if (part.textureDataURL) {
+        try {
+          const image = new Image();
+          texture = new THREE.Texture(image);
+          texture.encoding = THREE.sRGBEncoding;
+          texture.anisotropy = 1;
+          image.onload = () => { texture.needsUpdate = true; };
+          image.src = part.textureDataURL;
+          texture.needsUpdate = true;
+        } catch (e) {
+          console.warn('Blueprint texture could not be created; using fallback color.', e);
+        }
+      }
+      const material = new THREE.MeshStandardMaterial({
+        name: 'BlueprintPaper',
+        map: texture,
+        color: 0xffffff,
+        roughness: 0.78,
+        metalness: 0.0,
+        transparent: true,
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.name = 'BlueprintModelPart';
+      mesh.frustumCulled = false;
+      group.add(mesh);
+      meshCount++;
+    }
+    if (!meshCount) return null;
+    group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(group);
+    if (box.isEmpty()) return null;
+    const center = box.getCenter(new THREE.Vector3());
+    group.position.x -= center.x;
+    group.position.z -= center.z;
+    group.position.y -= box.min.y;
+    group.updateMatrixWorld(true);
+    group.traverse(node => { if (node.isMesh) node.frustumCulled = false; });
+    return group;
+  }
+
+  async function buildEmbeddedContainerFromObj() {
+    const source = window.PocketUniverseContainerOBJ;
+    if (typeof source !== 'string' || !source.trim()) return null;
+
+    const vertices = [], uvs = [], normals = [];
+    const expandedPositions = [], expandedUVs = [], expandedNormals = [];
+    const resolveIndex = (rawIndex, length) => {
+      const n = Number(rawIndex);
+      return n < 0 ? length + n : n - 1;
+    };
+    const pushVertex = (token) => {
+      const parts = token.split('/');
+      const vi = resolveIndex(parts[0], vertices.length);
+      const ti = parts[1] ? resolveIndex(parts[1], uvs.length) : -1;
+      const ni = parts[2] ? resolveIndex(parts[2], normals.length) : -1;
+      const v = vertices[vi];
+      if (!v) return false;
+      expandedPositions.push(v[0], v[1], v[2]);
+      if (ti >= 0 && uvs[ti]) expandedUVs.push(uvs[ti][0], uvs[ti][1]); else expandedUVs.push(0, 0);
+      if (ni >= 0 && normals[ni]) expandedNormals.push(normals[ni][0], normals[ni][1], normals[ni][2]); else expandedNormals.push(0, 0, 0);
+      return true;
+    };
+    for (const raw of source.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const parts = line.split(/\s+/);
+      if (parts[0] === 'v' && parts.length >= 4) vertices.push([Number(parts[1]), Number(parts[2]), Number(parts[3])]);
+      else if (parts[0] === 'vt' && parts.length >= 3) uvs.push([Number(parts[1]), Number(parts[2])]);
+      else if (parts[0] === 'vn' && parts.length >= 4) normals.push([Number(parts[1]), Number(parts[2]), Number(parts[3])]);
+      else if (parts[0] === 'f' && parts.length >= 4) {
+        const face = parts.slice(1);
+        for (let i = 1; i < face.length - 1; i++) [face[0], face[i], face[i + 1]].forEach(pushVertex);
+      }
+    }
+    if (!expandedPositions.length) return null;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(expandedPositions, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(expandedUVs, 2));
+    let haveNormals = expandedNormals.length === expandedPositions.length;
+    if (haveNormals) {
+      let any = false;
+      for (let i = 0; i < expandedNormals.length; i += 3) {
+        if (expandedNormals[i] ** 2 + expandedNormals[i + 1] ** 2 + expandedNormals[i + 2] ** 2 > 1e-8) { any = true; break; }
+      }
+      haveNormals = any;
+    }
+    if (haveNormals) geometry.setAttribute('normal', new THREE.Float32BufferAttribute(expandedNormals, 3));
+    else geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    let texture = null;
+    try {
+      const dataUrl = window.PocketUniverseContainerTextureDataURL;
+      if (dataUrl) {
+        const image = new Image();
+        await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; image.src = dataUrl; });
+        texture = new THREE.Texture(image);
+        texture.needsUpdate = true;
+        texture.encoding = THREE.sRGBEncoding;
+        texture.magFilter = THREE.NearestFilter;
+        texture.minFilter = THREE.LinearMipMapLinearFilter;
+      }
+    } catch (e) {
+      console.warn('Embedded container texture could not be decoded; using solid material.', e);
+    }
+    const material = new THREE.MeshStandardMaterial({
+      name: 'ContainerMaterial', map: texture, color: 0xffffff,
+      roughness: 0.58, metalness: 0.45, side: THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.frustumCulled = false;
+    const group = new THREE.Group();
+    group.add(mesh);
+    group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(group);
+    if (box.isEmpty()) return null;
+    const center = box.getCenter(new THREE.Vector3());
+    group.position.x -= center.x;
+    group.position.z -= center.z;
+    group.position.y -= box.min.y;
+    group.traverse(node => { if (node.isMesh) node.frustumCulled = false; });
+    return group;
+  }
+
+  async function loadToolModels() {
     // The supplied OBJ files are now embedded as geometry data and become the
     // authoritative tool meshes. This avoids the unreliable external OBJ/MTL
     // loader path that was silently falling back to the old procedural models.
     axeModelTemplate = buildEmbeddedToolModel('axe');
     pickaxeModelTemplate = buildEmbeddedToolModel('pickaxe');
+    wrenchModelTemplate = buildEmbeddedWrenchModel();
+    blueprintModelTemplate = buildEmbeddedBlueprintModel();
+    containerModelTemplate = await buildEmbeddedContainerFromObj();
     if (!axeModelTemplate) console.warn('Embedded axe model unavailable; using procedural fallback.');
     if (!pickaxeModelTemplate) console.warn('Embedded pickaxe model unavailable; using procedural fallback.');
+    if (!wrenchModelTemplate) console.warn('Embedded wrench model unavailable; using procedural fallback.');
+    if (!blueprintModelTemplate) console.warn('Embedded blueprint model unavailable; using procedural fallback.');
+    if (!containerModelTemplate) console.warn('Embedded container model unavailable; using procedural fallback.');
   }
 
   function showFatalError(message) {
@@ -975,12 +1163,14 @@
     const spaceMapViewportWrap = document.getElementById('spaceMapViewportWrap');
     const spaceMapCanvas = document.getElementById('spaceMapCanvas');
     const spaceMapClose = document.getElementById('spaceMapClose');
+    const spaceMapReset = document.getElementById('spaceMapReset');
     const spaceMapWarpStatus = document.getElementById('spaceMapWarpStatus');
     const warpOverlay = document.getElementById('warpOverlay');
     const warpOverlayText = document.getElementById('warpOverlayText');
     const warpOverlaySubtext = document.getElementById('warpOverlaySubtext');
     const spaceMapCtx = spaceMapCanvas.getContext('2d');
     let spaceMapOpen=false, pendingWarpBody=null, warpInProgress=false, warpStartedAt=0, warpDurationSeconds=0, warpTargetId=null, warpFuelConsumed=true, warpFuelType='moon_quartz';
+    let spaceMapZoom=1, spaceMapPanX=0, spaceMapPanY=0, spaceMapDragging=false, spaceMapDragMoved=false, spaceMapLastX=0, spaceMapLastY=0;
     // During a warp the normal 3D gameplay view is hidden while the dedicated warp overlay
     // remains visible. This makes the hyperspace effect the entire visual focus of the trip.
     function setWarpGameplayVisibility(hidden){
@@ -1003,7 +1193,7 @@
       a:.25+((Math.sin(i*3.17+1.4)+1)/2)*.7, r:i%9===0?1.4:(i%3===0?1:.6)
     })).map(s=>({...s,x:(s.x+1)%1,y:(s.y+1)%1}));
     function getSpaceBodyPosition(id,out=new THREE.Vector3()){
-      if(id==='ivis') return out.set(0,0,0);
+      if(id==='ivis') return out.copy(ivisSolarOrbitPosition);
       if(id==='sun') return out.copy(sunMesh.position);
       if(id==='moon') return moonMesh.getWorldPosition(out);
       if(id==='cordelia') return cordeliaMesh.getWorldPosition(out);
@@ -1017,12 +1207,29 @@
       for(const s of spaceMapStarSeeds){spaceMapCtx.globalAlpha=s.a;spaceMapCtx.fillStyle='#eaf3ff';spaceMapCtx.beginPath();spaceMapCtx.arc(s.x*w,s.y*h,s.r,0,Math.PI*2);spaceMapCtx.fill();} spaceMapCtx.globalAlpha=1;
       const positions={}; for(const id of Object.keys(SPACE_BODY_META)) positions[id]=getSpaceBodyPosition(id,new THREE.Vector3());
       const xs=Object.values(positions).map(p=>p.x), zs=Object.values(positions).map(p=>p.z), minX=Math.min(...xs),maxX=Math.max(...xs),minZ=Math.min(...zs),maxZ=Math.max(...zs), pad=1700;
-      const spanX=Math.max(1,maxX-minX+pad*2), spanZ=Math.max(1,maxZ-minZ+pad*2), scale=Math.min((w-120)/spanX,(h-100)/spanZ), cx=(minX+maxX)/2, cz=(minZ+maxZ)/2;
-      const toScreen=p=>({x:w/2+(p.x-cx)*scale,y:h/2+(p.z-cz)*scale});
+      const spanX=Math.max(1,maxX-minX+pad*2), spanZ=Math.max(1,maxZ-minZ+pad*2), baseScale=Math.min((w-120)/spanX,(h-100)/spanZ), scale=baseScale*spaceMapZoom, cx=(minX+maxX)/2, cz=(minZ+maxZ)/2;
+      const toScreen=p=>({x:w/2+(p.x-cx)*scale+spaceMapPanX,y:h/2+(p.z-cz)*scale+spaceMapPanY});
       spaceMapCtx.save();spaceMapCtx.setLineDash([5,7]);spaceMapCtx.lineWidth=1;spaceMapCtx.strokeStyle='rgba(142,175,225,.27)';
       let iv=toScreen(positions.ivis);spaceMapCtx.beginPath();spaceMapCtx.ellipse(iv.x,iv.y,MOON_ORBIT_RADIUS*scale,MOON_ORBIT_RADIUS*scale*.92,0,0,Math.PI*2);spaceMapCtx.stroke();
       let su=toScreen(positions.sun);spaceMapCtx.beginPath();spaceMapCtx.ellipse(su.x,su.y,CORDELIA_SUN_DISTANCE*scale,CORDELIA_SUN_DISTANCE*scale*.98,0,0,Math.PI*2);spaceMapCtx.stroke();
-      let ss=toScreen(positions.syspo);spaceMapCtx.strokeStyle='rgba(118,100,205,.30)';spaceMapCtx.beginPath();spaceMapCtx.ellipse(ss.x,ss.y,SYSP0_SOLAR_DISTANCE*scale,SYSP0_SOLAR_DISTANCE*scale*.98,0,0,Math.PI*2);spaceMapCtx.stroke();
+      drawProjectedOrbit(positions.sun, ivisSolarOrbitBasisA, ivisSolarOrbitBasisB, IVIS_SUN_ORBIT_DISTANCE, 'rgba(84,217,120,.28)');
+      function drawProjectedOrbit(center, basisA, basisB, radius, strokeStyle) {
+        const segments = 144;
+        spaceMapCtx.strokeStyle = strokeStyle;
+        spaceMapCtx.beginPath();
+        for (let i = 0; i <= segments; i++) {
+          const t = (i / segments) * Math.PI * 2;
+          const point = center.clone()
+            .addScaledVector(basisA, Math.cos(t) * radius)
+            .addScaledVector(basisB, Math.sin(t) * radius);
+          const projected = toScreen(point);
+          if (i === 0) spaceMapCtx.moveTo(projected.x, projected.y);
+          else spaceMapCtx.lineTo(projected.x, projected.y);
+        }
+        spaceMapCtx.stroke();
+      }
+      const ss=toScreen(positions.syspo);
+      drawProjectedOrbit(positions.sun, syspoSolarOrbitBasisA, syspoSolarOrbitBasisB, SYSP0_SOLAR_DISTANCE, 'rgba(118,100,205,.30)');
       let aur=toScreen(positions.aurora);spaceMapCtx.strokeStyle='rgba(88,214,124,.26)';spaceMapCtx.beginPath();spaceMapCtx.ellipse(toScreen(positions.syspo).x,toScreen(positions.syspo).y,AURORA_ORBIT_RADIUS*scale,AURORA_ORBIT_RADIUS*scale*.92,0,0,Math.PI*2);spaceMapCtx.stroke();
       let mil=toScreen(positions.mileria);spaceMapCtx.strokeStyle='rgba(163,167,173,.26)';spaceMapCtx.beginPath();spaceMapCtx.ellipse(ss.x,ss.y,MILERIA_ORBIT_RADIUS*scale,MILERIA_ORBIT_RADIUS*scale*.92,0,0,Math.PI*2);spaceMapCtx.stroke();
       spaceMapCtx.restore();
@@ -1031,11 +1238,17 @@
       spaceMapCanvas._spaceMapLayout={positions,toScreen};
     }
     function getWarpDriveRocket(){ if(!playerState.inRocket||playerState.rocketLanded||!flightRocket||!flightPad) return null; return (flightRocket.warpDrive||flightPad.warpDrive)?flightRocket:null; }
+    function resetSpaceMapView(){ spaceMapZoom=1; spaceMapPanX=0; spaceMapPanY=0; spaceMapDragMoved=false; if(spaceMapOpen) drawSpaceMap(); }
+    function clampSpaceMapPan(w,h){
+      const maxX=Math.max(120,w*(spaceMapZoom-1)*0.72+120), maxY=Math.max(120,h*(spaceMapZoom-1)*0.72+120);
+      spaceMapPanX=Math.max(-maxX,Math.min(maxX,spaceMapPanX));
+      spaceMapPanY=Math.max(-maxY,Math.min(maxY,spaceMapPanY));
+    }
     function openSpaceMap(){
       if(!getWarpDriveRocket()){showFlightPrompt('Warp Drive required for the Space Map.');return false;}
       if(state.gameState!=='playing'||state.paused||!playerState.rocketInSpace||warpInProgress)return false;
       if(document.pointerLockElement===canvas)document.exitPointerLock();clearPhysicalKeys();for(const k in systemState.keys)systemState.keys[k]=false;
-      spaceMapOpen=true;pendingWarpBody=null;spaceMapWarpStatus.classList.add('hidden');spaceMapOverlay.classList.remove('hidden');state.paused=true;document.body.classList.add('map-open');drawSpaceMap();return true;
+      spaceMapOpen=true;pendingWarpBody=null;spaceMapWarpStatus.classList.add('hidden');spaceMapOverlay.classList.remove('hidden');state.paused=true;document.body.classList.add('map-open');resetSpaceMapView();drawSpaceMap();return true;
     }
     function closeSpaceMap(){if(!spaceMapOpen)return;spaceMapOpen=false;pendingWarpBody=null;spaceMapOverlay.classList.add('hidden');spaceMapWarpStatus.classList.add('hidden');document.body.classList.remove('map-open');if(state.gameState==='playing'&&!warpInProgress){state.paused=false;attemptPointerLock();}}
     function toggleSpaceMap(){if(spaceMapOpen)closeSpaceMap();else openSpaceMap();}
@@ -1066,7 +1279,6 @@
     }
     function startWarp(targetId){
       if(!getWarpDriveRocket()||!SPACE_BODY_META[targetId])return false;
-      if(getInventoryCount('moon_quartz')<1){closeSpaceMap();showFlightPrompt('NOT ENOUGH MOON QUARTZ');return true;}
       const center=getSpaceBodyPosition(targetId,new THREE.Vector3()),distance=flightPosition.distanceTo(center);
       const warpType=getActiveWarpDriveType();
       const fuelId=warpType==='mk2'?'rainbow_opal':'moon_quartz';
@@ -1101,8 +1313,35 @@
       setLoopAudioMode('warpDrive',false);warpOverlay.classList.add('hidden');setWarpGameplayVisibility(false);warpInProgress=false;warpTargetId=null;setRocketFlightUI();showFlightPrompt(warpFuelType==='rainbow_opal' ? (warpFuelConsumed ? 'WARP COMPLETE · Rainbow Opal consumed' : 'WARP COMPLETE · Rainbow Opal preserved') : 'WARP COMPLETE · Moon Quartz used');
     }
     spaceMapClose.addEventListener('click',closeSpaceMap);
-    spaceMapCanvas.addEventListener('click',(e)=>{if(!spaceMapOpen||warpInProgress)return;const rect=spaceMapCanvas.getBoundingClientRect(),x=e.clientX-rect.left,y=e.clientY-rect.top,layout=spaceMapCanvas._spaceMapLayout;if(!layout)return;let picked=null,best=Infinity;for(const [id,pos] of Object.entries(layout.positions)){const p=layout.toScreen(pos),d=Math.hypot(x-p.x,y-p.y),hit=id==='sun'?26:18;if(d<=hit&&d<best){best=d;picked=id;}}if(!picked){spaceMapWarpStatus.innerHTML='<div>Select a celestial body to warp there.</div>';spaceMapWarpStatus.classList.remove('hidden');return;}if(pendingWarpBody===picked)startWarp(picked);else showWarpConfirmation(picked);});
-    window.addEventListener('resize',()=>{if(spaceMapOpen)drawSpaceMap();});
+    spaceMapReset.addEventListener('click',resetSpaceMapView);
+    spaceMapCanvas.addEventListener('pointerdown',(e)=>{
+      if(!spaceMapOpen||warpInProgress||e.button!==0)return;
+      spaceMapDragging=true;spaceMapDragMoved=false;spaceMapLastX=e.clientX;spaceMapLastY=e.clientY;
+      spaceMapCanvas.style.cursor='grabbing';spaceMapCanvas.setPointerCapture?.(e.pointerId);e.preventDefault();
+    });
+    spaceMapCanvas.addEventListener('pointermove',(e)=>{
+      if(!spaceMapDragging||!spaceMapOpen)return;
+      const dx=e.clientX-spaceMapLastX,dy=e.clientY-spaceMapLastY;
+      if(Math.abs(dx)+Math.abs(dy)>2)spaceMapDragMoved=true;
+      spaceMapLastX=e.clientX;spaceMapLastY=e.clientY;spaceMapPanX+=dx;spaceMapPanY+=dy;
+      const rect=spaceMapViewportWrap.getBoundingClientRect();clampSpaceMapPan(rect.width,rect.height);drawSpaceMap();e.preventDefault();
+    });
+    function endSpaceMapDrag(e){ if(!spaceMapDragging)return; spaceMapDragging=false;spaceMapCanvas.style.cursor='grab';spaceMapCanvas.releasePointerCapture?.(e.pointerId); }
+    spaceMapCanvas.addEventListener('pointerup',endSpaceMapDrag);
+    spaceMapCanvas.addEventListener('pointercancel',endSpaceMapDrag);
+    spaceMapCanvas.addEventListener('wheel',(e)=>{
+      if(!spaceMapOpen||warpInProgress)return;
+      e.preventDefault();
+      const rect=spaceMapCanvas.getBoundingClientRect(),mx=e.clientX-rect.left,my=e.clientY-rect.top,oldZoom=spaceMapZoom;
+      const factor=e.deltaY<0?1.15:0.87, nextZoom=Math.max(.55,Math.min(8,oldZoom*factor));
+      if(nextZoom===oldZoom)return;
+      const cx=rect.width/2,cy=rect.height/2;
+      spaceMapPanX += (mx-cx-spaceMapPanX)*(1-nextZoom/oldZoom);
+      spaceMapPanY += (my-cy-spaceMapPanY)*(1-nextZoom/oldZoom);
+      spaceMapZoom=nextZoom;clampSpaceMapPan(rect.width,rect.height);drawSpaceMap();
+    },{passive:false});
+    spaceMapCanvas.addEventListener('click',(e)=>{if(!spaceMapOpen||warpInProgress)return;if(spaceMapDragMoved){spaceMapDragMoved=false;return;}const rect=spaceMapCanvas.getBoundingClientRect(),x=e.clientX-rect.left,y=e.clientY-rect.top,layout=spaceMapCanvas._spaceMapLayout;if(!layout)return;let picked=null,best=Infinity;for(const [id,pos] of Object.entries(layout.positions)){const p=layout.toScreen(pos),d=Math.hypot(x-p.x,y-p.y),hit=id==='sun'?26:18;if(d<=hit&&d<best){best=d;picked=id;}}if(!picked){spaceMapWarpStatus.innerHTML='<div>Select a celestial body to warp there.</div>';spaceMapWarpStatus.classList.remove('hidden');return;}if(pendingWarpBody===picked)startWarp(picked);else showWarpConfirmation(picked);});
+    window.addEventListener('resize',()=>{if(spaceMapOpen){const rect=spaceMapViewportWrap.getBoundingClientRect();clampSpaceMapPan(rect.width,rect.height);drawSpaceMap();}});
 
     mapClose.addEventListener('click', closePlanetMap);
     mapViewportWrap.addEventListener('pointerdown', (e) => {
@@ -1175,7 +1414,7 @@
       color: 0xffffff, transparent: true, opacity: 0.06, side: THREE.BackSide, fog: false,
     });
     const cloudMesh = new THREE.Mesh(cloudGeo, cloudMat);
-    scene.add(cloudMesh);
+    // cloudMesh is Ivis-local and is attached to planetSystem below, after that group is created.
 
     // ---------- low cloud layer ----------
     // Simple stylized cloud clusters circling the planet at roughly 120 units above the
@@ -1185,7 +1424,7 @@
     const CLOUD_LAYER_RADIUS = 360;
 
     const cloudLayer = new THREE.Group();
-    scene.add(cloudLayer);
+    // cloudLayer is Ivis-local and is attached to planetSystem below.
 
     const cloudPuffGeo = new THREE.SphereGeometry(1, 12, 8);
     const cloudPuffMat = new THREE.MeshBasicMaterial({
@@ -1269,7 +1508,7 @@
     // a small control panel to trigger rain or clear weather on demand.
     const weatherRainGroup = new THREE.Group();
     weatherRainGroup.renderOrder = 20;
-    scene.add(weatherRainGroup);
+    // weatherRainGroup is Ivis-local and is attached to planetSystem below.
     const rainDropCount = 4200;
     const rainPositions = new Float32Array(rainDropCount * 6);
     const rainSpeeds = new Float32Array(rainDropCount);
@@ -1305,8 +1544,8 @@
     const weatherControlStatus = document.getElementById('weatherControlStatus');
 
     function isWeatherAllowedHere() {
-      const active = playerState.inRocket ? flightPosition : player.position;
-      return active.length() < WEATHER_CLOUD_RADIUS - 1;
+      if (playerState.inRocket) return flightPosition.distanceTo(ivisSolarOrbitPosition) < WEATHER_CLOUD_RADIUS - 1;
+      return player.position.length() < WEATHER_CLOUD_RADIUS - 1;
     }
 
     function setRainParticle(i, centerWorld, downWorld) {
@@ -1376,8 +1615,7 @@
       const clearStrength = clearing ? 1 - THREE.MathUtils.clamp(weatherClearTimer / WEATHER_CLEARING_SECONDS, 0, 1) : 0;
       const strength = building ? THREE.MathUtils.clamp(weatherBuildTimer / WEATHER_BUILDUP_SECONDS, 0, 1) : (raining ? 1 : clearStrength);
       const weatherActive = building || raining || clearing;
-      const active = playerState.inRocket ? flightPosition : player.position;
-      const playerRadius = active.length();
+      const playerRadius = playerState.inRocket ? flightPosition.distanceTo(ivisSolarOrbitPosition) : player.position.length();
       // Weather is local to the planet's surface, not tied to where the storm was started.
       // Anywhere below the cloud deck can receive rain; above the cloud deck it clears.
       const underClouds = playerRadius < CLOUD_LAYER_RADIUS - 1;
@@ -1566,8 +1804,8 @@
       activeCamera.getWorldPosition(center);
       const playerWorldPos = new THREE.Vector3();
       player.getWorldPosition(playerWorldPos);
-      const playerDir = playerWorldPos.normalize();
-      const sunDir = sunMesh.position.clone().normalize();
+      const playerDir = playerWorldPos.sub(ivisSolarOrbitPosition).normalize();
+      const sunDir = sunMesh.position.clone().sub(ivisSolarOrbitPosition).normalize();
       const sunDot = playerDir.dot(sunDir);
       const night = THREE.MathUtils.smoothstep(-sunDot, 0.02, 0.42);
       const atmosphereRadius = center.length();
@@ -1831,6 +2069,35 @@
     sunLight.position.copy(sunMesh.position);
     scene.add(sunMesh);
     scene.add(sunLight);
+
+    // ---------- Ivis solar orbit ----------
+    // Ivis now travels around the same Sun as Cordelia and Syspo. The initial orbit phase
+    // is chosen so Ivis starts exactly where it has always started (the world origin) while
+    // keeping a constant 10,000-unit distance from the Sun.
+    const IVIS_SUN_ORBIT_DISTANCE = SUN_DISTANCE;
+    const IVIS_SUN_ORBIT_PERIOD = 1800; // 30 minutes per full orbit
+    let ivisSolarOrbitAngle = 0;
+    const ivisSolarOrbitPosition = new THREE.Vector3();
+    const ivisSolarOrbitBasisA = new THREE.Vector3();
+    const ivisSolarOrbitBasisB = new THREE.Vector3();
+    const ivisSolarOrbitInitialDirection = sunMesh.position.clone().normalize().multiplyScalar(-1);
+    const ivisSolarReferenceAxis = Math.abs(ivisSolarOrbitInitialDirection.y) < 0.9
+      ? new THREE.Vector3(0, 1, 0)
+      : new THREE.Vector3(1, 0, 0);
+    // Basis A is the exact initial Sun -> Ivis radial direction so angle 0 reproduces the
+    // historical placement at the world origin. Basis B completes the orbital plane.
+    ivisSolarOrbitBasisA.copy(ivisSolarOrbitInitialDirection);
+    ivisSolarOrbitBasisB.crossVectors(ivisSolarReferenceAxis, ivisSolarOrbitInitialDirection).normalize();
+    function updateIvisSolarOrbit(delta) {
+      ivisSolarOrbitAngle = (ivisSolarOrbitAngle + delta * Math.PI * 2 / IVIS_SUN_ORBIT_PERIOD) % (Math.PI * 2);
+      ivisSolarOrbitPosition.copy(sunMesh.position)
+        .addScaledVector(ivisSolarOrbitBasisA, Math.cos(ivisSolarOrbitAngle) * IVIS_SUN_ORBIT_DISTANCE)
+        .addScaledVector(ivisSolarOrbitBasisB, Math.sin(ivisSolarOrbitAngle) * IVIS_SUN_ORBIT_DISTANCE);
+      if (typeof planetSystem !== 'undefined') planetSystem.position.copy(ivisSolarOrbitPosition);
+    }
+    // Initial position is exactly the historical world origin.
+    ivisSolarOrbitPosition.copy(sunMesh.position)
+      .addScaledVector(ivisSolarOrbitBasisA, IVIS_SUN_ORBIT_DISTANCE);
 
     // ---------- solar hazard ----------
     // The Sun is deliberately dangerous at close range. Distances here are measured
@@ -2203,8 +2470,11 @@
         return true;
       }
       if (distance <= SYSP0_CORE_WARNING_DISTANCE) {
+        // Warning only: do NOT lock flight movement here. The player must be able to
+        // continue through the final 50 units and actually reach the core so the
+        // Syspo recovery sequence can trigger. This mirrors the Sun hazard behavior.
         syspoWarningOverlay.classList.add('active');
-        return true;
+        return false;
       }
       syspoWarningOverlay.classList.remove('active');
       return false;
@@ -2376,7 +2646,8 @@
         Math.sin(moonOrbitAngle) * MOON_ORBIT_RADIUS
       );
       moonOrbitPosition.applyQuaternion(moonOrbitTiltQuat);
-      moonMesh.position.copy(moonOrbitPosition);
+      // The Moon follows Ivis around the Sun, while maintaining its own local orbit around Ivis.
+      moonMesh.position.copy(ivisSolarOrbitPosition).add(moonOrbitPosition);
       moonMesh.rotation.y += delta * 0.035;
     }
 
@@ -2385,7 +2656,7 @@
     // center to the Moon's center. This controls the ship's up-vector/orientation while
     // still keeping free-flight movement fully under the pilot's control.
     function updateSpacePlaneState(position) {
-      const ivisDistance = position.length();
+      const ivisDistance = position.distanceTo(ivisSolarOrbitPosition);
       if (!freeSpacePlaneActive && ivisDistance >= FREE_SPACE_PLANE_SWITCH_DISTANCE) {
         freeSpacePlaneActive = true;
         freeSpaceDown.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1);
@@ -2449,7 +2720,7 @@
       else if (cordeliaGravityActive && cordeliaDistance > CORDELIA_GRAVITY_EXIT_DISTANCE) cordeliaGravityActive = false;
       if (cordeliaGravityActive) return out.copy(cordeliaWorldPosition);
 
-      return out.set(0, 0, 0);
+      return out.copy(ivisSolarOrbitPosition);
     }
     updateMoon(0);
 
@@ -2842,8 +3113,8 @@
     const tempFogColor = new THREE.Color();
 
     function updateDayNight(delta) {
-      // Rotate the whole planet once every DAY_LENGTH_SECONDS. Because the sun itself
-      // is stationary, the planet naturally carries different terrain from daylight
+      // Rotate the whole planet once every DAY_LENGTH_SECONDS around its local axis.
+      // Ivis simultaneously orbits the stationary Sun on a much longer solar cycle. Different terrain
       // into darkness as it spins.
       state.planetSpinAngle += (Math.PI * 2 / DAY_LENGTH_SECONDS) * delta;
       planetSystem.rotation.y = state.planetSpinAngle;
@@ -2861,10 +3132,10 @@
         return;
       }
       onCordeliaAtmosphere = false;
-      tempPlayerDir.copy(playerWorldPos).normalize();
+      tempPlayerDir.copy(playerWorldPos).sub(ivisSolarOrbitPosition).normalize();
 
       // The fixed sun's position gives us a constant direction from the planet center.
-      tempSunDir.copy(sunMesh.position).normalize();
+      tempSunDir.copy(sunMesh.position).sub(ivisSolarOrbitPosition).normalize();
       const sunDot = tempPlayerDir.dot(tempSunDir);
 
       // sunDot:   +1 = noon, 0 = horizon, -1 = midnight.
@@ -2884,7 +3155,7 @@
       // As the rocket climbs above the upper atmosphere, gradually blend the daytime/night
       // sky into a deep space sky. The transition now runs from 360 to 600 units from Ivis
       // center, keeping the atmospheric band proportional to the doubled planet size.
-      const playerRadius = playerWorldPos.length();
+      const playerRadius = playerWorldPos.distanceTo(ivisSolarOrbitPosition);
       const atmosphereBlendForStorm = THREE.MathUtils.smoothstep(playerRadius, ROCKET_ATMOSPHERE_FADE_START, ROCKET_ATMOSPHERE_RADIUS);
       const weatherUnderClouds = playerRadius < CLOUD_LAYER_RADIUS - 1;
       const rainDarken = weatherUnderClouds && (weatherState === 'building' || weatherState === 'raining')
@@ -2931,6 +3202,12 @@
     // by the planet rotating around its own axis rather than the sun orbiting the planet.
     const planetSystem = new THREE.Group();
     scene.add(planetSystem);
+
+    // Ivis-local atmosphere/weather objects must travel with the planet as it orbits the Sun.
+    // Keeping them under planetSystem prevents clouds/rain from being left behind in solar space.
+    planetSystem.add(cloudMesh);
+    planetSystem.add(cloudLayer);
+    planetSystem.add(weatherRainGroup);
 
     const planetGeo = new THREE.SphereGeometry(PLANET_RADIUS, 128, 128);
     {
@@ -3107,7 +3384,10 @@
     const ironOreSpawns = worldState.ironOres;
     const furnaces = worldState.furnaces;
     const launchPads = worldState.launchPads;
+    const containers = worldState.containers;
     const droppedItems = worldState.droppedItems;
+    let activeContainer = null;
+    let nextContainerId = 1;
     const placedDrills = [];
     let activeFurnace = null;
 
@@ -3115,29 +3395,213 @@
     let furnaceSmeltStartedAt = 0;
     // Furnace breaking state is shared through systemState.
 
-    function createFurnaceObject(dir, yaw = Math.random() * Math.PI * 2) {
+    // ---------- generic placeable-surface frame ----------
+    // All current placeables use the active celestial body's LOCAL coordinate frame.
+    // Parenting the object to that body means it follows both the body's own spin and
+    // every parent orbit automatically (Moon/Cordelia/Aurora/Mileria/Syspo hierarchy).
+    function getPlaceableSurfaceContext(bodyId = null) {
+      const id = bodyId || (omegaWalkingBodyId || (moonWalking ? 'moon' : (cordeliaWalking ? 'cordelia' : 'ivis')));
+      if (id === 'aurora' || id === 'mileria') {
+        const body = getOmegaMesh(id);
+        return body ? { id, parent: body, radius: id === 'aurora' ? AURORA_RADIUS : MILERIA_RADIUS, getHeight: d => getOmegaSurfaceHeight(id, d) } : getPlaceableSurfaceContext('ivis');
+      }
+      if (id === 'moon') return { id, parent: moonMesh, radius: MOON_RADIUS, getHeight: () => 0 };
+      if (id === 'cordelia') return { id, parent: cordeliaMesh, radius: CORDELIA_RADIUS, getHeight: d => cordeliaHeightAt(d) };
+      return { id: 'ivis', parent: planetSystem, radius: PLANET_RADIUS, getHeight: d => heightAt(d) };
+    }
+
+    function getActivePlaceablePlacement() {
+      const ctx = getPlaceableSurfaceContext();
+      const bodyWorldQuat = ctx.parent.getWorldQuaternion(new THREE.Quaternion());
+      const invBodyQuat = bodyWorldQuat.clone().invert();
+      const playerLocal = player.position.clone().normalize();
+      const lookWorld = new THREE.Vector3();
+      camera.getWorldDirection(lookWorld).normalize();
+      const lookLocal = lookWorld.applyQuaternion(invBodyQuat);
+      const tangent = lookLocal.sub(playerLocal.clone().multiplyScalar(lookLocal.dot(playerLocal)));
+      if (tangent.lengthSq() < 0.0001) {
+        tangent.set(1, 0, 0).addScaledVector(playerLocal, -playerLocal.x);
+        if (tangent.lengthSq() < 0.0001) tangent.set(0, 0, 1).addScaledVector(playerLocal, -playerLocal.z);
+      }
+      tangent.normalize();
+      const distance = 2.7;
+      const dir = playerLocal.clone().add(tangent.multiplyScalar(distance / Math.max(1, ctx.radius))).normalize();
+      return { ctx, dir };
+    }
+
+    function createContainerStorage() {
+      return Array.from({ length: 20 }, () => null);
+    }
+
+    function createContainerObject(dir, yaw = Math.random() * Math.PI * 2, surfaceBodyId = 'ivis', inventory = null, containerId = null) {
+      const ctx = getPlaceableSurfaceContext(surfaceBodyId);
+      const group = createContainerVisual(0.98);
+      const h = ctx.getHeight(dir);
+      group.position.copy(dir).multiplyScalar(ctx.radius + h + 0.02);
+      group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      group.rotateY(yaw);
+      ctx.parent.add(group);
+      const id = containerId || ('container_' + (nextContainerId++));
+      const parsed = /^container_(\d+)$/.exec(id);
+      if (parsed) nextContainerId = Math.max(nextContainerId, Number(parsed[1]) + 1);
+      const safeInventory = Array.isArray(inventory) && inventory.length === 20
+        ? inventory.map(slot => slot ? { ...slot } : null)
+        : createContainerStorage();
+      const container = { root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id, containerId: id, inventory: safeInventory };
+      containers.push(container);
+      return container;
+    }
+
+    function createContainerVisual(scale = 1) {
+      if (containerModelTemplate) {
+        const actual = containerModelTemplate.clone(true);
+        actual.scale.setScalar(scale);
+        return actual;
+      }
+      const group = new THREE.Group();
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x7f8a92, roughness: 0.58, metalness: 0.48 });
+      const body = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), bodyMat);
+      body.position.y = 0.5;
+      group.add(body);
+      const lid = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.08, 0.86), new THREE.MeshStandardMaterial({ color: 0x9aa5ad, roughness: 0.46, metalness: 0.58 }));
+      lid.position.y = 0.98;
+      group.add(lid);
+      group.scale.setScalar(scale);
+      return group;
+    }
+
+    function findNearbyContainer() {
+      if (state.gameState !== 'playing' || playerState.inRocket) return null;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      let best = null, bestDistance = Infinity;
+      for (const container of containers) {
+        if (!container.root?.visible) continue;
+        const pos = container.root.getWorldPosition(new THREE.Vector3());
+        const d = pos.distanceTo(playerWorld);
+        if (d <= 4.6 && d < bestDistance) { best = container; bestDistance = d; }
+      }
+      return best;
+    }
+
+    function tryPlaceContainer() {
+      if (uiState.equippedItemType !== 'container' || state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || uiState.containerOpen) return false;
+      const placement = getActivePlaceablePlacement();
+      if (!isFurnacePlacementAreaClear(placement.dir, placement.ctx.id)) {
+        const prompt = document.getElementById('crystalPrompt');
+        prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">BLOCKED</span> Find a clear area to place the container';
+        return false;
+      }
+      const idx = getSelectedHotbarInventoryIndex();
+      const currentSlot = inventorySlots[idx];
+      if (!currentSlot || currentSlot.typeId !== 'container') return false;
+      const container = createContainerObject(placement.dir, Math.random() * Math.PI * 2, placement.ctx.id);
+      inventorySlots[idx] = null;
+      refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
+      const prompt = document.getElementById('crystalPrompt');
+      prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">PLACED</span> Container placed';
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 700);
+      return true;
+    }
+
+    function normalizeContainerSlot(slot) {
+      if (!slot || !itemById[slot.typeId] || slot.typeId === 'container') return null;
+      const item = itemById[slot.typeId];
+      return {
+        typeId: slot.typeId,
+        count: Math.max(1, Math.min(item.maxStack, Math.floor(Number(slot.count) || 1))),
+        ...(item.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(item), Number.isFinite(slot.durability) ? Math.floor(slot.durability) : getToolMaxDurability(item))) } : {})
+      };
+    }
+
+    function renderContainerInventoryGrid(grid, sourceSlots, refFactory, extraClass = '') {
+      if (!grid) return;
+      grid.replaceChildren();
+      for (let i = 0; i < sourceSlots.length; i++) {
+        const data = sourceSlots[i];
+        const slot = document.createElement('div');
+        slot.className = 'inventorySlot ' + extraClass;
+        const ref = refFactory(i);
+        if (ref.type === 'inventory') slot.dataset.inventoryIndex = String(i);
+        if (ref.type === 'container') { slot.dataset.containerId = ref.containerId; slot.dataset.containerIndex = String(i); }
+        if (data) {
+          slot.appendChild(makeItemIconElement(data.typeId, 'inventoryGem'));
+          const count = document.createElement('div');
+          count.className = 'inventoryStackCount'; count.textContent = data.count; slot.appendChild(count);
+          slot.addEventListener('mouseenter', (event) => showInventoryTooltip(data, slot, event));
+          slot.addEventListener('mousemove', (event) => positionInventoryTooltip(event.clientX, event.clientY));
+          slot.addEventListener('mouseleave', hideInventoryTooltip);
+        } else {
+          const empty = document.createElement('div'); empty.className = 'inventoryEmptyLabel'; empty.textContent = 'EMPTY'; slot.appendChild(empty);
+        }
+        bindDragSlot(slot, ref);
+        grid.appendChild(slot);
+      }
+    }
+
+    function updateContainerUI() {
+      if (!activeContainer) return;
+      renderContainerInventoryGrid(
+        document.getElementById('containerGrid'),
+        activeContainer.inventory,
+        i => ({ type: 'container', containerId: activeContainer.containerId, index: i }),
+        'containerSlot'
+      );
+      renderContainerInventoryGrid(
+        document.getElementById('containerPlayerInventoryGrid'),
+        inventorySlots,
+        i => ({ type: 'inventory', index: i }),
+        'containerPlayerSlot'
+      );
+    }
+
+    function openContainer(container) {
+      if (!container || state.gameState !== 'playing' || playerState.inRocket || uiState.containerOpen) return false;
+      activeContainer = container;
+      uiState.containerOpen = true;
+      state.paused = true;
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      clearPhysicalKeys();
+      updateContainerUI();
+      const overlay = document.getElementById('containerOverlay');
+      overlay.classList.remove('hidden'); overlay.setAttribute('aria-hidden', 'false');
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      return true;
+    }
+
+    function closeContainer() {
+      if (!uiState.containerOpen) return;
+      uiState.containerOpen = false;
+      activeContainer = null;
+      const overlay = document.getElementById('containerOverlay');
+      overlay.classList.add('hidden'); overlay.setAttribute('aria-hidden', 'true');
+      if (state.gameState === 'playing') { state.paused = false; attemptPointerLock(); }
+    }
+
+    function createFurnaceObject(dir, yaw = Math.random() * Math.PI * 2, surfaceBodyId = 'ivis') {
+      const ctx = getPlaceableSurfaceContext(surfaceBodyId);
       const group = createFurnaceVisual(1.05);
-      const h = heightAt(dir);
+      const h = ctx.getHeight(dir);
       // The supplied Blockbench furnace sits about 2 world units too high in the
       // world model. Keep inventory/drop previews unchanged and lower only the
       // placed furnace along the surface normal so it sits correctly on the ground.
-      group.position.copy(dir).multiplyScalar(PLANET_RADIUS + h + 0.32 - 1.0);
+      group.position.copy(dir).multiplyScalar(ctx.radius + h + 0.32 - 1.0);
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
       group.rotateY(yaw);
-      planetSystem.add(group);
-      const furnace = { root: group, direction: dir.clone(), yaw, inventory: { fuel: null, input: null, output: null }, smeltStartedAt: 0 };
+      ctx.parent.add(group);
+      const furnace = { root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id, inventory: { fuel: null, input: null, output: null }, smeltStartedAt: 0 };
       furnaces.push(furnace);
       return furnace;
     }
 
-    function createDrillObject(dir, yaw = Math.random() * Math.PI * 2, durability = 100) {
+    function createDrillObject(dir, yaw = Math.random() * Math.PI * 2, durability = 100, surfaceBodyId = 'ivis') {
+      const ctx = getPlaceableSurfaceContext(surfaceBodyId);
       const group = createDrillVisual(1.0);
-      const h = heightAt(dir);
-      group.position.copy(dir).multiplyScalar(PLANET_RADIUS + h + 0.28);
+      const h = ctx.getHeight(dir);
+      group.position.copy(dir).multiplyScalar(ctx.radius + h + 0.28);
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
       group.rotateY(yaw);
-      planetSystem.add(group);
-      const drill = { root: group, direction: dir.clone(), yaw, durability: Math.max(0, Math.min(100, Number(durability) || 0)) };
+      ctx.parent.add(group);
+      const drill = { root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id, durability: Math.max(0, Math.min(100, Number(durability) || 0)) };
       placedDrills.push(drill);
       return drill;
     }
@@ -3156,15 +3620,16 @@
 
     function tryPlaceDrill() {
       if (uiState.equippedItemType !== 'drill' || state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen) return false;
-      const dir = getFurnacePlacementDirection();
-      if (!isFurnacePlacementAreaClear(dir)) {
+      const placement = getActivePlaceablePlacement();
+      const dir = placement.dir;
+      if (!isFurnacePlacementAreaClear(dir, placement.ctx.id)) {
         const prompt = document.getElementById('crystalPrompt');
         prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">BLOCKED</span> Find a clear area to place the drill';
         return false;
       }
       const current = getCurrentToolSlot();
       if (!current || current.item.id !== 'drill') return false;
-      const drill = createDrillObject(dir, Math.random() * Math.PI * 2, current.slot.durability == null ? 100 : current.slot.durability);
+      const drill = createDrillObject(dir, Math.random() * Math.PI * 2, current.slot.durability == null ? 100 : current.slot.durability, placement.ctx.id);
       inventorySlots[current.index] = null;
       refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
       const prompt = document.getElementById('crystalPrompt');
@@ -3225,7 +3690,7 @@
         const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden'); prompt.textContent = 'Inventory full — make room first';
         return true;
       }
-      addItemToInventory('drill', 1, drill.durability);
+      addItemToInventory('drill', 1, drill.durability, true);
       if (drill.root.parent) drill.root.parent.remove(drill.root);
       const idx = placedDrills.indexOf(drill); if (idx >= 0) placedDrills.splice(idx, 1);
       const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden');
@@ -3435,14 +3900,15 @@
       group.scale.setScalar(scale); return group;
     }
 
-    function createLaunchPadObject(dir, yaw = Math.random() * Math.PI * 2) {
+    function createLaunchPadObject(dir, yaw = Math.random() * Math.PI * 2, surfaceBodyId = 'ivis') {
+      const ctx = getPlaceableSurfaceContext(surfaceBodyId);
       const group = createLaunchPadVisual(1.0);
-      const h = heightAt(dir);
-      group.position.copy(dir).multiplyScalar(PLANET_RADIUS + h + 0.08);
+      const h = ctx.getHeight(dir);
+      group.position.copy(dir).multiplyScalar(ctx.radius + h + 0.08);
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
       group.rotateY(yaw);
-      planetSystem.add(group);
-      const pad = { root: group, direction: dir.clone(), yaw, rocket: null, fuel: 0, engineType: 'standard', warpDrive: false, warpDriveType: null };
+      ctx.parent.add(group);
+      const pad = { root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id, rocket: null, fuel: 0, engineType: 'standard', warpDrive: false, warpDriveType: null };
       launchPads.push(pad);
       return pad;
     }
@@ -3481,13 +3947,14 @@
 
     function tryPlaceLaunchPad() {
       if (uiState.equippedItemType !== 'launch_pad' || state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen) return false;
-      const dir = getFurnacePlacementDirection();
-      if (!isFurnacePlacementAreaClear(dir)) {
+      const placement = getActivePlaceablePlacement();
+      const dir = placement.dir;
+      if (!isFurnacePlacementAreaClear(dir, placement.ctx.id)) {
         const prompt = document.getElementById('crystalPrompt');
         prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">BLOCKED</span> Find a clear area to place the launch pad';
         return false;
       }
-      const pad = createLaunchPadObject(dir);
+      const pad = createLaunchPadObject(dir, Math.random() * Math.PI * 2, placement.ctx.id);
       const idx = getSelectedHotbarInventoryIndex();
       if (!inventorySlots[idx] || inventorySlots[idx].typeId !== 'launch_pad') { pad.root.visible = false; launchPads.pop(); return false; }
       inventorySlots[idx] = null;
@@ -3547,6 +4014,8 @@
         if (toolVisual) { toolVisual.rotation.z = 0.35; group.add(toolVisual); }
       } else if (typeId === 'furnace') {
         group.add(createFurnaceVisual(0.58));
+      } else if (typeId === 'container') {
+        group.add(createContainerVisual(0.62));
       } else if (typeId === 'rocket_engine') {
         group.add(createRocketEngineVisual(0.62));
       } else if (typeId === 'upgraded_engine') {
@@ -3560,10 +4029,22 @@
         const core = new THREE.Mesh(new THREE.SphereGeometry(0.24,12,10), new THREE.MeshStandardMaterial({color:isMk2?0xff88e8:0x4fc8ff,emissive:isMk2?0xb437a5:0x1a89bd,emissiveIntensity:1.2,metalness:.35,roughness:.28}));
         const ring = new THREE.Mesh(new THREE.TorusGeometry(0.32,0.055,8,20), new THREE.MeshStandardMaterial({color:isMk2?0xffc5f4:0x9eeaff,emissive:isMk2?0xd65dc4:0x2b8bb6,emissiveIntensity:.8,metalness:.6,roughness:.25}));
         ring.rotation.x=Math.PI/2; group.add(core,ring);
+      } else if (typeId === 'iron_plate' || typeId === 'titanium_plate') {
+        const mat = new THREE.MeshStandardMaterial({ color: typeId === 'iron_plate' ? 0x8f969c : 0xbfd0dc, roughness: 0.34, metalness: 0.82 });
+        const plate = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.08, 0.30), mat);
+        plate.rotation.set(0.18, 0.24, 0.10);
+        group.add(plate);
+      } else if (typeId === 'iron_wrench' || typeId === 'titanium_wrench') {
+        group.add(createWrenchVisual(0.56, typeId === 'titanium_wrench' ? 'titanium' : 'iron'));
       } else if (typeId === 'rocket') {
         group.add(createRocketVisual(0.42));
       } else if (typeId === 'launch_pad') {
         group.add(createLaunchPadVisual(0.55));
+      } else if (itemById[typeId]?.kind === 'blueprint') {
+        group.add(createBlueprintVisual(0.56));
+      } else if (typeId === 'container') {
+        fpModel = createContainerVisual(0.78);
+        tpModel = createContainerVisual(0.54);
       } else if (typeId === 'jerrycan') {
         group.add(createJerrycanVisual(0.72));
       } else if (item.kind === 'crystal' && crystalById[typeId]) {
@@ -3653,50 +4134,46 @@
       return best;
     }
 
-    function isFurnacePlacementAreaClear(dir) {
-      const world = dir.clone().multiplyScalar(PLANET_RADIUS + heightAt(dir));
-      for (const tree of treeSpawns) {
-        if (!tree.chopped && tree.root.visible && tree.root.getWorldPosition(new THREE.Vector3()).distanceTo(world) < 2.2) return false;
+    function isFurnacePlacementAreaClear(dir, surfaceBodyId = null) {
+      const ctx = getPlaceableSurfaceContext(surfaceBodyId);
+      const h = ctx.getHeight(dir);
+      const localCandidate = dir.clone().multiplyScalar(ctx.radius + h);
+      const candidateWorld = ctx.parent.localToWorld(localCandidate.clone());
+
+      // Check every visible world obstacle by WORLD position. Objects on other bodies are
+      // thousands of units away and therefore do not interfere with placement here.
+      const checkRoot = (root, minDistance) => {
+        if (!root || !root.visible) return false;
+        return root.getWorldPosition(new THREE.Vector3()).distanceTo(candidateWorld) < minDistance;
+      };
+      for (const tree of treeSpawns) if (!tree.chopped && checkRoot(tree.root, 2.2)) return false;
+      for (const rock of rockSpawns.concat(ironOreSpawns, moonTungstenSpawns, cordeliaTungstenSpawns, omegaTitaniumSpawns, cordeliaRockSpawns || [])) {
+        if (!rock.mined && checkRoot(rock.root, 2.0)) return false;
       }
-      for (const rock of rockSpawns.concat(ironOreSpawns)) {
-        if (!rock.mined && rock.root.visible && rock.root.getWorldPosition(new THREE.Vector3()).distanceTo(world) < 2.0) return false;
+      for (const crystal of crystalSpawns.concat(auroraCrystalSpawns, moonQuartzSpawns)) {
+        if (!crystal.collected && checkRoot(crystal.root, 1.6)) return false;
       }
-      for (const crystal of crystalSpawns) {
-        if (!crystal.collected && crystal.root.visible && crystal.root.getWorldPosition(new THREE.Vector3()).distanceTo(world) < 1.6) return false;
-      }
-      for (const furnace of furnaces) {
-        const fw = furnace.root.getWorldPosition(new THREE.Vector3());
-        if (fw.distanceTo(world) < 2.2) return false;
-      }
-      for (const pad of launchPads) {
-        if (pad.root.visible) {
-          const pw = pad.root.getWorldPosition(new THREE.Vector3());
-          if (pw.distanceTo(world) < 4.4) return false;
-        }
-      }
+      for (const furnace of furnaces) if (checkRoot(furnace.root, 2.2)) return false;
+      for (const container of containers) if (checkRoot(container.root, 2.2)) return false;
+      for (const drill of placedDrills) if (checkRoot(drill.root, 2.2)) return false;
+      for (const pad of launchPads) if (checkRoot(pad.root, 4.4)) return false;
       return true;
     }
 
     function getFurnacePlacementDirection() {
-      const playerDir = player.position.clone().normalize();
-      const look = new THREE.Vector3();
-      camera.getWorldDirection(look).normalize();
-      const tangent = look.sub(playerDir.clone().multiplyScalar(look.dot(playerDir)));
-      if (tangent.lengthSq() < 0.0001) tangent.set(1,0,0);
-      tangent.normalize();
-      const distance = 2.7;
-      return playerDir.clone().multiplyScalar(PLANET_RADIUS).add(tangent.multiplyScalar(distance)).normalize();
+      return getActivePlaceablePlacement().dir;
     }
 
     function tryPlaceFurnace() {
       if (uiState.equippedItemType !== 'furnace' || state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen) return false;
-      const dir = getFurnacePlacementDirection();
-      if (!isFurnacePlacementAreaClear(dir)) {
+      const placement = getActivePlaceablePlacement();
+      const dir = placement.dir;
+      if (!isFurnacePlacementAreaClear(dir, placement.ctx.id)) {
         const prompt = document.getElementById('crystalPrompt');
         prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">BLOCKED</span> Find a clear area to place the furnace';
         return false;
       }
-      const furnace = createFurnaceObject(dir);
+      const furnace = createFurnaceObject(dir, Math.random() * Math.PI * 2, placement.ctx.id);
       const current = getCurrentToolSlot();
       // Furnace is a stack-1 inventory item, so remove exactly one from the selected hotbar slot.
       const idx = getSelectedHotbarInventoryIndex();
@@ -4118,6 +4595,10 @@
       { id: 'warp_drive', name: 'Warp Drive', kind: 'warp_drive', maxStack: 1 },
       { id: 'warp_drive_mk2', name: 'Warp Drive Mark 2', kind: 'warp_drive_mk2', maxStack: 1 },
       { id: 'drill', name: 'Drill', kind: 'drill', maxStack: 1, tool: true },
+      { id: 'iron_plate', name: 'Iron Plate', kind: 'iron_plate', css: '#8d949b', maxStack: 10 },
+      { id: 'titanium_plate', name: 'Titanium Plate', kind: 'titanium_plate', css: '#c7d8e5', maxStack: 10 },
+      { id: 'iron_wrench', name: 'Iron Wrench', kind: 'wrench', wrenchTier: 'iron', maxStack: 1 },
+      { id: 'titanium_wrench', name: 'Titanium Wrench', kind: 'wrench', wrenchTier: 'titanium', maxStack: 1 },
       { id: 'planks', name: 'Planks', kind: 'planks', css: '#c88748', maxStack: 10 },
       { id: 'sticks', name: 'Sticks', kind: 'sticks', css: '#b9824c', maxStack: 10 },
       { id: 'grass_fiber', name: 'Grass Fiber', kind: 'grass_fiber', css: '#79a95b', maxStack: 10 },
@@ -4129,6 +4610,13 @@
       { id: 'iron_ingot', name: 'Iron Ingot', kind: 'iron_ingot', css: '#5b6167', maxStack: 10 },
       { id: 'copper_ingot', name: 'Copper Ingot', kind: 'copper_ingot', css: '#c8753d', maxStack: 10 },
       { id: 'furnace', name: 'Furnace', kind: 'furnace', maxStack: 1 },
+      { id: 'container', name: 'Container', kind: 'container', maxStack: 1 },
+      { id: 'rocket_engine_blueprint', name: 'Engine Mark 1 Blueprint', kind: 'blueprint', blueprintFor: 'rocket_engine', maxStack: 1 },
+      { id: 'upgraded_engine_blueprint', name: 'Engine Mark 2 Blueprint', kind: 'blueprint', blueprintFor: 'upgraded_engine', maxStack: 1 },
+      { id: 'engine_mark_3_blueprint', name: 'Engine Mark 3 Blueprint', kind: 'blueprint', blueprintFor: 'engine_mark_3', maxStack: 1 },
+      { id: 'warp_drive_blueprint', name: 'Warp Drive Mark 1 Blueprint', kind: 'blueprint', blueprintFor: 'warp_drive', maxStack: 1 },
+      { id: 'warp_drive_mk2_blueprint', name: 'Warp Drive Mark 2 Blueprint', kind: 'blueprint', blueprintFor: 'warp_drive_mk2', maxStack: 1 },
+      { id: 'rocket_blueprint', name: 'Rocket Blueprint', kind: 'blueprint', blueprintFor: 'rocket', maxStack: 1 },
       { id: 'rocket_engine', name: 'Rocket Engine', kind: 'engine', maxStack: 1 },
       { id: 'rocket', name: 'Rocket', kind: 'rocket', maxStack: 1 },
       { id: 'launch_pad', name: 'Launch Pad', kind: 'launch_pad', maxStack: 1 },
@@ -4163,7 +4651,7 @@
       copper_wire: { description: 'Several thin copper wires bundled together.', how: 'Craft wires from copper ingots.', used: 'A key component of Engine Mark 2.' },
       moon_quartz: { description: 'A pale mineral naturally found on the Moon.', how: 'Collect Moon Quartz from its lunar deposits.', used: 'Can be sold to the merchant and is required for Engine Mark 2.' },
       upgraded_engine: { description: 'Engine Mark 2 is an improved rocket engine with a larger fuel reserve.', how: 'Craft it from a Rocket Engine, Moon Quartz, and Copper Wires.', used: 'Install it into a rocket to increase fuel capacity to 200%.' },
-      engine_mark_3: { description: 'A high-performance rocket engine for supersonic flight.', how: 'Craft it from Engine Mark 2, Titanium Ingots, Rainbow Opals, and Tungsten Ingots.', used: 'Install it into a rocket to unlock Supersonic speed, 1% fuel use per second at 500u/s, and a 300% fuel capacity.' },
+      engine_mark_3: { description: 'A high-performance rocket engine for supersonic flight.', how: 'Craft it from Engine Mark 2, Titanium Ingots, Rainbow Opals, and Tungsten Ingots.', used: 'Install it into a rocket to unlock Supersonic speed at 200u/s, 1% fuel use per second, and a 300% fuel capacity.' },
       tungsten_ore: { description: 'A dense ore with dark orange and grey patches.', how: 'Mine the scarce deposits on the Moon or the common deposits on Cordelia with an Iron Pickaxe or Drill.', used: 'Smelt it in a furnace into Tungsten Ingots.' },
       tungsten_ingot: { description: 'A heavy, heat-resistant metal bar.', how: 'Smelt Tungsten Ore in a furnace.', used: 'Used with Iron Ingots and Amethyst to craft a Warp Drive.' },
       titanium_ore: { description: 'Extremely hard metal-bearing ore found inside giant Mileria deposits.', how: 'Mine a Titanium Deposit with an Iron Pickaxe or Drill.', used: 'Smelt it in a furnace to produce Titanium Ingots.' },
@@ -4175,6 +4663,7 @@
       planks: { description: 'Processed wooden boards used throughout early crafting.', how: 'Chop trees with an axe.', used: 'Used for tools, furnaces, fuel, and other crafting.' },
       sticks: { description: 'Small wooden sticks prepared for crafting.', how: 'Craft them from Planks.', used: 'Used in many tools and the Rocket Engine.' },
       grass_fiber: { description: 'Plant fibers gathered from the grasslands.', how: 'Harvest grass with a scythe.', used: 'Used in fiber-based crafting recipes.' },
+      container: { description: 'A sturdy portable container with twenty independent item slots.', how: 'Craft it from six Iron Plates.', used: 'Place it on any landable celestial body and open it with Right Click to store items.' },
       woven_grass_fiber: { description: 'Grass fiber woven into a stronger material.', how: 'Craft it from Grass Fiber.', used: 'Used in more advanced crafting and utility items.' },
       backpack: { description: 'A wearable storage pack that gives you more room for supplies.', how: 'Craft or obtain a Backpack when its recipe becomes available.', used: 'Provides extra storage space for your adventure.' },
       stone: { description: 'Common rock collected from the surface and boulders.', how: 'Mine rocks and mountain stone with a pickaxe.', used: 'Used for tools, furnaces, and other crafting.' },
@@ -4185,8 +4674,18 @@
       furnace: { description: 'A compact furnace for turning ore into useful ingots.', how: 'Craft it from stone and planks.', used: 'Smelts Iron Ore and Copper Ore using Planks as fuel.' },
       rocket_engine: { description: 'The standard engine that powers your first spacecraft.', how: 'Craft it from Iron Ingots, Sticks, and Stone.', used: 'Builds and powers a standard rocket.' },
       rocket: { description: 'A spacecraft built to leave a celestial body and enter space.', how: 'Craft it from a Rocket Engine, Iron Ingots, and Rubies.', used: 'Travel between Ivis, the Moon, Cordelia, and deep space.' },
+      iron_plate: { description: 'A flat piece of refined iron used for sturdy tools and machinery.', how: 'Craft 2 Iron Plates from 1 Iron Ingot.', used: 'Used to craft the Iron Wrench.' },
+      titanium_plate: { description: 'A strong lightweight plate made from refined titanium.', how: 'Craft 2 Titanium Plates from 1 Titanium Ingot.', used: 'Used to craft the Titanium Wrench.' },
+      iron_wrench: { description: 'A reusable tool for installing standard rocket components.', how: 'Craft it from 1 Iron Ingot and 1 Iron Plate.', used: 'Required to install the standard Warp Drive and Engine Mark 2.' },
+      titanium_wrench: { description: 'A reinforced wrench for advanced rocket technology.', how: 'Craft it from 1 Titanium Ingot and 1 Titanium Plate.', used: 'Required to install Warp Drive Mark 2 and Engine Mark 3.' },
       launch_pad: { description: 'A flat platform designed to hold a rocket during launch.', how: 'Craft it from Iron Ingots.', used: 'Provides the launch and landing point for a rocket.' },
       jerrycan: { description: 'A full can of rocket fuel for refilling a spacecraft.', how: 'Buy it from the merchant.', used: 'Adds fuel to a rocket; each can provides 100% of a tank refill.' },
+      rocket_engine_blueprint: { description: 'A permanent construction blueprint for the standard rocket engine.', how: 'Buy it from Jaecob.', used: 'Unlocks the Rocket Engine recipe in the crafting menu. The blueprint is never consumed.' },
+      upgraded_engine_blueprint: { description: 'A permanent construction blueprint for Engine Mark 2.', how: 'Buy it from Jaecob.', used: 'Unlocks the Engine Mark 2 recipe in the crafting menu. The blueprint is never consumed.' },
+      engine_mark_3_blueprint: { description: 'A permanent construction blueprint for Engine Mark 3.', how: 'Buy it from Jaecob.', used: 'Unlocks the Engine Mark 3 recipe in the crafting menu. The blueprint is never consumed.' },
+      warp_drive_blueprint: { description: 'A permanent construction blueprint for the standard Warp Drive.', how: 'Buy it from Jaecob.', used: 'Unlocks the Warp Drive recipe in the crafting menu. The blueprint is never consumed.' },
+      warp_drive_mk2_blueprint: { description: 'A permanent construction blueprint for Warp Drive Mark 2.', how: 'Buy it from Jaecob.', used: 'Unlocks the Warp Drive Mark 2 recipe in the crafting menu. The blueprint is never consumed.' },
+      rocket_blueprint: { description: 'A permanent construction blueprint for the Rocket.', how: 'Buy it from Jaecob.', used: 'Unlocks the Rocket recipe in the crafting menu. The blueprint is never consumed.' },
     });
     const JOURNAL_BODY_INFO = Object.freeze({
       ivis: { name: 'Ivis', description: 'Your home world: a small living planet with forests, mountains, a river, crystals, and the familiar merchant stall. It is the safest place to prepare for your next flight.' },
@@ -5082,8 +5581,10 @@
 
     function mileriaHeightAt(dir) {
       const d = dir.clone().normalize();
-      let h = 7 + Math.sin(d.x * 7.0 + d.z * 5.0) * 4.2 + Math.sin(d.y * 13.0 - d.x * 4.0) * 2.2;
-      h += Math.sin((d.x + d.z) * 19.0 + d.y * 7.0) * 1.6;
+      // Softer, broad-scale terrain noise keeps Mileria rugged without the
+      // faceted low-poly look from very sharp high-frequency displacement.
+      let h = 7 + Math.sin(d.x * 4.8 + d.z * 3.6) * 3.4 + Math.sin(d.y * 8.0 - d.x * 2.8) * 1.7;
+      h += Math.sin((d.x + d.z) * 11.0 + d.y * 4.5) * 0.9;
       const peaks = [
         new THREE.Vector3(0.64, 0.56, 0.52).normalize(),
         new THREE.Vector3(-0.55, 0.33, -0.76).normalize(),
@@ -5091,7 +5592,7 @@
       ];
       for (const pd of peaks) {
         const t = d.angleTo(pd) / 0.42;
-        h += 28 * omegaSmoothBump(t);
+        h += 25 * omegaSmoothBump(t);
       }
       return Math.max(0, h);
     }
@@ -5135,10 +5636,10 @@
     });
     auroraMesh.add(auroraTerrain);
 
-    const mileriaTerrain = buildOmegaTerrainMesh(MILERIA_RADIUS, 72, 48, mileriaHeightAt, (dir, h) => {
+    const mileriaTerrain = buildOmegaTerrainMesh(MILERIA_RADIUS, 112, 72, mileriaHeightAt, (dir, h) => {
       const t = THREE.MathUtils.clamp((h - 6) / 28, 0, 1);
       return mileriaDark.clone().lerp(mileriaBase, 0.45 + t * 0.35).lerp(mileriaLight, Math.max(0, t - 0.55) * 0.6);
-    }, true);
+    }, false);
     mileriaMesh.add(mileriaTerrain);
 
     function createSyspoCore() {
@@ -5303,18 +5804,19 @@
       return group;
     }
     function scatterTitaniumDeposits(count = 58) {
-      let placed = 0, attempts = 0;
-      while (placed < count && attempts < count * 25) {
-        attempts++;
-        const dir = new THREE.Vector3(Math.random()*2-1, Math.random()*2-1, Math.random()*2-1).normalize();
-        const h = mileriaHeightAt(dir);
-        if (h < 14) continue;
+      // Evenly distribute deposits over the whole moon with a spherical
+      // golden-angle pattern instead of random clustering in a few regions.
+      const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+      for (let i = 0; i < count; i++) {
+        const y = 1 - (i + 0.5) * (2 / count);
+        const radius = Math.sqrt(Math.max(0, 1 - y * y));
+        const angle = i * goldenAngle;
+        const dir = new THREE.Vector3(Math.cos(angle) * radius, y, Math.sin(angle) * radius).normalize();
         const root = createTitaniumDeposit(0.9 + Math.random()*0.55);
         placeMileriaProp(root, dir, 0.8);
         root.rotateY(Math.random()*Math.PI*2);
         mileriaMesh.add(root);
         omegaTitaniumSpawns.push({ root, direction: dir.clone(), mined: false, oreType: 'titanium_ore', yieldCount: 1 + Math.floor(Math.random() * 5) });
-        placed++;
       }
     }
     scatterTitaniumDeposits();
@@ -5435,6 +5937,63 @@
     }
     function getOmegaMesh(bodyId) { return bodyId === 'aurora' ? auroraMesh : bodyId === 'mileria' ? mileriaMesh : null; }
     function getOmegaBodyGravityMultiplier(bodyId) { return bodyId === 'mileria' ? MILERIA_GRAVITY_MULTIPLIER : 1; }
+
+
+    // ---------- planet / space travel transitions ----------
+    const travelTransitionOverlay = document.getElementById('travelTransition');
+    const travelTransitionTitle = document.getElementById('travelTransitionTitle');
+    const travelTransitionSubtext = document.getElementById('travelTransitionSubtext');
+    let travelTransitionState = null;
+    let travelTransitionTimer = 0;
+    let travelTransitionLastTime = 0;
+
+    function getTravelEnvironmentState() {
+      if (!playerState.inRocket || playerState.rocketLanded) return 'ground';
+      const pos = flightPosition;
+      const ivisDistance = pos.distanceTo(ivisSolarOrbitPosition);
+      if (ivisDistance <= ROCKET_ATMOSPHERE_RADIUS) return 'ivis-atmosphere';
+      if (typeof playerIsInCordeliaAtmosphere === 'function' && playerIsInCordeliaAtmosphere(pos)) return 'cordelia-atmosphere';
+      const omegaBody = getOmegaAtmosphereBody(pos);
+      if (omegaBody) return omegaBody.id + '-atmosphere';
+      return 'deep-space';
+    }
+
+    function formatTravelTransitionName(stateKey) {
+      if (stateKey === 'deep-space') return 'DEEP SPACE';
+      if (stateKey === 'ivis-atmosphere') return 'IVIS ATMOSPHERE';
+      if (stateKey === 'cordelia-atmosphere') return 'CORDELIA ATMOSPHERE';
+      if (stateKey === 'aurora-atmosphere') return 'AURORA ATMOSPHERE';
+      if (stateKey === 'mileria-atmosphere') return 'MILERIA ATMOSPHERE';
+      if (stateKey === 'syspo-atmosphere') return 'SYSPO ATMOSPHERE';
+      return 'SURFACE';
+    }
+
+    function triggerTravelTransition(nextState, fromState) {
+      if (!travelTransitionOverlay || !nextState || nextState === fromState || nextState === 'ground' || fromState === null || fromState === 'ground') return;
+      const enteringSpace = nextState === 'deep-space';
+      const destination = formatTravelTransitionName(nextState);
+      travelTransitionTitle.textContent = enteringSpace ? 'ENTERING DEEP SPACE' : 'ENTERING ' + destination;
+      travelTransitionSubtext.textContent = enteringSpace ? 'ATMOSPHERE CLEAR · STARFIELD ONLINE' : 'ATMOSPHERIC FLIGHT · STABILIZING';
+      travelTransitionOverlay.classList.remove('show');
+      void travelTransitionOverlay.offsetWidth;
+      travelTransitionOverlay.classList.add('show');
+      travelTransitionTimer = enteringSpace ? 0.72 : 0.58;
+      travelTransitionLastTime = performance.now();
+      clearTimeout(triggerTravelTransition.hideTimer);
+      triggerTravelTransition.hideTimer = setTimeout(() => travelTransitionOverlay.classList.remove('show'), Math.round(travelTransitionTimer * 1000));
+    }
+
+    function updateTravelTransitions() {
+      const nextState = getTravelEnvironmentState();
+      if (travelTransitionState === null) {
+        travelTransitionState = nextState;
+        return;
+      }
+      if (nextState !== travelTransitionState) {
+        triggerTravelTransition(nextState, travelTransitionState);
+        travelTransitionState = nextState;
+      }
+    }
 
 
     // ---------- player ----------
@@ -5819,12 +6378,28 @@
       } else if (typeId === 'drill') {
         fpModel = createDrillVisual(0.90);
         tpModel = createDrillVisual(0.64);
+      } else if (typeId === 'iron_wrench' || typeId === 'titanium_wrench') {
+        const tier = typeId === 'titanium_wrench' ? 'titanium' : 'iron';
+        fpModel = createWrenchVisual(0.86, tier);
+        tpModel = createWrenchVisual(0.62, tier);
+        // Lower the custom wrench slightly in both views so the tool stays visible
+        // instead of sitting too high behind the player's view/hand.
+        fpModel.position.y -= 0.12;
+        tpModel.position.y -= 0.05;
+      } else if (itemById[typeId]?.kind === 'blueprint') {
+        fpModel = createBlueprintVisual(0.80);
+        tpModel = createBlueprintVisual(0.58);
+        fpModel.position.y -= 0.05;
+        tpModel.position.y -= 0.02;
       } else if (typeId === 'backpack') {
         fpModel = createBackpackVisual(0.74);
         tpModel = createBackpackVisual(0.52);
       } else if (crystalById[typeId]) {
         fpModel = createCrystalVisual(typeId, false, 0.85);
         tpModel = createCrystalVisual(typeId, false, 0.58);
+      } else if (typeId === 'container') {
+        fpModel = createContainerVisual(0.78);
+        tpModel = createContainerVisual(0.54);
       } else if (typeId === 'jerrycan') {
         fpModel = createJerrycanVisual(0.85);
         tpModel = createJerrycanVisual(0.60);
@@ -5924,6 +6499,78 @@
       rope.rotation.z = Math.PI / 2;
       rope.position.y = 0.32;
       group.add(rope);
+      group.scale.setScalar(scale);
+      return group;
+    }
+
+    function createBlueprintVisual(scale = 1) {
+      if (blueprintModelTemplate) {
+        const group = blueprintModelTemplate.clone(true);
+        group.traverse((node) => {
+          if (!node.isMesh) return;
+          if (node.material && node.material.clone) node.material = node.material.clone();
+          if (node.material) {
+            node.material.side = THREE.DoubleSide;
+            node.material.transparent = true;
+          }
+        });
+        group.scale.setScalar(scale * 0.90);
+        group.rotation.set(-0.08, 0.12, -0.08);
+        return group;
+      }
+      const fallback = new THREE.Group();
+      const paper = new THREE.MeshStandardMaterial({ color: 0x2f63ff, roughness: 0.72, metalness: 0.0, side: THREE.DoubleSide });
+      const sheet = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.82, 0.035), paper);
+      sheet.rotation.z = -0.10;
+      fallback.add(sheet);
+      fallback.scale.setScalar(scale);
+      return fallback;
+    }
+
+    function createWrenchVisual(scale = 1, tier = 'iron') {
+      if (wrenchModelTemplate) {
+        const group = wrenchModelTemplate.clone(true);
+        const metalColor = tier === 'titanium' ? 0x8fb9d2 : 0x8c939a;
+        const emissiveColor = tier === 'titanium' ? 0x163d52 : 0x202830;
+        group.traverse((node) => {
+          if (!node.isMesh) return;
+          node.material = new THREE.MeshStandardMaterial({
+            color: metalColor,
+            roughness: 0.34,
+            metalness: 0.86,
+            emissive: emissiveColor,
+            emissiveIntensity: tier === 'titanium' ? 0.16 : 0.06,
+            side: THREE.DoubleSide
+          });
+          node.frustumCulled = false;
+        });
+        group.scale.setScalar(scale * 2.6);
+        // Blockbench model is thin on X and wide on Z; the embedded model already rotates
+        // into the same hand-facing orientation as the existing placeholder wrench.
+        group.rotation.z = -0.10;
+        return group;
+      }
+      const group = new THREE.Group();
+      const metalColor = tier === 'titanium' ? 0x8fb9d2 : 0x8c939a;
+      const emissiveColor = tier === 'titanium' ? 0x163d52 : 0x202830;
+      const metal = new THREE.MeshStandardMaterial({ color: metalColor, roughness: 0.34, metalness: 0.86, emissive: emissiveColor, emissiveIntensity: tier === 'titanium' ? 0.16 : 0.06 });
+      const dark = new THREE.MeshStandardMaterial({ color: tier === 'titanium' ? 0x5f7f91 : 0x555b61, roughness: 0.42, metalness: 0.88 });
+      const handle = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.78, 0.09), metal);
+      handle.position.y = -0.04;
+      handle.rotation.z = -0.16;
+      group.add(handle);
+      const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.11, 0.33, 8), dark);
+      grip.position.set(0.05, -0.43, 0);
+      grip.rotation.z = -0.16;
+      group.add(grip);
+      const jaw = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.072, 8, 18, Math.PI * 1.48), metal);
+      jaw.rotation.z = Math.PI * 0.58;
+      jaw.position.set(-0.07, 0.38, 0);
+      group.add(jaw);
+      const innerCut = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.14, 0.11), new THREE.MeshStandardMaterial({ color: 0x20262c, roughness: 0.9, metalness: 0.15 }));
+      innerCut.position.set(-0.19, 0.46, 0);
+      innerCut.rotation.z = -0.32;
+      group.add(innerCut);
       group.scale.setScalar(scale);
       return group;
     }
@@ -6345,7 +6992,7 @@
       return capacity >= amount;
     }
 
-    function addItemToInventory(typeId, amount = 1, durability = null) {
+    function addItemToInventory(typeId, amount = 1, durability = null, pickupFeedback = false) {
       const item = itemById[typeId];
       if (!item || amount <= 0) return false;
       // Any successful pickup/craft/purchase becomes a permanent journal discovery.
@@ -6362,6 +7009,7 @@
         refreshEquippedItem();
         const success = remaining === 0;
         if (success && journalWasNew) markJournalItemDiscovered(typeId);
+        if (success && pickupFeedback) showInventoryPickupPopup(typeId, amount);
         return success;
       }
 
@@ -6397,6 +7045,7 @@
       refreshEquippedItem();
       const success = remaining === 0;
       if (success && journalWasNew) markJournalItemDiscovered(typeId);
+      if (success && pickupFeedback) showInventoryPickupPopup(typeId, amount);
       return success;
     }
 
@@ -6441,6 +7090,22 @@
       if (data.kind === 'tungsten_ingot') { icon.style.background = 'linear-gradient(145deg,#928c87,#4e4b49 72%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.18),0 0 8px rgba(120,116,110,.25)'; }
       if (data.kind === 'titanium_ore') { icon.style.background = 'linear-gradient(135deg,#d7e6f2 0%,#8196a8 38%,#c4d8e6 56%,#5d7182 100%)'; icon.style.boxShadow = '0 0 10px rgba(160,200,230,.45)'; }
       if (data.kind === 'titanium_ingot') { icon.style.background = 'linear-gradient(145deg,#eef7ff,#9eb0bf 65%,#dce8f0)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.45),0 0 10px rgba(190,220,240,.36)'; }
+      if (data.kind === 'iron_plate') { icon.style.background = 'linear-gradient(145deg,#cbd0d5 0%,#6e747a 62%,#aeb5bb 100%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.25),0 0 8px rgba(160,170,180,.24)'; }
+      if (data.kind === 'titanium_plate') { icon.style.background = 'linear-gradient(145deg,#f7fcff 0%,#9eb2c1 58%,#dce8ef 100%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.4),0 0 9px rgba(180,215,235,.34)'; }
+      if (data.kind === 'wrench') { icon.classList.add(data.wrenchTier === 'titanium' ? 'titaniumWrench' : 'ironWrench'); icon.innerHTML = '<span class="wrenchIconGlyph"></span>'; }
+      if (data.kind === 'container') {
+        const tex = window.PocketUniverseContainerTextureDataURL;
+        if (tex) { icon.style.backgroundImage = 'url("' + tex + '")'; icon.style.backgroundSize = 'contain'; icon.style.backgroundPosition = 'center'; icon.style.backgroundRepeat = 'no-repeat'; icon.style.imageRendering = 'pixelated'; icon.style.backgroundColor = 'rgba(82,95,105,.18)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.12), 0 0 10px rgba(150,170,185,.22)'; }
+      }
+      if (data.kind === 'blueprint') {
+        icon.style.backgroundImage = 'url("models/Blueprint.png")';
+        icon.style.backgroundSize = 'contain';
+        icon.style.backgroundPosition = 'center';
+        icon.style.backgroundRepeat = 'no-repeat';
+        icon.style.imageRendering = 'pixelated';
+        icon.style.backgroundColor = '#1737a8';
+        icon.style.boxShadow = '0 0 14px rgba(68,120,255,.58)';
+      }
       if (data.kind === 'warp_drive') { icon.style.background = 'radial-gradient(circle at 50% 50%,#f5fbff 0 10%,#66cfff 12% 24%,#174a78 27% 45%,#1b1f27 47% 100%)'; icon.style.boxShadow = '0 0 14px rgba(70,190,255,.65)'; }
       if (data.kind === 'warp_drive_mk2') { icon.style.background = 'radial-gradient(circle at 50% 50%,#fff1ff 0 10%,#ff82ea 12% 24%,#6f2d75 27% 45%,#211927 47% 100%)'; icon.style.boxShadow = '0 0 14px rgba(255,108,232,.62)'; }
       if (data.kind === 'engine_mark_3') { icon.style.background = 'linear-gradient(145deg,#f5fbff 0%,#9ed9ef 42%,#d7eef8 60%,#6f8794 100%)'; icon.style.boxShadow = '0 0 12px rgba(175,225,245,.5)'; }
@@ -6490,19 +7155,120 @@
       });
     }
 
+    let inventoryFeedbackInitialized = false;
+    let previousInventoryFeedback = [];
+
+    function inventoryFeedbackSignature(slotData) {
+      if (!slotData) return 'empty';
+      return [slotData.typeId || '', slotData.count || 0, slotData.durability == null ? '' : slotData.durability].join('|');
+    }
+
+    function hideInventoryTooltip() {
+      const tooltip = document.getElementById('inventoryTooltip');
+      if (!tooltip) return;
+      tooltip.classList.remove('show');
+      tooltip.classList.add('hidden');
+      tooltip.setAttribute('aria-hidden', 'true');
+    }
+
+    function positionInventoryTooltip(clientX, clientY) {
+      const tooltip = document.getElementById('inventoryTooltip');
+      if (!tooltip || tooltip.classList.contains('hidden')) return;
+      if (typeof clientX !== 'number' || typeof clientY !== 'number') return;
+      const pad = 12;
+      const gap = 14;
+      const rect = tooltip.getBoundingClientRect();
+      // Follow the actual mouse cursor, keeping the tooltip fully inside the viewport.
+      let left = clientX + gap;
+      let top = clientY + gap;
+      if (left + rect.width > window.innerWidth - pad) left = clientX - rect.width - gap;
+      if (top + rect.height > window.innerHeight - pad) top = clientY - rect.height - gap;
+      left = Math.max(pad, Math.min(left, window.innerWidth - rect.width - pad));
+      top = Math.max(pad, Math.min(top, window.innerHeight - rect.height - pad));
+      tooltip.style.left = left + 'px';
+      tooltip.style.top = top + 'px';
+    }
+
+    function showInventoryTooltip(slotData, slotEl, event) {
+      const tooltip = document.getElementById('inventoryTooltip');
+      if (!tooltip || !slotData || !slotEl || !event) return;
+      // Keep the tooltip directly under <body>. The inventory panel uses backdrop-filter,
+      // which can establish a containing block for position:fixed descendants.
+      // Appending it to body guarantees clientX/clientY use the same viewport as the cursor.
+      if (tooltip.parentElement !== document.body) document.body.appendChild(tooltip);
+      const item = itemById[slotData.typeId];
+      if (!item) return;
+      const journalInfo = JOURNAL_ITEM_INFO[slotData.typeId];
+      const parts = ['x' + slotData.count];
+      if (item.tool) {
+        const maxDurability = getToolMaxDurability(item);
+        const durability = Math.max(0, Math.min(maxDurability, slotData.durability == null ? maxDurability : slotData.durability));
+        parts.push('DURABILITY ' + durability + '/' + maxDurability);
+      }
+      tooltip.innerHTML = '<div class="inventoryTooltipName">' + item.name + '</div>' +
+        '<div class="inventoryTooltipDescription">' + (journalInfo?.description || 'An item stored in your inventory.') + '</div>' +
+        '<div class="inventoryTooltipMeta"><span>' + parts.join('</span><span>') + '</span></div>';
+      tooltip.classList.remove('hidden');
+      tooltip.setAttribute('aria-hidden', 'false');
+      requestAnimationFrame(() => {
+        tooltip.classList.add('show');
+        positionInventoryTooltip(event.clientX, event.clientY);
+      });
+    }
+
+    function showInventoryPickupPopup(typeId, amount = 1) {
+      const stack = document.getElementById('inventoryPickupStack');
+      const item = itemById[typeId];
+      if (!stack || !item || amount <= 0) return;
+      const popup = document.createElement('div');
+      popup.className = 'inventoryPickupPopup';
+
+      const iconWrap = document.createElement('div');
+      iconWrap.className = 'inventoryPickupPopupIcon';
+      iconWrap.appendChild(makeItemIconElement(typeId, 'inventoryPickupPopupItem'));
+      popup.appendChild(iconWrap);
+
+      const textWrap = document.createElement('div');
+      textWrap.className = 'inventoryPickupPopupText';
+      const label = document.createElement('div');
+      label.className = 'inventoryPickupPopupLabel';
+      label.textContent = 'PICKED UP';
+      const name = document.createElement('div');
+      name.className = 'inventoryPickupPopupName';
+      name.textContent = item.name;
+      textWrap.appendChild(label);
+      textWrap.appendChild(name);
+      popup.appendChild(textWrap);
+
+      const amountEl = document.createElement('div');
+      amountEl.className = 'inventoryPickupPopupAmount';
+      amountEl.textContent = '+' + amount;
+      popup.appendChild(amountEl);
+
+      stack.appendChild(popup);
+      while (stack.children.length > 4) stack.removeChild(stack.firstElementChild);
+      requestAnimationFrame(() => popup.classList.add('show'));
+      setTimeout(() => {
+        popup.classList.remove('show');
+        popup.classList.add('closing');
+        setTimeout(() => popup.remove(), 260);
+      }, 1250);
+    }
+
     function updateInventoryUI() {
       const grid = document.getElementById('inventoryGrid');
       if (!grid) return;
       grid.innerHTML = '';
+      hideInventoryTooltip();
+      const currentFeedback = inventorySlots.map(inventoryFeedbackSignature);
 
       for (let i = 0; i < INVENTORY_SLOT_COUNT; i++) {
         const slotData = inventorySlots[i];
         const slot = document.createElement('div');
         slot.className = 'inventorySlot' + (i >= INVENTORY_MAIN_SLOTS ? ' hotbarInventorySlot' : '');
         if (i === getSelectedHotbarInventoryIndex()) slot.classList.add('selectedHotbar');
-        slot.title = i >= INVENTORY_MAIN_SLOTS
-          ? 'Hotbar slot ' + (i - INVENTORY_MAIN_SLOTS + 1)
-          : (slotData ? 'Click to swap with selected hotbar slot' : 'Empty inventory slot');
+        // Use the custom inventory tooltip instead of the browser-native title popup.
+        slot.title = '';
 
         if (slotData) {
           slot.appendChild(makeItemIconElement(slotData.typeId, 'inventoryGem'));
@@ -6533,6 +7299,14 @@
           slot.appendChild(empty);
         }
 
+        const slotChanged = inventoryFeedbackInitialized && currentFeedback[i] !== previousInventoryFeedback[i];
+        if (slotChanged) slot.classList.add('inventoryFeedbackPulse');
+        if (slotData) {
+          slot.addEventListener('mouseenter', (event) => showInventoryTooltip(slotData, slot, event));
+          slot.addEventListener('mousemove', (event) => positionInventoryTooltip(event.clientX, event.clientY));
+          slot.addEventListener('mouseleave', hideInventoryTooltip);
+        }
+
         bindDragSlot(slot, { type: 'inventory', index: i });
         slot.addEventListener('click', () => {
           // A plain click on a hotbar slot still equips/selects it; item movement uses drag.
@@ -6547,6 +7321,8 @@
         });
         grid.appendChild(slot);
       }
+      previousInventoryFeedback = currentFeedback;
+      inventoryFeedbackInitialized = true;
     }
 
     // Keep the dedicated backpack row synchronized with the normal inventory.
@@ -6565,6 +7341,7 @@
       if (ref.type === 'inventory') return inventorySlots[ref.index] || null;
       if (ref.type === 'backpack') return backpackSlots[ref.index] || null;
       if (ref.type === 'furnace') return activeFurnace ? activeFurnace.inventory[ref.key] || null : null;
+      if (ref.type === 'container') return activeContainer && activeContainer.containerId === ref.containerId ? activeContainer.inventory[ref.index] || null : null;
       return null;
     }
 
@@ -6572,39 +7349,45 @@
       if (ref.type === 'inventory') inventorySlots[ref.index] = value;
       else if (ref.type === 'backpack') backpackSlots[ref.index] = value;
       else if (ref.type === 'furnace' && activeFurnace) activeFurnace.inventory[ref.key] = value;
+      else if (ref.type === 'container' && activeContainer && activeContainer.containerId === ref.containerId) activeContainer.inventory[ref.index] = value;
     }
 
     function canDropItemOnRef(item, ref) {
       if (!item || !ref) return false;
       if (ref.type === 'inventory') return true;
       if (ref.type === 'backpack') return item.typeId !== 'backpack';
+      if (ref.type === 'container') return item.typeId !== 'container';
       if (ref.type !== 'furnace' || !activeFurnace) return false;
       if (ref.key === 'fuel') return item.typeId === 'planks';
-      if (ref.key === 'input') return item.typeId === 'iron_ore' || item.typeId === 'copper_ore' || item.typeId === 'tungsten_ore';
+      if (ref.key === 'input') return item.typeId === 'iron_ore' || item.typeId === 'copper_ore' || item.typeId === 'tungsten_ore' || item.typeId === 'titanium_ore';
       if (ref.key === 'output') return item.typeId === 'iron_ingot' || item.typeId === 'copper_ingot';
       return false;
     }
 
     function refsEqual(a, b) {
-      return !!a && !!b && a.type === b.type && (a.type === 'inventory' || a.type === 'backpack' ? a.index === b.index : a.key === b.key);
+      return !!a && !!b && a.type === b.type && (a.type === 'inventory' || a.type === 'backpack' ? a.index === b.index : a.type === 'container' ? a.containerId === b.containerId && a.index === b.index : a.key === b.key);
     }
 
     function clearDragHighlight() {
       if (activeDragTargetEl) activeDragTargetEl.classList.remove('drag-over');
       activeDragTargetEl = null;
-      document.querySelectorAll('.inventorySlot.drag-source, .furnaceSlot.drag-source').forEach(el => el.classList.remove('drag-source'));
+      document.querySelectorAll('.inventorySlot.drag-source, .furnaceSlot.drag-source, .containerSlot.drag-source').forEach(el => el.classList.remove('drag-source'));
     }
 
     function findDragTargetAt(x, y) {
       const el = document.elementFromPoint(x, y);
       if (!el) return { ref: null, el: null };
-      const slotEl = el.closest && el.closest('.inventorySlot, .furnaceSlot, .backpackSlot');
+      const slotEl = el.closest && el.closest('.inventorySlot, .furnaceSlot, .backpackSlot, .containerSlot');
       if (!slotEl) return { ref: null, el: null };
       if (slotEl.closest('#backpackSlots')) {
         const index = Number(slotEl.dataset.backpackIndex);
         if (Number.isInteger(index)) return { ref: { type: 'backpack', index }, el: slotEl };
       }
       if (slotEl.closest('#inventoryGrid')) {
+        const index = Number(slotEl.dataset.inventoryIndex);
+        if (Number.isInteger(index)) return { ref: { type: 'inventory', index }, el: slotEl };
+      }
+      if (slotEl.closest('#containerPlayerInventoryGrid')) {
         const index = Number(slotEl.dataset.inventoryIndex);
         if (Number.isInteger(index)) return { ref: { type: 'inventory', index }, el: slotEl };
       }
@@ -6615,6 +7398,11 @@
       if (slotEl.closest('#furnaceInventoryGrid')) {
         const index = Number(slotEl.dataset.inventoryIndex);
         if (Number.isInteger(index)) return { ref: { type: 'inventory', index }, el: slotEl };
+      }
+      if (slotEl.closest('#containerGrid')) {
+        const index = Number(slotEl.dataset.containerIndex);
+        const containerId = slotEl.dataset.containerId;
+        if (Number.isInteger(index) && containerId) return { ref: { type: 'container', containerId, index }, el: slotEl };
       }
       return { ref: null, el: null };
     }
@@ -6671,6 +7459,7 @@
       slotEl.dataset.inventoryIndex = ref.type === 'inventory' ? String(ref.index) : '';
       slotEl.dataset.backpackIndex = ref.type === 'backpack' ? String(ref.index) : '';
       if (ref.type === 'furnace') slotEl.dataset.furnaceKey = ref.key;
+      if (ref.type === 'container') { slotEl.dataset.containerId = ref.containerId; slotEl.dataset.containerIndex = String(ref.index); }
       slotEl.addEventListener('mouseenter', () => { hoveredItemRef = { ...ref }; });
       slotEl.addEventListener('mouseleave', () => { if (hoveredItemRef && refsEqual(hoveredItemRef, ref)) hoveredItemRef = null; });
       const hasItem = !!getDragRefData(ref);
@@ -6679,7 +7468,7 @@
       slotEl.style.cursor = 'grab';
       slotEl.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
-        if (state.gameState !== 'playing' || !uiState.inventoryOpen && !uiState.furnaceOpen) return;
+        if (state.gameState !== 'playing' || !uiState.inventoryOpen && !uiState.furnaceOpen && !uiState.containerOpen) return;
         if (!getDragRefData(ref)) return;
         itemDrag = { sourceRef: { ...ref }, startX: e.clientX, startY: e.clientY, moved: false };
         lastDragMoved = false;
@@ -6694,6 +7483,7 @@
       if (uiState.inventoryOpen) updateInventoryUI();
       if (backpackOpen) updateBackpackUI();
       if (uiState.furnaceOpen) updateFurnaceUI();
+      if (uiState.containerOpen) updateContainerUI();
       updateHotbarUI();
       refreshEquippedItem();
     }
@@ -7100,28 +7890,56 @@
         output: { typeId: 'copper_wire', count: 3 }
       },
       {
+        id: 'iron_plate',
+        name: 'Iron Plate',
+        ingredients: [{ typeId: 'iron_ingot', count: 1 }],
+        output: { typeId: 'iron_plate', count: 2 }
+      },
+      {
+        id: 'titanium_plate',
+        name: 'Titanium Plate',
+        ingredients: [{ typeId: 'titanium_ingot', count: 1 }],
+        output: { typeId: 'titanium_plate', count: 2 }
+      },
+      {
+        id: 'iron_wrench',
+        name: 'Iron Wrench',
+        ingredients: [{ typeId: 'iron_ingot', count: 1 }, { typeId: 'iron_plate', count: 1 }],
+        output: { typeId: 'iron_wrench', count: 1 }
+      },
+      {
+        id: 'titanium_wrench',
+        name: 'Titanium Wrench',
+        ingredients: [{ typeId: 'titanium_ingot', count: 1 }, { typeId: 'titanium_plate', count: 1 }],
+        output: { typeId: 'titanium_wrench', count: 1 }
+      },
+      {
         id: 'upgraded_engine',
         name: 'Engine Mark 2',
         ingredients: [{ typeId: 'moon_quartz', count: 2 }, { typeId: 'rocket_engine', count: 1 }, { typeId: 'copper_wire', count: 3 }],
-        output: { typeId: 'upgraded_engine', count: 1 }
+        output: { typeId: 'upgraded_engine', count: 1 },
+        blueprintId: 'upgraded_engine_blueprint'
       },
       {
         id: 'warp_drive',
         name: 'Warp Drive',
         ingredients: [{ typeId: 'tungsten_ingot', count: 5 }, { typeId: 'iron_ingot', count: 3 }, { typeId: 'amethyst', count: 1 }],
-        output: { typeId: 'warp_drive', count: 1 }
+        output: { typeId: 'warp_drive', count: 1 },
+        blueprintId: 'warp_drive_blueprint'
       },
       {
         id: 'warp_drive_mk2',
         name: 'Warp Drive Mark 2',
         ingredients: [{ typeId: 'titanium_ingot', count: 8 }, { typeId: 'tungsten_ingot', count: 3 }, { typeId: 'rainbow_opal', count: 1 }, { typeId: 'warp_drive', count: 1 }],
-        output: { typeId: 'warp_drive_mk2', count: 1 }
+        output: { typeId: 'warp_drive_mk2', count: 1 },
+        blueprintId: 'warp_drive_mk2_blueprint'
       },
       {
         id: 'engine_mark_3',
         name: 'Engine Mark 3',
         ingredients: [{ typeId: 'upgraded_engine', count: 1 }, { typeId: 'titanium_ingot', count: 5 }, { typeId: 'rainbow_opal', count: 2 }, { typeId: 'tungsten_ingot', count: 1 }],
-        output: { typeId: 'engine_mark_3', count: 1 }
+        output: { typeId: 'engine_mark_3', count: 1 },
+        blueprintId: 'engine_mark_3_blueprint'
       },
       {
         id: 'woven_grass_fiber',
@@ -7142,16 +7960,24 @@
         output: { typeId: 'furnace', count: 1 }
       },
       {
+        id: 'container',
+        name: 'Container',
+        ingredients: [{ typeId: 'iron_plate', count: 6 }],
+        output: { typeId: 'container', count: 1 }
+      },
+      {
         id: 'rocket_engine',
         name: 'Rocket Engine',
         ingredients: [{ typeId: 'iron_ingot', count: 5 }, { typeId: 'sticks', count: 2 }, { typeId: 'stone', count: 1 }],
-        output: { typeId: 'rocket_engine', count: 1 }
+        output: { typeId: 'rocket_engine', count: 1 },
+        blueprintId: 'rocket_engine_blueprint'
       },
       {
         id: 'rocket',
         name: 'Rocket',
         ingredients: [{ typeId: 'rocket_engine', count: 1 }, { typeId: 'iron_ingot', count: 5 }, { typeId: 'ruby', count: 2 }],
-        output: { typeId: 'rocket', count: 1 }
+        output: { typeId: 'rocket', count: 1 },
+        blueprintId: 'rocket_blueprint'
       },
       {
         id: 'launch_pad',
@@ -7187,7 +8013,13 @@
       return recipe.ingredients.every(input => countItem(input.typeId) >= input.count);
     }
 
+    function hasBlueprintForRecipe(recipe) {
+      return !recipe.blueprintId || countItem(recipe.blueprintId) > 0;
+    }
+
     function canCraft(recipe) {
+      // A blueprint is a permanent unlock and is required in every game mode.
+      if (!hasBlueprintForRecipe(recipe)) return false;
       // Freeplay ignores ingredient costs, but inventory space still matters.
       if (state.gameMode === "freeplay") return canAddItemToInventory(recipe.output.typeId, recipe.output.count);
       if (!hasCraftingIngredients(recipe)) return false;
@@ -7208,6 +8040,10 @@
     }
 
     function craftRecipe(recipe) {
+      if (!hasBlueprintForRecipe(recipe)) {
+        craftingStatusEl.textContent = 'You need the ' + itemById[recipe.blueprintId].name + ' to craft this.';
+        return;
+      }
       if (!canCraft(recipe)) {
         craftingStatusEl.textContent = state.gameMode === "freeplay"
           ? 'Not enough inventory space.'
@@ -7242,9 +8078,10 @@
       name.textContent = recipe.name;
       const ingredients = document.createElement('div');
       ingredients.className = 'tooltipIngredients';
-      ingredients.textContent = state.gameMode === 'freeplay'
+      const materialText = state.gameMode === 'freeplay'
         ? 'FREE · no materials required'
         : recipe.ingredients.map(input => input.count + ' × ' + itemById[input.typeId].name).join(' + ');
+      ingredients.textContent = materialText;
       tooltip.appendChild(name);
       tooltip.appendChild(ingredients);
       document.body.appendChild(tooltip);
@@ -7272,10 +8109,11 @@
     function updateCraftingUI() {
       if (!craftingRecipesEl) return;
       craftingRecipesEl.innerHTML = '';
-      const pageCount = Math.max(1, Math.ceil(CRAFTING_RECIPES.length / CRAFTING_PAGE_SIZE));
+      const availableRecipes = CRAFTING_RECIPES.filter(hasBlueprintForRecipe);
+      const pageCount = Math.max(1, Math.ceil(availableRecipes.length / CRAFTING_PAGE_SIZE));
       craftingPage = Math.max(0, Math.min(craftingPage, pageCount - 1));
-      const start = craftingPage * CRAFTING_PAGE_SIZE;
-      const recipesOnPage = CRAFTING_RECIPES.slice(start, start + CRAFTING_PAGE_SIZE);
+      const filteredStart = craftingPage * CRAFTING_PAGE_SIZE;
+      const recipesOnPage = availableRecipes.slice(filteredStart, filteredStart + CRAFTING_PAGE_SIZE);
 
       for (let slotIndex = 0; slotIndex < CRAFTING_PAGE_SIZE; slotIndex++) {
         const recipe = recipesOnPage[slotIndex];
@@ -7465,7 +8303,7 @@
       const validForSlot = !inventoryItem ||
         (key === 'fuel' && inventoryItem.typeId === 'planks') ||
         (key === 'input' && (inventoryItem.typeId === 'iron_ore' || inventoryItem.typeId === 'copper_ore' || inventoryItem.typeId === 'tungsten_ore' || inventoryItem.typeId === 'titanium_ore')) ||
-        (key === 'output' && (inventoryItem.typeId === 'iron_ingot' || inventoryItem.typeId === 'copper_ingot' || inventoryItem.typeId === 'tungsten_ingot'));
+        (key === 'output' && (inventoryItem.typeId === 'iron_ingot' || inventoryItem.typeId === 'copper_ingot' || inventoryItem.typeId === 'tungsten_ingot' || inventoryItem.typeId === 'titanium_ingot'));
       if (!validForSlot) {
         const status = document.getElementById('furnaceStatus');
         if (status) {
@@ -9508,7 +10346,7 @@
     function renderMerchantSellList() {
       merchantSellList.innerHTML = '';
       for (const item of ITEM_TYPES) {
-        if (item.id === 'journal') continue;
+        if (item.id === 'journal' || SELL_PRICES[item.id] == null) continue;
         const owned = getInventoryCount(item.id);
         const row = document.createElement('button');
         row.type = 'button';
@@ -9558,7 +10396,13 @@
       { id: 'onyx',          name: 'Onyx',            price: 240, max: 10 },
       { id: 'rocket_engine', name: 'Rocket Engine',  price: 600, max: 1 },
       { id: 'launch_pad',    name: 'Launch Pad',     price: 400, max: 1 },
-      { id: 'jerrycan',      name: 'Jerrycan (Full)',price: 250, max: 1 }
+      { id: 'jerrycan',      name: 'Jerrycan (Full)',price: 250, max: 1 },
+      { id: 'rocket_engine_blueprint', name: 'Engine Mark 1 Blueprint', price: 100, max: 1, unique: true },
+      { id: 'warp_drive_blueprint', name: 'Warp Drive Mark 1 Blueprint', price: 200, max: 1, unique: true },
+      { id: 'rocket_blueprint', name: 'Rocket Blueprint', price: 300, max: 1, unique: true },
+      { id: 'upgraded_engine_blueprint', name: 'Engine Mark 2 Blueprint', price: 250, max: 1, unique: true },
+      { id: 'engine_mark_3_blueprint', name: 'Engine Mark 3 Blueprint', price: 400, max: 1, unique: true },
+      { id: 'warp_drive_mk2_blueprint', name: 'Warp Drive Mark 2 Blueprint', price: 500, max: 1, unique: true }
     ]);
 
     function setMerchantView(view) {
@@ -9586,6 +10430,14 @@
       const icon = document.createElement('div');
       icon.className = 'merchantBuyVisualIcon';
       icon.textContent = item && item.kind === 'crystal' ? '◆' : '▣';
+      if (item && item.kind === 'blueprint') {
+        icon.textContent = '';
+        icon.style.backgroundImage = 'url("models/Blueprint2.png")';
+        icon.style.backgroundSize = 'contain';
+        icon.style.backgroundRepeat = 'no-repeat';
+        icon.style.backgroundPosition = 'center';
+        icon.style.imageRendering = 'pixelated';
+      }
       if (item && item.kind === 'crystal' && item.css) {
         icon.style.color = item.css;
         icon.style.textShadow = '0 0 12px ' + item.css;
@@ -9601,7 +10453,9 @@
       if (!Number.isFinite(qty)) qty = 1;
       qty = Math.max(1, Math.min(catalogItem.max, qty));
       input.value = String(qty);
-      button.disabled = economyState.credits < catalogItem.price * qty;
+      const alreadyOwned = !!catalogItem.unique && hasItemType(catalogItem.id);
+      button.disabled = alreadyOwned || economyState.credits < catalogItem.price * qty;
+      button.textContent = alreadyOwned ? 'OWNED' : 'BUY';
     }
 
     function purchaseMerchantBuyItem(catalogItem, row) {
@@ -9613,6 +10467,12 @@
       const item = itemById[catalogItem.id];
       if (!item) {
         merchantStatus.textContent = 'This item is unavailable.';
+        return;
+      }
+
+      if (catalogItem.unique && hasItemType(catalogItem.id)) {
+        merchantStatus.textContent = 'You already own this blueprint.';
+        updateMerchantBuyButton(row, catalogItem);
         return;
       }
 
@@ -9769,7 +10629,7 @@
         updateMerchantSellSelection();
         return;
       }
-      if (!typeId || !itemById[typeId]) return;
+      if (!typeId || !itemById[typeId] || SELL_PRICES[typeId] == null) return;
       const owned = getInventoryCount(typeId);
       const qty = Math.max(1, Math.min(owned, Math.floor(Number(merchantSellQuantity.value) || 1)));
       if (owned < qty || !removeItemsFromInventory(typeId, qty)) { merchantStatus.textContent = 'You do not have enough of that item.'; return; }
@@ -9895,7 +10755,7 @@
       1: { label: 'CURRENT', multiplier: 1, fuelInterval: 5 },
       2: { label: 'BOOSTED', multiplier: 2, fuelInterval: 3 },
       3: { label: 'WARP', multiplier: 4, fuelInterval: 1.5 },
-      4: { label: 'SUPERSONIC', multiplier: 500 / FLIGHT_SPEED, fuelInterval: 1 }
+      4: { label: 'SUPERSONIC', multiplier: 200 / FLIGHT_SPEED, fuelInterval: 1 }
     };
     let rocketSpeedMode = 1;
     const FLIGHT_CAMERA_SMOOTH = 10;
@@ -9906,6 +10766,82 @@
     let flightPad = null;
     let flightRocket = null;
     let flightWasThirdPerson = false;
+
+    // Celestial-frame tracking lets a free-flight rocket inherit the actual WORLD transform
+    // (translation + axial rotation) of whichever landable body currently controls its local
+    // gravity. Inside that body's gravity region the rocket therefore moves with the rotating
+    // / orbiting world beneath it, making atmospheric approach and landing much easier. Once
+    // no landable body is within its gravity region, the carry stops and the ship is inertial
+    // in deep space.
+    let flightFrameBodyId = null;
+    let flightFrameReady = false;
+    const flightFramePreviousCenter = new THREE.Vector3();
+    const flightFramePreviousQuat = new THREE.Quaternion();
+    const flightFrameCurrentCenter = new THREE.Vector3();
+    const flightFrameCurrentQuat = new THREE.Quaternion();
+    const flightFramePreviousInvQuat = new THREE.Quaternion();
+    const flightFrameRelativePos = new THREE.Vector3();
+    const flightFrameDeltaQuat = new THREE.Quaternion();
+
+    function getFlightFrameDescriptor(position) {
+      const candidates = [
+        { id: 'aurora', center: auroraWorldPosition, object: auroraMesh, radius: AURORA_GRAVITY_SWITCH_DISTANCE },
+        { id: 'mileria', center: mileriaWorldPosition, object: mileriaMesh, radius: MILERIA_GRAVITY_SWITCH_DISTANCE },
+        { id: 'syspo', center: syspoWorldPosition, object: syspoSystem, radius: SYSP0_GRAVITY_SWITCH_DISTANCE },
+        { id: 'moon', center: moonWorldPosition, object: moonMesh, radius: MOON_GRAVITY_SWITCH_DISTANCE },
+        { id: 'cordelia', center: cordeliaWorldPosition, object: cordeliaMesh, radius: CORDELIA_GRAVITY_SWITCH_DISTANCE },
+        { id: 'ivis', center: ivisSolarOrbitPosition, object: planetSystem, radius: FREE_SPACE_PLANE_SWITCH_DISTANCE },
+      ];
+      let best = null;
+      let bestDistance = Infinity;
+      for (const candidate of candidates) {
+        if (!candidate.object || !candidate.center) continue;
+        const d = position.distanceTo(candidate.center);
+        if (d <= candidate.radius && d < bestDistance) {
+          best = candidate;
+          bestDistance = d;
+        }
+      }
+      return best;
+    }
+
+    function resetFlightFrameTracking() {
+      flightFrameBodyId = null;
+      flightFrameReady = false;
+    }
+
+    function applyCelestialFlightFrameCarry() {
+      const descriptor = getFlightFrameDescriptor(flightPosition);
+      if (!descriptor) {
+        resetFlightFrameTracking();
+        return;
+      }
+
+      descriptor.object.getWorldPosition(flightFrameCurrentCenter);
+      descriptor.object.getWorldQuaternion(flightFrameCurrentQuat);
+
+      // When entering a body's gravity region, initialize the reference frame instead of
+      // applying the full transform delta from some unrelated body / deep-space period.
+      if (!flightFrameReady || flightFrameBodyId !== descriptor.id) {
+        flightFrameBodyId = descriptor.id;
+        flightFramePreviousCenter.copy(flightFrameCurrentCenter);
+        flightFramePreviousQuat.copy(flightFrameCurrentQuat);
+        flightFrameReady = true;
+        return;
+      }
+
+      flightFrameRelativePos.copy(flightPosition).sub(flightFramePreviousCenter);
+      flightFramePreviousInvQuat.copy(flightFramePreviousQuat).invert();
+      flightFrameRelativePos.applyQuaternion(flightFramePreviousInvQuat);
+      flightFrameRelativePos.applyQuaternion(flightFrameCurrentQuat);
+      flightPosition.copy(flightFrameCurrentCenter).add(flightFrameRelativePos);
+
+      flightFrameDeltaQuat.copy(flightFrameCurrentQuat).multiply(flightFramePreviousInvQuat);
+      flightForward.applyQuaternion(flightFrameDeltaQuat).normalize();
+
+      flightFramePreviousCenter.copy(flightFrameCurrentCenter);
+      flightFramePreviousQuat.copy(flightFrameCurrentQuat);
+    }
 
     // These keys belong only to the spaceship controller. They are deliberately independent
     // of systemState.keys and physicalKeys used by walking/UI.
@@ -10309,7 +11245,7 @@
 
     function getRocketHudBodyInfo(position) {
       const bodies = [
-        { id: 'ivis', name: 'IVIS', center: new THREE.Vector3(0, 0, 0), radius: PLANET_RADIUS },
+        { id: 'ivis', name: 'IVIS', center: ivisSolarOrbitPosition.clone(), radius: PLANET_RADIUS },
         { id: 'moon', name: 'MOON', center: moonMesh.getWorldPosition(new THREE.Vector3()), radius: MOON_RADIUS },
         { id: 'cordelia', name: 'CORDELIA', center: cordeliaMesh.getWorldPosition(new THREE.Vector3()), radius: CORDELIA_RADIUS },
         { id: 'syspo', name: 'SYSPO', center: syspoMesh.getWorldPosition(new THREE.Vector3()), radius: SYSP0_RADIUS },
@@ -10331,7 +11267,7 @@
       const bodyInfo = getRocketHudBodyInfo(flightPosition);
       let altitudeBody = null;
       if (!playerState.rocketInSpace) {
-        altitudeBody = { name: 'IVIS', radius: PLANET_RADIUS, center: new THREE.Vector3(0, 0, 0) };
+        altitudeBody = { name: 'IVIS', radius: PLANET_RADIUS, center: ivisSolarOrbitPosition };
       } else if (moonGravityActive) {
         altitudeBody = { name: 'MOON', radius: MOON_RADIUS, center: moonMesh.getWorldPosition(new THREE.Vector3()) };
       } else if (cordeliaGravityActive) {
@@ -10387,7 +11323,7 @@
         rocketFlightTime.textContent = formatRocketTime(timeLeft);
         rocketFlightSpeed.textContent = speedValue + 'u/s';
         rocketFlightConsumption.textContent = '1% / ' + fuelTime + 's';
-        const flightContext = playerState.rocketInSpace ? (moonGravityActive ? 'SPACE · MOON GRAVITY' : (cordeliaGravityActive ? 'SPACE · CORDELIA GRAVITY' : (freeSpacePlaneActive ? 'SPACE · RANDOM PLANE' : 'SPACE · FREE FLIGHT'))) : 'ATMOSPHERE';
+        const flightContext = playerState.rocketInSpace ? (moonGravityActive ? 'SPACE · MOON GRAVITY' : (cordeliaGravityActive ? 'SPACE · CORDELIA GRAVITY' : (freeSpacePlaneActive ? 'SPACE · DEEP SPACE' : 'SPACE · FREE FLIGHT'))) : 'ATMOSPHERE';
         rocketFlightContext.textContent = flightContext + ' · SPEED ' + (flightPad?.engineType === 'mark3' ? '[1/2/3/4]' : '[1/2/3]');
         updateRocketHudSpatialReadout();
       }
@@ -10420,8 +11356,9 @@
     }
 
     function getPlanetUpAt(position, out) {
-      if (position.lengthSq() < 0.0001) return out.set(0, 1, 0);
-      return out.copy(position).normalize();
+      const localToIvis = out.copy(position).sub(ivisSolarOrbitPosition);
+      if (localToIvis.lengthSq() < 0.0001) return out.set(0, 1, 0);
+      return localToIvis.normalize();
     }
 
     // Build a local ship frame from the planet's curvature. +Y is always away from the
@@ -10457,7 +11394,8 @@
       // A landed lunar rocket is parented to the Moon. Its local transform must remain
       // untouched so it moves with the Moon instead of receiving a world-space position
       // as though it were still parented to the scene.
-      if ((moonLandedRocket === flightRocket || cordeliaLandedRocket === flightRocket || omegaLandedRocket === flightRocket) && playerState.rocketLanded) {
+      const ivisLandedRocket = !!(playerState.rocketLanded && flightPad && flightRocket === flightPad.rocket && flightRocket.root.parent === flightPad.root);
+      if ((ivisLandedRocket || moonLandedRocket === flightRocket || cordeliaLandedRocket === flightRocket || omegaLandedRocket === flightRocket) && playerState.rocketLanded) {
         flightRocket.root.visible = true;
         flightRocket.root.getWorldPosition(flightPosition);
         flightRocket.root.getWorldQuaternion(flightRocketQuat);
@@ -10473,6 +11411,43 @@
       flightRocket.root.quaternion.setFromRotationMatrix(flightShipBasis);
       flightRocket.root.position.copy(flightPosition);
       flightRocket.root.visible = true;
+    }
+
+    function updateDockedIvisRocketCamera(delta) {
+      if (!flightRocket) return;
+      const rocketWorldPos = flightRocket.root.getWorldPosition(new THREE.Vector3());
+      const rocketWorldQuat = flightRocket.root.getWorldQuaternion(new THREE.Quaternion());
+      const center = ivisSolarOrbitPosition;
+      const up = rocketWorldPos.clone().sub(center);
+      if (up.lengthSq() < 0.00001) up.set(0, 1, 0);
+      up.normalize();
+
+      const baseForward = new THREE.Vector3(0, 0, 1).applyQuaternion(rocketWorldQuat);
+      baseForward.addScaledVector(up, -baseForward.dot(up));
+      if (baseForward.lengthSq() < 0.00001) {
+        const fallback = Math.abs(up.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+        baseForward.copy(fallback).addScaledVector(up, -fallback.dot(up));
+      }
+      baseForward.normalize();
+
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(up, flightCameraYaw.value);
+      const orbitForward = baseForward.clone().applyQuaternion(yawQuat).normalize();
+      const orbitRight = new THREE.Vector3().crossVectors(orbitForward, up).normalize();
+      const pitchQuat = new THREE.Quaternion().setFromAxisAngle(orbitRight, flightCameraPitch.value);
+      const cameraForward = orbitForward.clone().applyQuaternion(pitchQuat).normalize();
+
+      const target = rocketWorldPos.clone().addScaledVector(up, 1.4);
+      const desiredPos = target.clone().addScaledVector(cameraForward, -FLIGHT_CAMERA_DISTANCE);
+      const blend = Math.min(1, delta * FLIGHT_CAMERA_SMOOTH);
+
+      if (flightCamera.position.distanceTo(desiredPos) > FLIGHT_CAMERA_DISTANCE * 2.5) {
+        flightCamera.position.copy(desiredPos);
+      } else {
+        flightCamera.position.lerp(desiredPos, blend);
+      }
+
+      flightCamera.up.copy(up);
+      flightCamera.lookAt(target);
     }
 
     function updateDockedMoonRocketCamera(delta) {
@@ -10569,7 +11544,7 @@
       rocketFlightDistance = 0;
       rocketFlightHasMoved = false;
       playerState.rocketLanded = true;
-      playerState.rocketInSpace = flightPosition.length() >= ROCKET_ATMOSPHERE_RADIUS;
+      playerState.rocketInSpace = flightPosition.distanceTo(ivisSolarOrbitPosition) >= ROCKET_ATMOSPHERE_RADIUS;
 
       // This is an Ivis launch-pad landing, not a lunar landing. Clear the lunar-docked
       // reference so exiting the rocket returns the player to Ivis instead of incorrectly
@@ -10594,8 +11569,19 @@
       freeSpaceDown.set(0, 1, 0);
 
       if (flightRocket) {
-        flightRocket.root.position.copy(flightPosition);
-        flightRocket.root.quaternion.copy(pad._flightWorldQuat);
+        // Ivis' launch pad is part of the moving/rotating planetSystem. Keep a landed rocket
+        // parented directly to that pad so it follows Ivis perfectly instead of drifting away
+        // as the planet rotates or orbits the Sun. scene.attach() is used later when the rocket
+        // actually takes off, preserving the correct world transform at the moment of release.
+        const desiredWorldPos = flightPosition.clone();
+        const desiredWorldQuat = pad._flightWorldQuat.clone();
+        if (flightRocket.root.parent !== pad.root) {
+          pad.root.attach(flightRocket.root);
+        }
+        flightRocket.root.position.copy(pad.root.worldToLocal(desiredWorldPos));
+        const padWorldQuat = pad.root.getWorldQuaternion(new THREE.Quaternion());
+        flightRocket.root.quaternion.copy(padWorldQuat.invert().multiply(desiredWorldQuat));
+        flightRocket.root.visible = true;
       }
       return true;
     }
@@ -10639,6 +11625,7 @@
       recordRocketTakeoff('cordelia');
       playerState.rocketLanded = false;
       playerState.rocketInSpace = true;
+      resetFlightFrameTracking();
       cordeliaGravityActive = true;
       cordeliaTakeoffActive = true;
       cordeliaLandingArmed = false;
@@ -10786,6 +11773,7 @@
       omegaLandingArmed = false;
       playerState.rocketLanded = false;
       playerState.rocketInSpace = true;
+      resetFlightFrameTracking();
       moonGravityActive = false;
       cordeliaGravityActive = false;
       auroraGravityActive = omegaLandedBodyId === 'aurora';
@@ -10846,6 +11834,7 @@
 
       flightPad = pad;
       flightRocket = pad.rocket;
+      resetFlightFrameTracking();
       flightPosition.copy(rocketWorldPos);
       flightRocketQuat.copy(rocketWorldQuat);
       flightAchievementFrameStart.copy(flightPosition);
@@ -10887,13 +11876,13 @@
       flightRight.crossVectors(flightForward, initialUp).normalize();
       clearRocketKeys();
       rocketLaunchPlayed = false;
-      lastRocketSpaceState = flightPosition.length() >= ROCKET_ATMOSPHERE_RADIUS;
+      lastRocketSpaceState = flightPosition.distanceTo(ivisSolarOrbitPosition) >= ROCKET_ATMOSPHERE_RADIUS;
 
       scene.attach(player);
       player.position.copy(flightPosition);
       player.quaternion.copy(flightRocketQuat);
       playerState.inRocket = true;
-      playerState.rocketInSpace = (reenteringMoonRocket || reenteringCordeliaRocket || reenteringOmegaRocket) ? true : (flightPosition.length() >= ROCKET_ATMOSPHERE_RADIUS);
+      playerState.rocketInSpace = (reenteringMoonRocket || reenteringCordeliaRocket || reenteringOmegaRocket) ? true : (flightPosition.distanceTo(ivisSolarOrbitPosition) >= ROCKET_ATMOSPHERE_RADIUS);
       playerState.rocketLanded = reenteringMoonRocket || reenteringCordeliaRocket || reenteringOmegaRocket;
       moonWalking = false;
       cordeliaWalking = false;
@@ -11201,6 +12190,9 @@
         }
       }
 
+      // Syspo has NO flight collision. Its core is handled exclusively by updateSyspoDanger()
+      // so the warning/recovery sequence can be reached by flying directly toward the core.
+
       // Moon collision: the Moon is a solid space object. Always read its WORLD position
       // so the collision follows the moving/orbiting Moon exactly. During the brief Moon
       // takeoff phase the collision is intentionally ignored so the parked rocket can clear
@@ -11273,6 +12265,7 @@
       playerState.rocketLanded = false;
       moonLandingArmed = false;
       playerState.rocketInSpace = true;
+      resetFlightFrameTracking();
       moonGravityActive = true;
       moonTakeoffActive = true;
       lastRocketSpaceState = true;
@@ -11310,11 +12303,12 @@
       flightAchievementFrameStart.copy(flightPosition);
       recordRocketTakeoff('ivis');
       playerState.rocketLanded = false;
-      playerState.rocketInSpace = flightPosition.length() >= ROCKET_ATMOSPHERE_RADIUS;
+      playerState.rocketInSpace = flightPosition.distanceTo(ivisSolarOrbitPosition) >= ROCKET_ATMOSPHERE_RADIUS;
       moonGravityActive = false;
       cordeliaGravityActive = false;
       freeSpacePlaneActive = false;
       freeSpaceDown.set(0, 1, 0);
+      resetFlightFrameTracking();
       lastRocketSpaceState = playerState.rocketInSpace;
       return true;
     }
@@ -11402,7 +12396,9 @@
           flightRocket.root.getWorldPosition(flightPosition);
           flightRocket.root.getWorldQuaternion(flightRocketQuat);
           player.position.copy(flightPosition);
+          player.quaternion.copy(flightRocketQuat);
           updateRocketEngineAudio(false, false);
+          updateDockedIvisRocketCamera(delta);
           setRocketFlightUI();
           return;
         }
@@ -11418,9 +12414,17 @@
       }
       if ((Number(flightPad.fuel) || 0) <= 0) playerState.rocketFuelTimer = 0;
 
-      const radiusFromCenter = flightPosition.length();
+      const radiusFromCenter = flightPosition.distanceTo(ivisSolarOrbitPosition);
       playerState.rocketInSpace = radiusFromCenter >= ROCKET_ATMOSPHERE_RADIUS;
       updateSpacePlaneState(flightPosition);
+      updateTravelTransitions();
+
+      // Carry the detached ship with the CURRENT landable celestial body while it remains
+      // inside that body's gravity region. This is the same local-frame behavior that made
+      // Ivis landings easier, now extended to the Moon, Cordelia, Aurora, and Mileria.
+      // Once no landable body is inside its gravity region, the ship is in deep space and
+      // the frame carry stops automatically.
+      applyCelestialFlightFrameCarry();
 
       // The 600-unit boundary marks the transition into space. Beyond roughly 1000 units
       // from Ivis, there is no planet/star center at all: the ship gets a fixed random down
@@ -11502,14 +12506,18 @@
         // In atmosphere, keep the ship's altitude and move around the planet's curve when
         // pressing W/A/S/D. This avoids the old tangent-vector + surface-clamp snap-back.
         if (!playerState.rocketInSpace) {
-          const currentDir = flightPosition.clone().normalize();
+          // Flight coordinates are world-space while Ivis is now orbiting the Sun. Convert
+          // into Ivis-local coordinates for all spherical-surface math, then convert movement
+          // candidates back into world space for collision testing.
+          const currentLocal = planetSystem.worldToLocal(flightPosition.clone());
+          const currentDir = currentLocal.lengthSq() > 0.0001 ? currentLocal.normalize() : new THREE.Vector3(0, 1, 0);
           const currentGroundRadius = PLANET_RADIUS + heightAt(currentDir);
           // Preserve the ship's altitude above the local ground while moving around the sphere.
           // This is the important valley fix: entering a lower region lowers the ship with the
           // valley, while entering higher terrain raises it smoothly instead of ejecting it.
           const currentAltitude = Math.max(
             FLIGHT_TERRAIN_CLEARANCE,
-            flightPosition.length() - currentGroundRadius
+            flightPosition.distanceTo(ivisSolarOrbitPosition) - currentGroundRadius
           );
 
           const horizontal = new THREE.Vector3();
@@ -11517,14 +12525,19 @@
           horizontal.addScaledVector(cameraMoveRight, rightInput);
           if (horizontal.lengthSq() > 1) horizontal.normalize();
 
+          // Camera-relative movement is world-space, so keep the tangent direction in world
+          // coordinates and derive its angular step from the Ivis-local radius.
+          const localHorizontal = horizontal.clone();
+          localHorizontal.applyQuaternion(planetSystem.quaternion.clone().invert());
           const horizontalDistance = FLIGHT_SPEED * selectedSpeedMode.multiplier * delta;
-          if (horizontal.lengthSq() > 0.000001) {
+          if (localHorizontal.lengthSq() > 0.000001) {
             const newDir = currentDir.clone();
-            newDir.addScaledVector(horizontal, horizontalDistance / Math.max(flightPosition.length(), PLANET_RADIUS + 1));
+            newDir.addScaledVector(localHorizontal, horizontalDistance / Math.max(currentLocal.length(), PLANET_RADIUS + 1));
             newDir.normalize();
 
             const desiredRadius = PLANET_RADIUS + heightAt(newDir) + currentAltitude;
-            const horizontalCandidate = newDir.multiplyScalar(desiredRadius);
+            const horizontalCandidateLocal = newDir.multiplyScalar(desiredRadius);
+            const horizontalCandidate = planetSystem.localToWorld(horizontalCandidateLocal.clone());
             if (!isFlightPositionBlocked(horizontalCandidate)) {
               flightPosition.copy(horizontalCandidate);
             } else {
@@ -11532,12 +12545,12 @@
               // pilot can slide around trees/stalls without losing altitude in a valley.
               const tryMoveAxis = (axisDir) => {
                 if (axisDir.lengthSq() < 0.000001) return false;
-                const axisDirNorm = axisDir.clone().normalize();
+                const axisDirNorm = axisDir.clone().applyQuaternion(planetSystem.quaternion.clone().invert()).normalize();
                 const axisCandidateDir = currentDir.clone();
-                axisCandidateDir.addScaledVector(axisDirNorm, horizontalDistance / Math.max(flightPosition.length(), PLANET_RADIUS + 1));
+                axisCandidateDir.addScaledVector(axisDirNorm, horizontalDistance / Math.max(currentLocal.length(), PLANET_RADIUS + 1));
                 axisCandidateDir.normalize();
                 const axisRadius = PLANET_RADIUS + heightAt(axisCandidateDir) + currentAltitude;
-                const axisCandidate = axisCandidateDir.multiplyScalar(axisRadius);
+                const axisCandidate = planetSystem.localToWorld(axisCandidateDir.clone().multiplyScalar(axisRadius));
                 if (!isFlightPositionBlocked(axisCandidate)) {
                   flightPosition.copy(axisCandidate);
                   return true;
@@ -11577,7 +12590,7 @@
             // on Omega flights: the audio kept playing while the main thread spent too long
             // allocating vectors for collision checks. Only use substep collision when the
             // rocket is close enough to a body for a collision to be possible.
-            const nearIvis = flightPosition.length() <= ROCKET_ATMOSPHERE_RADIUS + 200;
+            const nearIvis = flightPosition.distanceTo(ivisSolarOrbitPosition) <= ROCKET_ATMOSPHERE_RADIUS + 200;
             const nearMoon = flightPosition.distanceTo(moonWorldPosition) <= MOON_COLLISION_RADIUS + 120;
             const nearCordelia = flightPosition.distanceTo(cordeliaWorldPosition) <= CORDELIA_RADIUS + 220;
             const nearAurora = flightPosition.distanceTo(auroraWorldPosition) <= AURORA_RADIUS + 110;
@@ -11612,7 +12625,7 @@
         const movedThisFrame = flightAchievementFrameStart.distanceTo(flightPosition);
         accountStatistics.totalUnitsTraveled += Math.max(0, movedThisFrame);
         if (state.gameMode === 'survival') {
-          recordFlightAchievementProgress(movedThisFrame, delta, flightPosition.length());
+          recordFlightAchievementProgress(movedThisFrame, delta, flightPosition.distanceTo(ivisSolarOrbitPosition));
         }
       }
       flightAchievementFrameStart.copy(flightPosition);
@@ -11700,7 +12713,9 @@
       if (!playerState.rocketInSpace && flightPad && !anyFlightInput) {
         flightPad.root.getWorldPosition(flightPadWorld);
         const padDistance = flightPosition.distanceTo(flightPadWorld);
-        const radialDifference = Math.abs(flightPosition.length() - flightPadWorld.length());
+        const radialDifference = Math.abs(
+          flightPosition.distanceTo(ivisSolarOrbitPosition) - flightPadWorld.distanceTo(ivisSolarOrbitPosition)
+        );
         if (padDistance <= FLIGHT_LANDING_DISTANCE && radialDifference <= FLIGHT_LANDING_HEIGHT_TOLERANCE) {
           snapFlightToPad(flightPad);
         }
@@ -11744,6 +12759,7 @@
           spinAngle: state.planetSpinAngle,
           moonOrbitAngle,
           syspoSolarOrbitAngle,
+          ivisSolarOrbitAngle,
           auroraOrbitAngle,
           mileriaOrbitAngle
         },
@@ -11819,7 +12835,8 @@
         furnaces: furnaces.map(furnace => ({
           direction: furnace.direction.toArray(),
           yaw: furnace.yaw,
-          inventory: furnace.inventory
+          inventory: furnace.inventory,
+          surfaceBodyId: furnace.surfaceBodyId || 'ivis'
         })),
         launchPads: launchPads.map(pad => ({
           direction: pad.direction.toArray(),
@@ -11828,9 +12845,11 @@
           fuel: Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(pad.fuel) || 0)),
           engineType: pad.engineType === 'mark3' ? 'mark3' : (pad.engineType === 'upgraded' ? 'upgraded' : 'standard'),
           warpDrive: !!pad.warpDrive,
-          warpDriveType: pad.warpDriveType || null
+          warpDriveType: pad.warpDriveType || null,
+          surfaceBodyId: pad.surfaceBodyId || 'ivis'
         })),
-        drills: placedDrills.map(drill => ({ direction: drill.direction.toArray(), yaw: drill.yaw, durability: drill.durability })),
+        containers: containers.map(container => ({ containerId: container.containerId, direction: container.direction.toArray(), yaw: container.yaw, surfaceBodyId: container.surfaceBodyId || 'ivis', inventory: container.inventory.map(slot => slot ? { typeId: slot.typeId, count: slot.count, ...(itemById[slot.typeId]?.tool ? { durability: slot.durability } : {}) } : null) })),
+        drills: placedDrills.map(drill => ({ direction: drill.direction.toArray(), yaw: drill.yaw, durability: drill.durability, surfaceBodyId: drill.surfaceBodyId || 'ivis' })),
         droppedItems: droppedItems.map(drop => ({ typeId: drop.typeId, count: drop.count, direction: drop.direction.toArray() }))
       };
     }
@@ -11925,8 +12944,10 @@
       state.planetSpinAngle = Number.isFinite(data.planet.spinAngle) ? data.planet.spinAngle : 0;
       moonOrbitAngle = Number.isFinite(data.planet.moonOrbitAngle) ? data.planet.moonOrbitAngle : 0;
       syspoSolarOrbitAngle = Number.isFinite(data.planet.syspoSolarOrbitAngle) ? data.planet.syspoSolarOrbitAngle : 0;
+      ivisSolarOrbitAngle = Number.isFinite(data.planet.ivisSolarOrbitAngle) ? data.planet.ivisSolarOrbitAngle : 0;
       auroraOrbitAngle = Number.isFinite(data.planet.auroraOrbitAngle) ? data.planet.auroraOrbitAngle : 0;
       mileriaOrbitAngle = Number.isFinite(data.planet.mileriaOrbitAngle) ? data.planet.mileriaOrbitAngle : Math.PI;
+      updateIvisSolarOrbit(0);
       updateMoon(0);
       updateOmegaSystem(0);
 
@@ -12140,12 +13161,12 @@
       }
 
       // Restore placed furnaces and their inventories.
-      for (const furnace of furnaces) planetSystem.remove(furnace.root);
+      for (const furnace of furnaces) if (furnace.root && furnace.root.parent) furnace.root.parent.remove(furnace.root);
       furnaces.length = 0;
       if (Array.isArray(data.furnaces)) {
         for (const saved of data.furnaces) {
           if (!Array.isArray(saved.direction)) continue;
-          const furnace = createFurnaceObject(new THREE.Vector3().fromArray(saved.direction).normalize(), Number.isFinite(saved.yaw) ? saved.yaw : 0);
+          const furnace = createFurnaceObject(new THREE.Vector3().fromArray(saved.direction).normalize(), Number.isFinite(saved.yaw) ? saved.yaw : 0, saved.surfaceBodyId || 'ivis');
           if (saved.inventory && typeof saved.inventory === 'object') {
             for (const key of ['fuel','input','output']) {
               const v=saved.inventory[key];
@@ -12161,7 +13182,7 @@
       if (Array.isArray(data.launchPads)) {
         for (const saved of data.launchPads) {
           if (!Array.isArray(saved.direction)) continue;
-          const pad = createLaunchPadObject(new THREE.Vector3().fromArray(saved.direction).normalize(), Number.isFinite(saved.yaw) ? saved.yaw : 0);
+          const pad = createLaunchPadObject(new THREE.Vector3().fromArray(saved.direction).normalize(), Number.isFinite(saved.yaw) ? saved.yaw : 0, saved.surfaceBodyId || 'ivis');
           if (saved.hasRocket) placeRocketOnLaunchPad(pad);
           pad.engineType = saved.engineType === 'mark3' ? 'mark3' : (saved.engineType === 'upgraded' ? 'upgraded' : 'standard');
           pad.warpDrive = !!saved.warpDrive;
@@ -12196,7 +13217,20 @@
       if (Array.isArray(data.drills)) {
         for (const saved of data.drills) {
           if (!Array.isArray(saved.direction)) continue;
-          createDrillObject(new THREE.Vector3().fromArray(saved.direction).normalize(), Number.isFinite(saved.yaw) ? saved.yaw : 0, Math.max(0, Math.min(100, Number(saved.durability) || 0)));
+          createDrillObject(new THREE.Vector3().fromArray(saved.direction).normalize(), Number.isFinite(saved.yaw) ? saved.yaw : 0, Math.max(0, Math.min(100, Number(saved.durability) || 0)), saved.surfaceBodyId || 'ivis');
+        }
+      }
+
+      for (const container of containers) if (container.root && container.root.parent) container.root.parent.remove(container.root);
+      containers.length = 0;
+      nextContainerId = 1;
+      if (Array.isArray(data.containers)) {
+        for (const saved of data.containers) {
+          if (!Array.isArray(saved.direction)) continue;
+          const inventory = Array.isArray(saved.inventory) && saved.inventory.length === 20
+            ? saved.inventory.map(normalizeContainerSlot)
+            : createContainerStorage();
+          createContainerObject(new THREE.Vector3().fromArray(saved.direction).normalize(), Number.isFinite(saved.yaw) ? saved.yaw : 0, saved.surfaceBodyId || 'ivis', inventory, typeof saved.containerId === 'string' ? saved.containerId : null);
         }
       }
 
@@ -12406,8 +13440,9 @@
 
     function collectCrystal(spawn) {
       if (spawn.collected) return false;
+      // Rainbow Opal intentionally uses the same standard crystal pickup sound.
       // The player must have an available stack/slot before the crystal disappears.
-      if (!addItemToInventory(spawn.typeId, 1)) return false;
+      if (!addItemToInventory(spawn.typeId, 1, null, true)) return false;
 
       spawn.collected = true;
       playAudio('crystalPickup', 0.55, 0.98 + Math.random() * 0.06, 500);
@@ -12436,7 +13471,7 @@
 
     function tryCollectNearbyMoonQuartz() {
       if (!nearbyMoonQuartz) return false;
-      if (!addItemToInventory('moon_quartz', 1)) {
+      if (!addItemToInventory('moon_quartz', 1, null, true)) {
         const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden'); prompt.textContent = 'Inventory full — make room first';
         return true;
       }
@@ -12483,12 +13518,31 @@
       return pad && pad.rocket ? pad.rocket : null;
     }
 
+    function getRequiredWrenchForInstallation(typeId) {
+      if (typeId === 'warp_drive' || typeId === 'upgraded_engine') return 'iron_wrench';
+      if (typeId === 'warp_drive_mk2' || typeId === 'engine_mark_3') return 'titanium_wrench';
+      return null;
+    }
+
+    function hasRequiredWrench(typeId) {
+      const wrenchId = getRequiredWrenchForInstallation(typeId);
+      return !wrenchId || countItem(wrenchId) > 0;
+    }
+
+    function showMissingWrenchPrompt(typeId) {
+      const wrenchId = getRequiredWrenchForInstallation(typeId);
+      if (!wrenchId) return;
+      const wrenchName = itemById[wrenchId]?.name || wrenchId;
+      showFlightPrompt('INSTALLATION REQUIRES ' + wrenchName.toUpperCase());
+    }
+
     function tryInstallWarpDriveNearbyRocket() {
       if (state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen) return false;
       if (uiState.equippedItemType !== 'warp_drive') return false;
       const rocket = findNearbyUpgradeableRocket();
       if (!rocket || !rocket.pad) return false;
       if (rocket.warpDrive || rocket.pad.warpDrive) { showFlightPrompt((rocket.pad.warpDriveType === 'mk2' || rocket.warpDriveType === 'mk2') ? 'Rocket already has Warp Drive Mark 2.' : 'Rocket already has a Warp Drive.'); return true; }
+      if (!hasRequiredWrench('warp_drive')) { showMissingWrenchPrompt('warp_drive'); return true; }
       const idx = getSelectedHotbarInventoryIndex();
       if (!inventorySlots[idx] || inventorySlots[idx].typeId !== 'warp_drive') return false;
       rocket.pad.warpDrive = true; rocket.pad.warpDriveType = 'mk1'; rocket.warpDrive = true; rocket.warpDriveType = 'mk1'; inventorySlots[idx] = null;
@@ -12507,6 +13561,7 @@
       // It no longer requires the old Warp Drive to be installed first; the Mk2 upgrade already contains
       // everything needed to operate as a warp drive.
       if ((rocket.pad.warpDriveType === 'mk2') || (rocket.warpDriveType === 'mk2')) { showFlightPrompt('Rocket already has Warp Drive Mark 2.'); return true; }
+      if (!hasRequiredWrench('warp_drive_mk2')) { showMissingWrenchPrompt('warp_drive_mk2'); return true; }
       const idx = getSelectedHotbarInventoryIndex();
       if (!inventorySlots[idx] || inventorySlots[idx].typeId !== 'warp_drive_mk2') return false;
       rocket.pad.warpDrive = true; rocket.pad.warpDriveType = 'mk2'; rocket.warpDrive = true; rocket.warpDriveType = 'mk2'; inventorySlots[idx] = null;
@@ -12523,6 +13578,7 @@
       if (!rocket || !rocket.pad) return false;
       if (rocket.engineType === 'upgraded' || rocket.pad.engineType === 'upgraded') { showFlightPrompt('Rocket already has Engine Mark 2.'); return true; }
       if (rocket.engineType === 'mark3' || rocket.pad.engineType === 'mark3') { showFlightPrompt('Rocket already has Engine Mark 3.'); return true; }
+      if (!hasRequiredWrench('upgraded_engine')) { showMissingWrenchPrompt('upgraded_engine'); return true; }
       const idx = getSelectedHotbarInventoryIndex();
       if (!inventorySlots[idx] || inventorySlots[idx].typeId !== 'upgraded_engine') return false;
       rocket.pad.engineType = 'upgraded'; rocket.engineType = 'upgraded'; rocket.pad.fuel = 0;
@@ -12543,6 +13599,8 @@
       // Engine Mark 3 is a complete replacement upgrade and can be installed directly on a landed rocket.
       // The Engine Mark 2 is only a crafting ingredient for making the Mk3 item; it does not need to be
       // currently installed on the rocket.
+      if (rocket.engineType === 'mark3' || rocket.pad.engineType === 'mark3') { showFlightPrompt('Rocket already has Engine Mark 3.'); return true; }
+      if (!hasRequiredWrench('engine_mark_3')) { showMissingWrenchPrompt('engine_mark_3'); return true; }
       const idx = getSelectedHotbarInventoryIndex();
       if (!inventorySlots[idx] || inventorySlots[idx].typeId !== 'engine_mark_3') return false;
       rocket.pad.engineType = 'mark3'; rocket.engineType = 'mark3'; rocket.pad.fuel = 0;
@@ -12678,7 +13736,7 @@
       const grass = scytheCuttingTarget;
       scytheCuttingTarget = null;
       if (!grass || grass.cut || !grass.root.visible || findNearbyGrass() !== grass) return;
-      if (!addItemToInventory('grass_fiber', 3)) return;
+      if (!addItemToInventory('grass_fiber', 3, null, true)) return;
       useToolOnce();
       grass.cut = true;
       grass.root.visible = false;
@@ -12767,7 +13825,7 @@
         return;
       }
 
-      addItemToInventory('planks', plankYield);
+      addItemToInventory('planks', plankYield, null, true);
       useToolDurability(isDrill(uiState.equippedItemType) ? 1 : plankYield);
       spawnImpactParticles(getParticleWorldPosition(tree.root, 0.7), 0x8b5a35, { count: 18, life: 0.65, speed: 2.8, size: 0.085, gravity: 5.0 });
       tree.chopped = true;
@@ -12838,10 +13896,12 @@
       return heightAt(dir) >= MINEABLE_STONE_MIN_HEIGHT;
     }
 
-    function getMiningTimeForTool(typeId = uiState.equippedItemType) {
-      if (typeId === 'drill') return 324;
-      if (typeId === 'iron_pickaxe') return 648;
-      return typeId === 'stone_pickaxe' ? 810 : 900;
+    function getMiningTimeForTool(typeId = uiState.equippedItemType, target = miningRock) {
+      let base;
+      if (typeId === 'drill') base = 324;
+      else if (typeId === 'iron_pickaxe') base = 648;
+      else base = typeId === 'stone_pickaxe' ? 810 : 900;
+      return target?.oreType === 'titanium_ore' ? base * 3 : base;
     }
 
     // Mining is deliberately not instant. Stone pickaxes mine 10% faster than wooden pickaxes.
@@ -12894,7 +13954,7 @@
       triggerToolSwing(0.92, 260);
       const prompt = document.getElementById('crystalPrompt');
       prompt.classList.remove('hidden');
-      const targetName = targetRock && targetRock.oreType === 'iron_ore' ? 'Iron Ore' : (targetRock && targetRock.oreType === 'copper_ore' ? 'Copper Ore' : (targetRock ? 'Boulder' : 'Stone'));
+      const targetName = targetRock && targetRock.oreType === 'iron_ore' ? 'Iron Ore' : (targetRock && targetRock.oreType === 'copper_ore' ? 'Copper Ore' : (targetRock && targetRock.oreType === 'titanium_ore' ? 'Titanium Deposit' : (targetRock ? 'Boulder' : 'Stone')));
       prompt.innerHTML = '<span class="promptKey">MINING</span> Mining ' + targetName + '…';
       return true;
     }
@@ -12946,7 +14006,7 @@
         if (prompt) { prompt.classList.remove('hidden'); prompt.textContent = 'Breaking canceled'; setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 500); }
         return;
       }
-      addItemToInventory(type, 1);
+      addItemToInventory(type, 1, null, true);
       if (type === 'rocket') {
         pad.root.remove(target.root);
         pad.rocket = null;
@@ -13020,7 +14080,7 @@
         return;
       }
 
-      addItemToInventory('furnace', 1);
+      addItemToInventory('furnace', 1, null, true);
       furnace.root.visible = false;
       const idx = furnaces.indexOf(furnace);
       if (idx >= 0) furnaces.splice(idx, 1);
@@ -13074,7 +14134,7 @@
 
       // Put the reserved resource into the inventory only after the mining action succeeds.
       const miningYield = (targetRock && targetRock.oreType === 'titanium_ore') ? Math.max(1, Math.min(5, Number(targetRock.yieldCount) || 1)) : 1;
-      if (!canAddItemToInventory(minedItemId, miningYield) || !addItemToInventory(minedItemId, miningYield)) {
+      if (!canAddItemToInventory(minedItemId, miningYield) || !addItemToInventory(minedItemId, miningYield, null, true)) {
         prompt.classList.remove('hidden');
         prompt.textContent = 'Inventory full — ' + minedItemName + ' was not collected';
         setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 700);
@@ -13215,24 +14275,24 @@
         prompt.classList.remove('hidden');
         const hasMk1 = !!(nearbyUpgradeableRocket.warpDrive || nearbyUpgradeableRocket.pad?.warpDrive);
         const isMk2 = (nearbyUpgradeableRocket.warpDriveType === 'mk2' || nearbyUpgradeableRocket.pad?.warpDriveType === 'mk2');
-        prompt.innerHTML = isMk2 ? '<span class="promptKey">INSTALLED</span> Warp Drive Mark 2 already installed' : '<span class="promptKey">E</span> Install Warp Drive Mark 2 · Rainbow Opal warp fuel';
+        prompt.innerHTML = isMk2 ? '<span class="promptKey">INSTALLED</span> Warp Drive Mark 2 already installed' : '<span class="promptKey">E</span> Install Warp Drive Mark 2 · Rainbow Opal · Titanium Wrench';
         return;
       }
       if (nearbyUpgradeableRocket && uiState.equippedItemType === 'warp_drive') {
         prompt.classList.remove('hidden');
-        prompt.innerHTML = (nearbyUpgradeableRocket.warpDrive || nearbyUpgradeableRocket.pad?.warpDrive) ? '<span class="promptKey">INSTALLED</span> Warp Drive already installed' : '<span class="promptKey">E</span> Install Warp Drive · Space Map';
+        prompt.innerHTML = (nearbyUpgradeableRocket.warpDrive || nearbyUpgradeableRocket.pad?.warpDrive) ? '<span class="promptKey">INSTALLED</span> Warp Drive already installed' : '<span class="promptKey">E</span> Install Warp Drive · Iron Wrench';
         return;
       }
       if (nearbyUpgradeableRocket && uiState.equippedItemType === 'engine_mark_3') {
         prompt.classList.remove('hidden');
         const hasMk2 = nearbyUpgradeableRocket.engineType === 'upgraded' || nearbyUpgradeableRocket.pad?.engineType === 'upgraded';
         const isMk3 = nearbyUpgradeableRocket.engineType === 'mark3' || nearbyUpgradeableRocket.pad?.engineType === 'mark3';
-        prompt.innerHTML = isMk3 ? '<span class="promptKey">INSTALLED</span> Engine Mark 3 already installed' : '<span class="promptKey">E</span> Install Engine Mark 3 · 300% fuel · Supersonic';
+        prompt.innerHTML = isMk3 ? '<span class="promptKey">INSTALLED</span> Engine Mark 3 already installed' : '<span class="promptKey">E</span> Install Engine Mark 3 · Titanium Wrench';
         return;
       }
       if (nearbyUpgradeableRocket && uiState.equippedItemType === 'upgraded_engine') {
         prompt.classList.remove('hidden');
-        prompt.innerHTML = nearbyUpgradeableRocket.engineType === 'mark3' ? '<span class="promptKey">MARK 3</span> Rocket already upgraded' : nearbyUpgradeableRocket.engineType === 'upgraded' ? '<span class="promptKey">MARK 2</span> Engine Mark 2 already installed' : '<span class="promptKey">E</span> Install Engine Mark 2 · 200% fuel capacity';
+        prompt.innerHTML = nearbyUpgradeableRocket.engineType === 'mark3' ? '<span class="promptKey">MARK 3</span> Rocket already upgraded' : nearbyUpgradeableRocket.engineType === 'upgraded' ? '<span class="promptKey">MARK 2</span> Engine Mark 2 already installed' : '<span class="promptKey">E</span> Install Engine Mark 2 · Iron Wrench · 200% fuel capacity';
         return;
       }
       if (nearbyRock && nearbyRock.oreType === 'titanium_ore' && isPickaxe(uiState.equippedItemType)) {
@@ -13315,10 +14375,10 @@
 
       if (miningStone) {
         const elapsed = performance.now() - miningStoneStartedAt;
-        const miningTime = uiState.equippedItemType === 'stone_pickaxe' ? 810 : STONE_MINE_TIME;
+        const miningTime = getMiningTimeForTool(uiState.equippedItemType, miningRock);
         const pct = Math.max(0, Math.min(100, (elapsed / miningTime) * 100));
         prompt.classList.remove('hidden');
-        const miningName = miningRock && miningRock.oreType === 'iron_ore' ? 'Iron Ore' : (miningRock && miningRock.oreType === 'copper_ore' ? 'Copper Ore' : (miningRock ? 'Boulder' : 'Stone'));
+        const miningName = miningRock && miningRock.oreType === 'iron_ore' ? 'Iron Ore' : (miningRock && miningRock.oreType === 'copper_ore' ? 'Copper Ore' : (miningRock && miningRock.oreType === 'titanium_ore' ? 'Titanium Deposit' : (miningRock ? 'Boulder' : 'Stone')));
         prompt.innerHTML = '<span class="promptKey">' + Math.round(pct) + '%</span> Mining ' + miningName + '…';
         return;
       }
@@ -13394,7 +14454,7 @@
         prompt.classList.remove('hidden'); prompt.textContent = 'Inventory full — make room first';
         return true;
       }
-      addItemToInventory(drop.typeId, drop.count);
+      addItemToInventory(drop.typeId, drop.count, null, true);
       drop.root.visible = false;
       const idx = droppedItems.indexOf(drop);
       if (idx >= 0) droppedItems.splice(idx, 1);
@@ -13578,7 +14638,7 @@
       } else {
         // Opening the inventory intentionally releases pointer lock; that should not
         // also trigger the normal pause overlay.
-        if (!playerState.inRocket && !uiState.inventoryOpen && !uiState.freeplayInventoryOpen && !uiState.shipInventoryOpen && !economyState.merchantOpen && (!weatherControlOverlay || weatherControlOverlay.classList.contains('hidden'))) pauseGame();
+        if (!playerState.inRocket && !uiState.inventoryOpen && !uiState.freeplayInventoryOpen && !uiState.shipInventoryOpen && !uiState.containerOpen && !economyState.merchantOpen && (!weatherControlOverlay || weatherControlOverlay.classList.contains('hidden'))) pauseGame();
       }
     });
 
@@ -13600,11 +14660,19 @@
         openBackpackStorage(inventorySlots[getSelectedHotbarInventoryIndex()]);
         return;
       }
-      if (state.gameState === 'playing' && !playerState.inRocket && !uiState.equippedItemType && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !uiState.shipInventoryOpen) {
+      if (state.gameState === 'playing' && !playerState.inRocket && !uiState.equippedItemType && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !uiState.shipInventoryOpen && !uiState.containerOpen) {
         const landedRocket = getNearbyLandedRocketForShipInventory();
         if (landedRocket) {
           e.preventDefault();
           openShipInventory(landedRocket.rocket, landedRocket.pad);
+          return;
+        }
+      }
+      if (state.gameState === 'playing' && !playerState.inRocket && !uiState.equippedItemType && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !uiState.shipInventoryOpen && !uiState.containerOpen) {
+        const container = findNearbyContainer();
+        if (container) {
+          e.preventDefault();
+          openContainer(container);
           return;
         }
       }
@@ -13628,11 +14696,19 @@
         openBackpackStorage(inventorySlots[getSelectedHotbarInventoryIndex()]);
         return;
       }
-      if (state.gameState === 'playing' && !playerState.inRocket && !uiState.equippedItemType && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !uiState.shipInventoryOpen) {
+      if (state.gameState === 'playing' && !playerState.inRocket && !uiState.equippedItemType && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !uiState.shipInventoryOpen && !uiState.containerOpen) {
         const landedRocket = getNearbyLandedRocketForShipInventory();
         if (landedRocket) {
           e.preventDefault();
           openShipInventory(landedRocket.rocket, landedRocket.pad);
+          return;
+        }
+      }
+      if (state.gameState === 'playing' && !playerState.inRocket && !uiState.equippedItemType && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !uiState.shipInventoryOpen && !uiState.containerOpen) {
+        const container = findNearbyContainer();
+        if (container) {
+          e.preventDefault();
+          openContainer(container);
           return;
         }
       }
@@ -13642,6 +14718,10 @@
       }
       if (uiState.furnaceOpen) e.preventDefault();
     });
+    document.getElementById('containerClose').addEventListener('click', (e) => { e.stopPropagation(); closeContainer(); });
+    document.getElementById('containerPanel').addEventListener('click', (e) => e.stopPropagation());
+    document.getElementById('containerOverlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeContainer(); });
+    document.addEventListener('keydown', (e) => { if (uiState.containerOpen && e.key === 'Escape') { e.preventDefault(); closeContainer(); } });
     document.getElementById('shipInventoryClose').addEventListener('click', (e) => { e.stopPropagation(); closeShipInventory(); });
     document.getElementById('shipInventoryPanel').addEventListener('click', (e) => e.stopPropagation());
     document.getElementById('shipInventoryOverlay').addEventListener('click', (e) => {
@@ -13815,6 +14895,7 @@
         if (uiState.equippedItemType === 'furnace' && tryPlaceFurnace()) return;
         if (uiState.equippedItemType === 'drill' && tryPlaceDrill()) return;
         if (uiState.equippedItemType === 'launch_pad' && tryPlaceLaunchPad()) return;
+        if (uiState.equippedItemType === 'container' && tryPlaceContainer()) return;
         if (uiState.equippedItemType === 'rocket' && tryPlaceRocketOnNearbyPad()) return;
         if (tryPickupNearbyDroppedItem()) return;
         if (tryCollectNearbyMoonQuartz()) return;
@@ -13894,6 +14975,10 @@
         }
         if (uiState.shipInventoryOpen) {
           closeShipInventory();
+          return;
+        }
+        if (uiState.containerOpen) {
+          closeContainer();
           return;
         }
         if (uiState.craftingOpen) {
@@ -14345,6 +15430,7 @@
         nextChopSoundAt = nowAudio + (isDrill(uiState.equippedItemType) ? 560 : 1050);
       }
       if (miningStone && nowAudio >= nextPickaxeSoundAt) {
+        // Titanium Deposits deliberately use the standard mining/pickaxe sound too.
         triggerToolSwing(0.92, 260);
         triggerToolImpact(0.9);
         playAudio(isDrill(uiState.equippedItemType) ? 'drill' : 'pickaxe', 0.52, isDrill(uiState.equippedItemType) ? 1.0 : (0.98 + Math.random() * 0.06), isDrill(uiState.equippedItemType) ? 300 : 0);
@@ -14775,7 +15861,7 @@
 
       const playerWorldPosition = new THREE.Vector3();
       player.getWorldPosition(playerWorldPosition);
-      const distanceFromIvis = playerWorldPosition.length();
+      const distanceFromIvis = playerWorldPosition.distanceTo(ivisSolarOrbitPosition);
 
       // 'Away from Ivis' means genuinely outside Ivis' local area. The five-minute threshold
       // is cumulative on the account, so players may earn it across multiple trips.
@@ -14832,6 +15918,15 @@
       spawnPinGroup.visible = state.gameState !== "playing"; // GPS pin only shows on the main-menu view
       syspoSystem.visible = state.gameState === 'playing';
 
+      // Ivis orbits the Sun during gameplay. Keep the main-menu preview centered at the origin
+      // so its existing camera and presentation are unchanged.
+      if (state.gameState === 'playing') updateIvisSolarOrbit(delta);
+      else {
+        planetSystem.position.set(0, 0, 0);
+        ivisSolarOrbitPosition.copy(sunMesh.position)
+          .addScaledVector(ivisSolarOrbitBasisA, IVIS_SUN_ORBIT_DISTANCE);
+      }
+
       // Run the sun/day-night simulation in both game and menu so the planet preview
       // also shows the same lighting system.
       updateDayNight(delta);
@@ -14862,6 +15957,7 @@
       updateHeldItemJumpAnimation();
       updateHeldItemBob(delta);
       if (!playerState.inRocket) {
+        travelTransitionState = 'ground';
         finishChoppingTree();
         finishMiningStone();
         finishBreakingFurnace();
@@ -14955,6 +16051,7 @@
     updateHotbarUI();
     updateInventoryUI();
     updateCreditsUI();
+    document.querySelectorAll('button').forEach((button) => button.classList.add('uiPolishButton'));
     homeLoading.classList.add("hidden");
     homeButtons.classList.remove("hidden");
 

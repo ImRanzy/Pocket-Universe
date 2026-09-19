@@ -1,0 +1,151 @@
+          mined: false,
+          oreType,
+          meteorSite: true
+        });
+      }
+    }
+
+    createMeteorCrashSite();
+
+    // ---------- collectible crystals ----------
+    // Each crystal type has a unique display color. The inventory stores how many have
+    // been collected, while these world objects remain at their original spawn points.
+    const CRYSTAL_TYPES = [
+      { id: "ruby",     name: "Ruby",     color: 0xe53935, css: "#e53935" }, // red
+      { id: "topaz",    name: "Topaz",    color: 0xf28c28, css: "#f28c28" }, // orange
+      { id: "jasper",   name: "Jasper",   color: 0xf4d35e, css: "#f4d35e" }, // yellow
+      { id: "emerald",  name: "Emerald",  color: 0x28b463, css: "#28b463" }, // green
+      { id: "diamond",  name: "Diamond",  color: 0x63c5da, css: "#63c5da" }, // sky blue
+      { id: "lapis",    name: "Lapis",    color: 0x3867d6, css: "#3867d6" }, // blue
+      { id: "amethyst", name: "Amethyst", color: 0x8e5bd6, css: "#8e5bd6" }, // purple
+      { id: "onyx",     name: "Onyx",     color: 0x17191d, css: "#17191d" }, // black
+      { id: "rainbow_opal", name: "Rainbow Opal", color: 0xff7ee8, css: "linear-gradient(135deg,#ff5f6d 0%,#ffc371 22%,#8df7a1 43%,#59d8ff 64%,#8f7bff 82%,#ff6fd8 100%)" }
+    ];
+    const crystalById = Object.fromEntries(CRYSTAL_TYPES.map(t => [t.id, t]));
+
+    // Inventory items share one small data table so the same 12-slot UI can hold crystals,
+    // the starter axe, and the wooden planks produced by chopping trees.
+    // Most tools use 20 durability; stone tools are sturdier with 40.
+    const TOOL_MAX_DURABILITY = 20;
+    const STONE_TOOL_MAX_DURABILITY = 40;
+    const IRON_TOOL_MAX_DURABILITY = 60;
+    const ITEM_TYPES = [
+      ...CRYSTAL_TYPES.map(t => ({ id: t.id, name: t.name, kind: 'crystal', color: t.color, css: t.css, maxStack: 10 })),
+      { id: 'axe', name: 'Starter Axe', kind: 'axe', maxStack: 1, tool: true },
+      { id: 'wooden_axe', name: 'Wooden Axe', kind: 'axe', maxStack: 1, tool: true },
+      { id: 'wooden_pickaxe', name: 'Wooden Pickaxe', kind: 'pickaxe', maxStack: 1, tool: true },
+      { id: 'stone_axe', name: 'Stone Axe', kind: 'axe', maxStack: 1, tool: true, stoneTool: true },
+      { id: 'stone_pickaxe', name: 'Stone Pickaxe', kind: 'pickaxe', maxStack: 1, tool: true, stoneTool: true },
+      { id: 'iron_axe', name: 'Iron Axe', kind: 'axe', maxStack: 1, tool: true, ironTool: true },
+      { id: 'iron_pickaxe', name: 'Iron Pickaxe', kind: 'pickaxe', maxStack: 1, tool: true, ironTool: true },
+      { id: 'wooden_scythe', name: 'Wooden Scythe', kind: 'scythe', maxStack: 1, tool: true },
+      { id: 'stone_scythe', name: 'Stone Scythe', kind: 'scythe', maxStack: 1, tool: true, stoneTool: true },
+      { id: 'iron_scythe', name: 'Iron Scythe', kind: 'scythe', maxStack: 1, tool: true, ironTool: true },
+      { id: 'copper_wire', name: 'Copper Wire', kind: 'copper_wire', css: '#d47a3d', maxStack: 10 },
+      { id: 'moon_quartz', name: 'Moon Quartz', kind: 'moon_quartz', css: '#e9eef7', maxStack: 10 },
+      { id: 'upgraded_engine', name: 'Engine Mark 2', kind: 'upgraded_engine', maxStack: 1 },
+      { id: 'engine_mark_3', name: 'Engine Mark 3', kind: 'engine_mark_3', maxStack: 1 },
+      { id: 'tungsten_ore', name: 'Tungsten Ore', kind: 'tungsten_ore', css: '#7c6c61', maxStack: 10 },
+      { id: 'tungsten_ingot', name: 'Tungsten Ingot', kind: 'tungsten_ingot', css: '#5e5b58', maxStack: 10 },
+      { id: 'titanium_ore', name: 'Titanium Ore', kind: 'titanium_ore', css: '#a7b9c8', maxStack: 10 },
+      { id: 'titanium_ingot', name: 'Titanium Ingot', kind: 'titanium_ingot', css: '#c4d2dd', maxStack: 10 },
+      { id: 'warp_drive', name: 'Warp Drive', kind: 'warp_drive', maxStack: 1 },
+      { id: 'warp_drive_mk2', name: 'Warp Drive Mark 2', kind: 'warp_drive_mk2', maxStack: 1 },
+      { id: 'drill', name: 'Drill', kind: 'drill', maxStack: 1, tool: true },
+      { id: 'iron_plate', name: 'Iron Plate', kind: 'iron_plate', css: '#8d949b', maxStack: 10 },
+      { id: 'titanium_plate', name: 'Titanium Plate', kind: 'titanium_plate', css: '#c7d8e5', maxStack: 10 },
+      { id: 'iron_wrench', name: 'Iron Wrench', kind: 'wrench', wrenchTier: 'iron', maxStack: 1 },
+      { id: 'titanium_wrench', name: 'Titanium Wrench', kind: 'wrench', wrenchTier: 'titanium', maxStack: 1 },
+      { id: 'planks', name: 'Planks', kind: 'planks', css: '#c88748', maxStack: 10 },
+      { id: 'sticks', name: 'Sticks', kind: 'sticks', css: '#b9824c', maxStack: 10 },
+      { id: 'grass_fiber', name: 'Grass Fiber', kind: 'grass_fiber', css: '#79a95b', maxStack: 10 },
+      { id: 'woven_grass_fiber', name: 'Woven Grass Fiber', kind: 'woven_grass_fiber', css: '#8b6d42', maxStack: 10 },
+      { id: 'backpack', name: 'Backpack', kind: 'backpack', maxStack: 1 },
+      { id: 'stone', name: 'Stone', kind: 'stone', css: '#8a929a', maxStack: 10 },
+      { id: 'iron_ore', name: 'Iron Ore', kind: 'iron_ore', css: '#767a7f', maxStack: 10 },
+      { id: 'copper_ore', name: 'Copper Ore', kind: 'copper_ore', css: '#c86b32', maxStack: 10 },
+      { id: 'iron_ingot', name: 'Iron Ingot', kind: 'iron_ingot', css: '#5b6167', maxStack: 10 },
+      { id: 'copper_ingot', name: 'Copper Ingot', kind: 'copper_ingot', css: '#c8753d', maxStack: 10 },
+      { id: 'furnace', name: 'Furnace', kind: 'furnace', maxStack: 1 },
+      { id: 'rocket_engine_blueprint', name: 'Engine Mark 1 Blueprint', kind: 'blueprint', blueprintFor: 'rocket_engine', maxStack: 1 },
+      { id: 'upgraded_engine_blueprint', name: 'Engine Mark 2 Blueprint', kind: 'blueprint', blueprintFor: 'upgraded_engine', maxStack: 1 },
+      { id: 'engine_mark_3_blueprint', name: 'Engine Mark 3 Blueprint', kind: 'blueprint', blueprintFor: 'engine_mark_3', maxStack: 1 },
+      { id: 'warp_drive_blueprint', name: 'Warp Drive Mark 1 Blueprint', kind: 'blueprint', blueprintFor: 'warp_drive', maxStack: 1 },
+      { id: 'warp_drive_mk2_blueprint', name: 'Warp Drive Mark 2 Blueprint', kind: 'blueprint', blueprintFor: 'warp_drive_mk2', maxStack: 1 },
+      { id: 'rocket_blueprint', name: 'Rocket Blueprint', kind: 'blueprint', blueprintFor: 'rocket', maxStack: 1 },
+      { id: 'rocket_engine', name: 'Rocket Engine', kind: 'engine', maxStack: 1 },
+      { id: 'rocket', name: 'Rocket', kind: 'rocket', maxStack: 1 },
+      { id: 'launch_pad', name: 'Launch Pad', kind: 'launch_pad', maxStack: 1 },
+      { id: 'jerrycan', name: 'Jerrycan (Full)', kind: 'jerrycan', maxStack: 1 },
+      { id: 'journal', name: 'Journal', kind: 'journal', maxStack: 1 }
+    ];
+    const itemById = Object.fromEntries(ITEM_TYPES.map(t => [t.id, t]));
+
+    // ---------- in-game journal ----------
+    // Journal discoveries are saved with each world. Items stay catalogued after being sold;
+    // the journal is an encyclopedia of things the player has discovered, not a live inventory.
+    const JOURNAL_ITEM_INFO = Object.freeze({
+      journal: { description: 'A field journal containing your discoveries across Pocket Universe.', how: 'Given to every new explorer alongside the Starter Axe.', used: 'Open the journal to browse discovered items, celestial bodies, and people.' },
+      axe: { description: 'A simple starter axe for your first days on Ivis.', how: 'Given when a new world is started.', used: 'Chops trees and can be used until its durability runs out.' },
+      ruby: { description: 'A bright red crystal with a high natural shine.', how: 'Collect it from crystal spawns on Ivis and other worlds that contain crystals.', used: 'Can be sold to the merchant or used in rocket construction.' },
+      topaz: { description: 'A warm orange crystal found around the world.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      jasper: { description: 'A yellow-gold crystal with a soft glow.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      emerald: { description: 'A vivid green crystal valued by the merchant.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      diamond: { description: 'A pale blue crystal prized for its rarity.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      lapis: { description: 'A deep blue crystal with a rich color.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      amethyst: { description: 'A purple crystal with a distinctive glow.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      onyx: { description: 'A very dark crystal that almost seems to absorb the light.', how: 'Collect it from crystal spawns.', used: 'Can be sold to the merchant.' },
+      wooden_axe: { description: 'A basic crafted axe made from wood.', how: 'Craft it from early-game materials.', used: 'Chops trees more efficiently than the starter axe.' },
+      wooden_pickaxe: { description: 'A simple wooden mining tool.', how: 'Craft it from wood and sticks.', used: 'Mines stone and basic resources.' },
+      stone_axe: { description: 'A sturdier axe with a stone head.', how: 'Craft it after gathering stone.', used: 'Chops trees with better durability and speed.' },
+      stone_pickaxe: { description: 'A stronger pickaxe for serious mining.', how: 'Craft it using stone and sticks.', used: 'Mines stone and ore, including iron and copper.' },
+      iron_axe: { description: 'A durable axe forged from iron.', how: 'Craft it after obtaining iron ingots from a furnace.', used: 'Chops trees efficiently with high durability.' },
+      iron_pickaxe: { description: 'A durable iron mining tool.', how: 'Craft it after obtaining iron ingots.', used: 'Mines stone, iron ore, and copper ore efficiently.' },
+      wooden_scythe: { description: 'A curved wooden-handled harvesting tool.', how: 'Craft it from early-game materials.', used: 'Cuts grass and gathers plant resources.' },
+      stone_scythe: { description: 'A sturdier scythe with a stone head.', how: 'Craft it using stone.', used: 'Cuts grass with increased durability.' },
+      iron_scythe: { description: 'A durable iron-bladed scythe.', how: 'Craft it after obtaining iron ingots.', used: 'Cuts grass efficiently and lasts longer.' },
+      copper_wire: { description: 'Several thin copper wires bundled together.', how: 'Craft wires from copper ingots.', used: 'A key component of Engine Mark 2.' },
+      moon_quartz: { description: 'A pale mineral naturally found on the Moon.', how: 'Collect Moon Quartz from its lunar deposits.', used: 'Can be sold to the merchant and is required for Engine Mark 2.' },
+      upgraded_engine: { description: 'Engine Mark 2 is an improved rocket engine with a larger fuel reserve.', how: 'Craft it from a Rocket Engine, Moon Quartz, and Copper Wires.', used: 'Install it into a rocket to increase fuel capacity to 200%.' },
+      engine_mark_3: { description: 'A high-performance rocket engine for supersonic flight.', how: 'Craft it from Engine Mark 2, Titanium Ingots, Rainbow Opals, and Tungsten Ingots.', used: 'Install it into a rocket to unlock Supersonic speed at 200u/s, 1% fuel use per second, and a 300% fuel capacity.' },
+      tungsten_ore: { description: 'A dense ore with dark orange and grey patches.', how: 'Mine the scarce deposits on the Moon or the common deposits on Cordelia with an Iron Pickaxe or Drill.', used: 'Smelt it in a furnace into Tungsten Ingots.' },
+      tungsten_ingot: { description: 'A heavy, heat-resistant metal bar.', how: 'Smelt Tungsten Ore in a furnace.', used: 'Used with Iron Ingots and Amethyst to craft a Warp Drive.' },
+      titanium_ore: { description: 'Extremely hard metal-bearing ore found inside giant Mileria deposits.', how: 'Mine a Titanium Deposit with an Iron Pickaxe or Drill.', used: 'Smelt it in a furnace to produce Titanium Ingots.' },
+      titanium_ingot: { description: 'A very hard refined metal from Mileria.', how: 'Smelt Titanium Ore in a furnace.', used: 'A valuable high-tier material for future space technology.' },
+      rainbow_opal: { description: 'A brilliant multicolored mineral unique to Aurora.', how: 'Collect Rainbow Opal deposits across Aurora.', used: 'A highly valuable mineral and future high-efficiency rocket fuel.' },
+      warp_drive: { description: 'A compact drive that folds the distance between celestial bodies.', how: 'Craft it from 5 Tungsten Ingots, 3 Iron Ingots, and 1 Amethyst.', used: 'Install it as a ship upgrade to unlock the Space Map and long-distance warping.' },
+      warp_drive_mk2: { description: 'An advanced warp drive using Rainbow Opal as its probabilistic fuel.', how: 'Craft it from a Warp Drive, Titanium Ingots, Tungsten Ingots, and a Rainbow Opal.', used: 'Cuts warp travel time to distance divided by 4000. Each warp requires a Rainbow Opal available in your inventory and has a 50% chance to consume it.' },
+      drill: { description: 'A powered mining drill for tougher resource gathering.', how: 'Find and collect a placed or dropped Drill when available.', used: 'Mines rocks and ore quickly and can be used for resource gathering.' },
+      planks: { description: 'Processed wooden boards used throughout early crafting.', how: 'Chop trees with an axe.', used: 'Used for tools, furnaces, fuel, and other crafting.' },
+      sticks: { description: 'Small wooden sticks prepared for crafting.', how: 'Craft them from Planks.', used: 'Used in many tools and the Rocket Engine.' },
+      grass_fiber: { description: 'Plant fibers gathered from the grasslands.', how: 'Harvest grass with a scythe.', used: 'Used in fiber-based crafting recipes.' },
+      woven_grass_fiber: { description: 'Grass fiber woven into a stronger material.', how: 'Craft it from Grass Fiber.', used: 'Used in more advanced crafting and utility items.' },
+      backpack: { description: 'A wearable storage pack that gives you more room for supplies.', how: 'Craft or obtain a Backpack when its recipe becomes available.', used: 'Provides extra storage space for your adventure.' },
+      stone: { description: 'Common rock collected from the surface and boulders.', how: 'Mine rocks and mountain stone with a pickaxe.', used: 'Used for tools, furnaces, and other crafting.' },
+      iron_ore: { description: 'Dark ore chunks containing useful iron.', how: 'Mine iron-bearing boulders with a suitable pickaxe.', used: 'Smelt it in a furnace to make Iron Ingots.' },
+      copper_ore: { description: 'Orange-brown ore containing copper.', how: 'Mine copper-bearing boulders with a suitable pickaxe.', used: 'Smelt it in a furnace to make Copper Ingots.' },
+      iron_ingot: { description: 'Refined iron ready for stronger equipment.', how: 'Smelt Iron Ore in a furnace.', used: 'Used for iron tools, rocket parts, and advanced crafting.' },
+      copper_ingot: { description: 'Refined copper used for electrical components.', how: 'Smelt Copper Ore in a furnace.', used: 'Used to craft Copper Wires and other advanced components.' },
+      furnace: { description: 'A compact furnace for turning ore into useful ingots.', how: 'Craft it from stone and planks.', used: 'Smelts Iron Ore and Copper Ore using Planks as fuel.' },
+      rocket_engine: { description: 'The standard engine that powers your first spacecraft.', how: 'Craft it from Iron Ingots, Sticks, and Stone.', used: 'Builds and powers a standard rocket.' },
+      rocket: { description: 'A spacecraft built to leave a celestial body and enter space.', how: 'Craft it from a Rocket Engine, Iron Ingots, and Rubies.', used: 'Travel between Ivis, the Moon, Cordelia, and deep space.' },
+      iron_plate: { description: 'A flat piece of refined iron used for sturdy tools and machinery.', how: 'Craft 2 Iron Plates from 1 Iron Ingot.', used: 'Used to craft the Iron Wrench.' },
+      titanium_plate: { description: 'A strong lightweight plate made from refined titanium.', how: 'Craft 2 Titanium Plates from 1 Titanium Ingot.', used: 'Used to craft the Titanium Wrench.' },
+      iron_wrench: { description: 'A reusable tool for installing standard rocket components.', how: 'Craft it from 1 Iron Ingot and 1 Iron Plate.', used: 'Required to install the standard Warp Drive and Engine Mark 2.' },
+      titanium_wrench: { description: 'A reinforced wrench for advanced rocket technology.', how: 'Craft it from 1 Titanium Ingot and 1 Titanium Plate.', used: 'Required to install Warp Drive Mark 2 and Engine Mark 3.' },
+      launch_pad: { description: 'A flat platform designed to hold a rocket during launch.', how: 'Craft it from Iron Ingots.', used: 'Provides the launch and landing point for a rocket.' },
+      jerrycan: { description: 'A full can of rocket fuel for refilling a spacecraft.', how: 'Buy it from the merchant.', used: 'Adds fuel to a rocket; each can provides 100% of a tank refill.' },
+      rocket_engine_blueprint: { description: 'A permanent construction blueprint for the standard rocket engine.', how: 'Buy it from Jaecob.', used: 'Unlocks the Rocket Engine recipe in the crafting menu. The blueprint is never consumed.' },
+      upgraded_engine_blueprint: { description: 'A permanent construction blueprint for Engine Mark 2.', how: 'Buy it from Jaecob.', used: 'Unlocks the Engine Mark 2 recipe in the crafting menu. The blueprint is never consumed.' },
+      engine_mark_3_blueprint: { description: 'A permanent construction blueprint for Engine Mark 3.', how: 'Buy it from Jaecob.', used: 'Unlocks the Engine Mark 3 recipe in the crafting menu. The blueprint is never consumed.' },
+      warp_drive_blueprint: { description: 'A permanent construction blueprint for the standard Warp Drive.', how: 'Buy it from Jaecob.', used: 'Unlocks the Warp Drive recipe in the crafting menu. The blueprint is never consumed.' },
+      warp_drive_mk2_blueprint: { description: 'A permanent construction blueprint for Warp Drive Mark 2.', how: 'Buy it from Jaecob.', used: 'Unlocks the Warp Drive Mark 2 recipe in the crafting menu. The blueprint is never consumed.' },
+      rocket_blueprint: { description: 'A permanent construction blueprint for the Rocket.', how: 'Buy it from Jaecob.', used: 'Unlocks the Rocket recipe in the crafting menu. The blueprint is never consumed.' },
+    });
+    const JOURNAL_BODY_INFO = Object.freeze({
+      ivis: { name: 'Ivis', description: 'Your home world: a small living planet with forests, mountains, a river, crystals, and the familiar merchant stall. It is the safest place to prepare for your next flight.' },
+      moon: { name: 'Moon', description: 'A smaller, low-gravity celestial body reached by rocket. Moon Quartz can be found here, making lunar trips valuable for advanced rocket upgrades.' },
+      cordelia: { name: 'Cordelia', description: 'A distant alien world with a sandy environment, its own day/night cycle, and a separate launch and landing experience.' },
+      syspo: { name: 'Syspo', description: 'A colossal blue-purple gas giant. It has three visible cloud layers, an enormous gravity well, and two moons: Aurora and Mileria. Its core is too dangerous to approach.' },
+      aurora: { name: 'Aurora', description: 'A lush green habitable moon of Syspo with dense forest clumps, multiple lakes, mountains, ground lotuses, and Rainbow Opal deposits.' },
+      mileria: { name: 'Mileria', description: 'A grey rocky moon of Syspo with rugged mountains, 0.75x Ivis gravity, and large Titanium deposits containing Titanium Ore.' },

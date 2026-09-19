@@ -16,6 +16,7 @@
     freeplayInventoryOpen: false,
     backpackOpen: false,
     furnaceOpen: false,
-    shipInventoryOpen: false
+    shipInventoryOpen: false,
+    containerOpen: false
   });
 })();
