@@ -40,16 +40,6 @@
   let containerModelTemplate = null;
   let telephoneBoothModelTemplate = null;
   let deliveryRocketModelTemplate = null;
-  let sleepingBagModelTemplate = null;
-  let sleepingBagIconDataURL = null;
-  let sleepingActive = false;
-  let sleepingBagInUse = null;
-  let sleepingRealElapsed = 0;
-  let sleepingGameRemaining = 180;
-  let sleepingPreviousFlashlight = false;
-  const SLEEP_REAL_SECONDS = 5;
-  const SLEEP_GAME_SECONDS = 180;
-  const SLEEP_TIME_SCALE = SLEEP_GAME_SECONDS / SLEEP_REAL_SECONDS;
 
   const SUPABASE_URL = "https://ktzhvnpbksngleegdikd.supabase.co";
   const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hrbbTSn2zhmFaejsrJd_ig_6RMF4k7G";
@@ -775,84 +765,6 @@
     const mesh=new THREE.Mesh(geometry,new THREE.MeshStandardMaterial({map:texture,color:0xffffff,roughness:.62,metalness:.08,side:THREE.DoubleSide}));mesh.frustumCulled=false;const group=new THREE.Group();group.add(mesh);group.updateMatrixWorld(true);const box=new THREE.Box3().setFromObject(group);const center=box.getCenter(new THREE.Vector3());group.position.x-=center.x;group.position.z-=center.z;group.position.y-=box.min.y;group.traverse(n=>{if(n.isMesh)n.frustumCulled=false;});return group;
   }
 
-  async function buildEmbeddedSleepingBagFromObj() {
-    const source = window.PocketUniverseSleepingBagOBJ;
-    if (typeof source !== 'string' || !source.trim()) return null;
-    const vertices = [], uvs = [], normals = [], positions = [], texcoords = [], expandedNormals = [];
-    const pushVertex = (token) => {
-      const parts = token.split('/');
-      const vi = resolveObjIndex(parts[0], vertices.length);
-      const ti = parts[1] ? resolveObjIndex(parts[1], uvs.length) : -1;
-      const ni = parts[2] ? resolveObjIndex(parts[2], normals.length) : -1;
-      const v = vertices[vi];
-      if (!v) return;
-      positions.push(v[0], v[1], v[2]);
-      texcoords.push(ti >= 0 && uvs[ti] ? uvs[ti][0] : 0, ti >= 0 && uvs[ti] ? uvs[ti][1] : 0);
-      expandedNormals.push(ni >= 0 && normals[ni] ? normals[ni][0] : 0, ni >= 0 && normals[ni] ? normals[ni][1] : 0, ni >= 0 && normals[ni] ? normals[ni][2] : 0);
-    };
-    for (const raw of source.split(/\r?\n/)) {
-      const line = raw.trim();
-      if (!line || line.startsWith('#')) continue;
-      const parts = line.split(/\s+/);
-      if (parts[0] === 'v' && parts.length >= 4) vertices.push([+parts[1], +parts[2], +parts[3]]);
-      else if (parts[0] === 'vt' && parts.length >= 3) uvs.push([+parts[1], +parts[2]]);
-      else if (parts[0] === 'vn' && parts.length >= 4) normals.push([+parts[1], +parts[2], +parts[3]]);
-      else if (parts[0] === 'f' && parts.length >= 4) {
-        const face = parts.slice(1);
-        for (let i = 1; i < face.length - 1; i++) {
-          pushVertex(face[0]); pushVertex(face[i]); pushVertex(face[i + 1]);
-        }
-      }
-    }
-    if (!positions.length) return null;
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(texcoords, 2));
-    let haveNormals = expandedNormals.length === positions.length;
-    if (haveNormals) {
-      let any = false;
-      for (let i = 0; i < expandedNormals.length; i += 3) {
-        if (expandedNormals[i] ** 2 + expandedNormals[i + 1] ** 2 + expandedNormals[i + 2] ** 2 > 1e-8) { any = true; break; }
-      }
-      haveNormals = any;
-    }
-    if (haveNormals) geometry.setAttribute('normal', new THREE.Float32BufferAttribute(expandedNormals, 3));
-    else geometry.computeVertexNormals();
-    geometry.computeBoundingBox(); geometry.computeBoundingSphere();
-
-    let texture = null;
-    try {
-      const dataUrl = window.PocketUniverseSleepingBagTextureDataURL;
-      if (dataUrl) {
-        const image = new Image();
-        await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; image.src = dataUrl; });
-        texture = new THREE.Texture(image);
-        texture.needsUpdate = true;
-        texture.encoding = THREE.sRGBEncoding;
-        texture.magFilter = THREE.NearestFilter;
-        texture.minFilter = THREE.NearestFilter;
-        texture.generateMipmaps = false;
-        texture.anisotropy = Math.max(1, renderer.capabilities.getMaxAnisotropy());
-      }
-    } catch (e) {
-      console.warn('Sleeping bag texture unavailable.', e);
-    }
-    const material = new THREE.MeshStandardMaterial({ map: texture, color: 0xffffff, roughness: 0.92, metalness: 0, transparent: true, alphaTest: 0.04, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.frustumCulled = false;
-    const group = new THREE.Group();
-    group.add(mesh);
-    group.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(group);
-    if (box.isEmpty()) return null;
-    const center = box.getCenter(new THREE.Vector3());
-    group.position.x -= center.x;
-    group.position.z -= center.z;
-    group.position.y -= box.min.y;
-    group.traverse(node => { if (node.isMesh) node.frustumCulled = false; });
-    return group;
-  }
-
   async function loadToolModels() {
     // The supplied OBJ files are now embedded as geometry data and become the
     // authoritative tool meshes. This avoids the unreliable external OBJ/MTL
@@ -863,14 +775,11 @@
     blueprintModelTemplate = buildEmbeddedBlueprintModel();
     containerModelTemplate = await buildEmbeddedContainerFromObj();
     telephoneBoothModelTemplate = await buildEmbeddedTelephoneBoothFromObj();
-    sleepingBagModelTemplate = await buildEmbeddedSleepingBagFromObj();
     if (!axeModelTemplate) console.warn('Embedded axe model unavailable; using procedural fallback.');
     if (!pickaxeModelTemplate) console.warn('Embedded pickaxe model unavailable; using procedural fallback.');
     if (!wrenchModelTemplate) console.warn('Embedded wrench model unavailable; using procedural fallback.');
     if (!blueprintModelTemplate) console.warn('Embedded blueprint model unavailable; using procedural fallback.');
     if (!containerModelTemplate) console.warn('Embedded container model unavailable; using procedural fallback.');
-    if (!telephoneBoothModelTemplate) console.warn('Embedded telephone booth model unavailable; using procedural fallback.');
-    if (!sleepingBagModelTemplate) console.warn('Embedded sleeping bag model unavailable; using procedural fallback.');
   }
 
   function showFatalError(message) {
@@ -1180,8 +1089,6 @@
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     document.body.appendChild(renderer.domElement);
     const canvas = renderer.domElement;
 
@@ -1237,105 +1144,59 @@
       mapCamera.lookAt(0, 0, 0);
     }
 
-    function getPlanetMapBodyId() {
-      if (omegaWalkingBodyId) return omegaWalkingBodyId;
-      if (moonWalking) return 'moon';
-      if (cordeliaWalking) return 'cordelia';
-      return 'ivis';
-    }
-
-    function getPlanetMapContext(bodyId) {
-      if (bodyId === 'moon') return { id: 'moon', object: moonMesh, radius: MOON_RADIUS, getHeight: () => 0 };
-      if (bodyId === 'cordelia') return { id: 'cordelia', object: cordeliaMesh, radius: CORDELIA_RADIUS, getHeight: cordeliaHeightAt };
-      if (bodyId === 'aurora' || bodyId === 'mileria') {
-        const body = getOmegaMesh(bodyId);
-        return { id: bodyId, object: body, radius: bodyId === 'aurora' ? AURORA_RADIUS : MILERIA_RADIUS, getHeight: d => getOmegaSurfaceHeight(bodyId, d) };
-      }
-      return { id: 'ivis', object: planetSystem, radius: PLANET_RADIUS, getHeight: heightAt };
-    }
-
-    function setPlanetMapLegend(bodyId) {
-      const titleEl = document.getElementById('mapTitle');
-      const subtitleEl = document.getElementById('mapSubtitle');
-      const legendEl = document.querySelector('.mapLegend');
-      const names = { ivis: 'IVIS', moon: 'MOON', cordelia: 'CORDELIA', aurora: 'AURORA', mileria: 'MILERIA' };
-      const labels = { ivis: 'LOCAL TERRAIN & RESOURCE SURVEY', moon: 'LUNAR TERRAIN & RESOURCE SURVEY', cordelia: 'DESERT TERRAIN & RESOURCE SURVEY', aurora: 'AURORA TERRAIN & RESOURCE SURVEY', mileria: 'MILERIA TERRAIN & RESOURCE SURVEY' };
-      if (titleEl) titleEl.textContent = (names[bodyId] || bodyId.toUpperCase()) + ' MAP';
-      if (subtitleEl) subtitleEl.textContent = labels[bodyId] || 'LOCAL TERRAIN & RESOURCE SURVEY';
-      if (!legendEl) return;
-      const entries = [{ cls: 'player', label: 'YOU', color: '#ea4b4b' }];
-      if (bodyId === 'ivis') {
-        entries.push({ cls: 'iron', label: 'IRON ORE', color: '#d9a84d' }, { cls: 'copper', label: 'COPPER ORE', color: '#32c7b5' });
-      } else if (bodyId === 'moon') {
-        entries.push({ cls: 'moonQuartz', label: 'MOON QUARTZ', color: '#b9e6ff' }, { cls: 'tungsten', label: 'TUNGSTEN', color: '#8f98a3' });
-      } else if (bodyId === 'cordelia') {
-        entries.push({ cls: 'tungsten', label: 'TUNGSTEN', color: '#8f98a3' });
-      } else if (bodyId === 'aurora') {
-        entries.push({ cls: 'rainbowOpal', label: 'RAINBOW OPAL', color: '#f1a8ff' });
-      } else if (bodyId === 'mileria') {
-        entries.push({ cls: 'titanium', label: 'TITANIUM', color: '#77c7df' });
-      }
-      legendEl.innerHTML = '<div class="mapLegendTitle">LEGEND</div>' + entries.map(e => '<div class="mapLegendItem"><span class="mapLegendDot ' + e.cls + '" style="background:' + e.color + ';color:' + e.color + '"></span> ' + e.label + '</div>').join('');
-    }
-
-    function createMapPlanet(bodyId = getPlanetMapBodyId()) {
-      const ctx = getPlanetMapContext(bodyId);
-      if (!ctx || !ctx.object) return;
-      // Copy only the active celestial body into the map's origin. This keeps its local
-      // terrain/resources intact while intentionally stripping its solar/orbital position.
+    function createMapPlanet() {
+      // Copy the already-generated planet world so the map matches the menu's terrain.
+      // Gameplay-only player/camera and the menu GPS pin are intentionally omitted.
+      const blocked = new Set([player, spawnPinGroup]);
       while (mapPlanetRoot.children.length) mapPlanetRoot.remove(mapPlanetRoot.children[0]);
-      const clone = ctx.object.clone(true);
-      clone.position.set(0, 0, 0);
-      clone.traverse(obj => {
-        if (obj.isMesh) {
-          obj.castShadow = false;
-          obj.receiveShadow = false;
-          obj.frustumCulled = false;
-        }
-      });
-      mapPlanetRoot.add(clone);
-
-      while (mapMarkerGroup.children.length) mapMarkerGroup.remove(mapMarkerGroup.children[0]);
-      const markerSpecs = [];
-      const addMarkers = (spawns, color, radius = 1.15, heightExtra = 1.5) => {
-        for (const spawn of spawns || []) {
-          if (spawn.collected || spawn.mined) continue;
-          const dir = spawn.direction?.clone().normalize();
-          if (!dir) continue;
-          const h = ctx.getHeight(dir) || 0;
-          markerSpecs.push({ dir, color, radius, surfaceRadius: ctx.radius + h + heightExtra });
-        }
-      };
-      if (bodyId === 'ivis') {
-        addMarkers(ironOreSpawns.filter(o => o.oreType !== 'copper_ore'), 0xd9a84d, 1.05);
-        addMarkers(ironOreSpawns.filter(o => o.oreType === 'copper_ore'), 0x32c7b5, 1.05);
-        if (meteorCrashSite) {
-          const dir = meteorCrashSite.direction.clone().normalize();
-          const markerGroup = new THREE.Group();
-          markerGroup.position.copy(dir).multiplyScalar(PLANET_RADIUS + heightAt(dir) + 5.0);
-          markerGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-          const ring = new THREE.Mesh(new THREE.TorusGeometry(4.2, 0.45, 8, 24), new THREE.MeshBasicMaterial({ color: 0xff7138 }));
-          ring.rotation.x = Math.PI / 2;
-          markerGroup.add(ring);
-          markerGroup.add(new THREE.Mesh(new THREE.SphereGeometry(1.6, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffa13d })));
-          mapMarkerGroup.add(markerGroup);
-        }
-      } else if (bodyId === 'moon') {
-        addMarkers(moonQuartzSpawns, 0xb9e6ff, 1.0, 1.2);
-        addMarkers(moonTungstenSpawns, 0x8f98a3, 1.15, 1.8);
-      } else if (bodyId === 'cordelia') {
-        addMarkers(cordeliaTungstenSpawns, 0x8f98a3, 1.15, 1.8);
-      } else if (bodyId === 'aurora') {
-        addMarkers(auroraCrystalSpawns, 0xf1a8ff, 1.15, 1.6);
-      } else if (bodyId === 'mileria') {
-        addMarkers(omegaTitaniumSpawns, 0x77c7df, 1.15, 1.8);
+      for (const child of planetSystem.children) {
+        if (blocked.has(child)) continue;
+        if (child.name === 'CrystalMerchantStall') continue;
+        const clone = child.clone(true);
+        clone.traverse(obj => {
+          if (obj.isMesh) {
+            obj.castShadow = false;
+            obj.receiveShadow = false;
+          }
+        });
+        mapPlanetRoot.add(clone);
       }
-      for (const m of markerSpecs) {
-        const pin = new THREE.Mesh(new THREE.SphereGeometry(m.radius, 10, 10), new THREE.MeshBasicMaterial({ color: m.color }));
-        pin.position.copy(m.dir).multiplyScalar(m.surfaceRadius);
+
+      // Add clear, collectible-looking ore indicators on top of the planet.
+      while (mapMarkerGroup.children.length) mapMarkerGroup.remove(mapMarkerGroup.children[0]);
+      const ironMat = new THREE.MeshBasicMaterial({ color: 0xd9a84d });
+      const copperMat = new THREE.MeshBasicMaterial({ color: 0x32c7b5 });
+      for (const ore of ironOreSpawns) {
+        const pin = new THREE.Mesh(
+          new THREE.SphereGeometry(1.05, 10, 10),
+          ore.oreType === 'copper_ore' ? copperMat : ironMat
+        );
+        const dir = ore.direction.clone().normalize();
+        pin.position.copy(dir).multiplyScalar(PLANET_RADIUS + heightAt(dir) + 1.5);
         mapMarkerGroup.add(pin);
       }
-      setPlanetMapLegend(bodyId);
+
+      // Distinct meteor-site marker so the crash site is easy to find on the minimap.
+      if (meteorCrashSite) {
+        const dir = meteorCrashSite.direction.clone().normalize();
+        const markerGroup = new THREE.Group();
+        markerGroup.position.copy(dir).multiplyScalar(PLANET_RADIUS + heightAt(dir) + 5.0);
+        markerGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+
+        const ring = new THREE.Mesh(
+          new THREE.TorusGeometry(4.2, 0.45, 8, 24),
+          new THREE.MeshBasicMaterial({ color: 0xff7138 })
+        );
+        ring.rotation.x = Math.PI / 2;
+        markerGroup.add(ring);
+
+        const core = new THREE.Mesh(
+          new THREE.SphereGeometry(1.6, 12, 12),
+          new THREE.MeshBasicMaterial({ color: 0xffa13d })
+        );
+        markerGroup.add(core);
+        mapMarkerGroup.add(markerGroup);
+      }
     }
 
     function getMapPlayerWorldPosition(out) {
@@ -1358,13 +1219,10 @@
     const mapPlayerLocal = new THREE.Vector3();
     function updateMapPlayerMarker() {
       getMapPlayerWorldPosition(mapPlayerWorld);
-      const bodyId = getPlanetMapBodyId();
-      const ctx = getPlanetMapContext(bodyId);
-      if (!ctx || !ctx.object) return;
       mapPlayerLocal.copy(mapPlayerWorld);
-      ctx.object.worldToLocal(mapPlayerLocal);
+      planetSystem.worldToLocal(mapPlayerLocal);
       const dir = mapPlayerLocal.normalize();
-      const groundRadius = ctx.radius + (ctx.getHeight(dir) || 0) + 4.0;
+      const groundRadius = PLANET_RADIUS + heightAt(dir) + 4.0;
       mapPlayerMarker.position.copy(dir).multiplyScalar(groundRadius);
       mapPlayerMarker.scale.setScalar(playerState.inRocket ? 1.22 : 1.0);
     }
@@ -1388,9 +1246,6 @@
       if (document.pointerLockElement === canvas) document.exitPointerLock();
       clearPhysicalKeys();
       for (const k in systemState.keys) systemState.keys[k] = false;
-      const bodyId = getPlanetMapBodyId();
-      createMapPlanet(bodyId);
-      mapCameraDistance = bodyId === 'ivis' ? 840 : Math.max(MAP_MIN_ZOOM, Math.min(MAP_MAX_ZOOM, getPlanetMapContext(bodyId).radius * 3.5));
       mapOpen = true;
       mapOverlay.classList.remove('hidden');
       resizeMapRenderer();
@@ -1422,17 +1277,12 @@
     const spaceMapClose = document.getElementById('spaceMapClose');
     const spaceMapReset = document.getElementById('spaceMapReset');
     const spaceMapWarpStatus = document.getElementById('spaceMapWarpStatus');
-    const spaceMapHabitableToggle = document.getElementById('spaceMapHabitableToggle');
-    const spaceMapHabitableLabel = document.getElementById('spaceMapHabitableLabel');
     const warpOverlay = document.getElementById('warpOverlay');
     const warpOverlayText = document.getElementById('warpOverlayText');
     const warpOverlaySubtext = document.getElementById('warpOverlaySubtext');
     const spaceMapCtx = spaceMapCanvas.getContext('2d');
     let spaceMapOpen=false, pendingWarpBody=null, warpInProgress=false, warpStartedAt=0, warpDurationSeconds=0, warpTargetId=null, warpFuelConsumed=true, warpFuelType='moon_quartz';
     let spaceMapZoom=1, spaceMapPanX=0, spaceMapPanY=0, spaceMapDragging=false, spaceMapDragMoved=false, spaceMapLastX=0, spaceMapLastY=0;
-    let spaceMapHabitableZone=false;
-    const HABITABLE_ZONE_INNER=7000;
-    const HABITABLE_ZONE_OUTER=19000;
     // During a warp the normal 3D gameplay view is hidden while the dedicated warp overlay
     // remains visible. This makes the hyperspace effect the entire visual focus of the trip.
     function setWarpGameplayVisibility(hidden){
@@ -1471,29 +1321,9 @@
       const xs=Object.values(positions).map(p=>p.x), zs=Object.values(positions).map(p=>p.z), minX=Math.min(...xs),maxX=Math.max(...xs),minZ=Math.min(...zs),maxZ=Math.max(...zs), pad=1700;
       const spanX=Math.max(1,maxX-minX+pad*2), spanZ=Math.max(1,maxZ-minZ+pad*2), baseScale=Math.min((w-120)/spanX,(h-100)/spanZ), scale=baseScale*spaceMapZoom, cx=(minX+maxX)/2, cz=(minZ+maxZ)/2;
       const toScreen=p=>({x:w/2+(p.x-cx)*scale+spaceMapPanX,y:h/2+(p.z-cz)*scale+spaceMapPanY});
-      if(spaceMapHabitableZone){
-        const sunScreen=toScreen(positions.sun);
-        const rInner=HABITABLE_ZONE_INNER*scale;
-        const rOuter=HABITABLE_ZONE_OUTER*scale;
-        spaceMapCtx.save();
-        spaceMapCtx.fillStyle='rgba(170,255,80,.11)';
-        spaceMapCtx.strokeStyle='rgba(170,255,80,.22)';
-        spaceMapCtx.lineWidth=1.25;
-        spaceMapCtx.beginPath();
-        spaceMapCtx.arc(sunScreen.x,sunScreen.y,rOuter,0,Math.PI*2);
-        spaceMapCtx.arc(sunScreen.x,sunScreen.y,rInner,0,Math.PI*2,true);
-        spaceMapCtx.fill('evenodd');
-        spaceMapCtx.beginPath();spaceMapCtx.arc(sunScreen.x,sunScreen.y,rOuter,0,Math.PI*2);spaceMapCtx.stroke();
-        spaceMapCtx.beginPath();spaceMapCtx.arc(sunScreen.x,sunScreen.y,rInner,0,Math.PI*2);spaceMapCtx.stroke();
-        spaceMapCtx.fillStyle='rgba(196,255,128,.72)';
-        spaceMapCtx.font='800 9px Segoe UI,sans-serif';
-        spaceMapCtx.textAlign='left';
-        spaceMapCtx.fillText('HABITABLE ZONE',sunScreen.x+rInner+7,sunScreen.y-7);
-        spaceMapCtx.restore();
-      }
       spaceMapCtx.save();spaceMapCtx.setLineDash([5,7]);spaceMapCtx.lineWidth=1;spaceMapCtx.strokeStyle='rgba(142,175,225,.27)';
       let iv=toScreen(positions.ivis);spaceMapCtx.beginPath();spaceMapCtx.ellipse(iv.x,iv.y,MOON_ORBIT_RADIUS*scale,MOON_ORBIT_RADIUS*scale*.92,0,0,Math.PI*2);spaceMapCtx.stroke();
-      drawProjectedOrbit(positions.sun, cordeliaOrbitBasisA, cordeliaOrbitBasisB, CORDELIA_SUN_DISTANCE, 'rgba(233,143,67,.30)');
+      let su=toScreen(positions.sun);spaceMapCtx.beginPath();spaceMapCtx.ellipse(su.x,su.y,CORDELIA_SUN_DISTANCE*scale,CORDELIA_SUN_DISTANCE*scale*.98,0,0,Math.PI*2);spaceMapCtx.stroke();
       drawProjectedOrbit(positions.sun, ivisSolarOrbitBasisA, ivisSolarOrbitBasisB, IVIS_SUN_ORBIT_DISTANCE, 'rgba(84,217,120,.28)');
       function drawProjectedOrbit(center, basisA, basisB, radius, strokeStyle) {
         const segments = 144;
@@ -1527,15 +1357,10 @@
       spaceMapPanY=Math.max(-maxY,Math.min(maxY,spaceMapPanY));
     }
     function openSpaceMap(){
-      if(state.gameState!=='playing'||state.paused||!playerState.inRocket||!playerState.rocketInSpace||playerState.rocketLanded||warpInProgress)return false;
+      if(!getWarpDriveRocket()){showFlightPrompt('Warp Drive required for the Space Map.');return false;}
+      if(state.gameState!=='playing'||state.paused||!playerState.rocketInSpace||warpInProgress)return false;
       if(document.pointerLockElement===canvas)document.exitPointerLock();clearPhysicalKeys();for(const k in systemState.keys)systemState.keys[k]=false;
-      const hasWarp=!!getWarpDriveRocket();
-      spaceMapOpen=true;pendingWarpBody=null;spaceMapWarpStatus.classList.add('hidden');spaceMapOverlay.classList.remove('hidden');state.paused=true;document.body.classList.add('map-open');
-      const subtitle=document.getElementById('spaceMapSubtitle');
-      const hint=document.getElementById('spaceMapHint');
-      if(subtitle)subtitle.textContent=hasWarp?'WARP DRIVE · SYSTEM OVERVIEW':'SYSTEM OVERVIEW · WARPING LOCKED';
-      if(hint)hint.textContent=hasWarp?'DRAG TO PAN · SCROLL TO ZOOM · CLICK A BODY TO WARP':'DRAG TO PAN · SCROLL TO ZOOM · WARP DRIVE REQUIRED TO TRAVEL';
-      resetSpaceMapView();drawSpaceMap();return true;
+      spaceMapOpen=true;pendingWarpBody=null;spaceMapWarpStatus.classList.add('hidden');spaceMapOverlay.classList.remove('hidden');state.paused=true;document.body.classList.add('map-open');resetSpaceMapView();drawSpaceMap();return true;
     }
     function closeSpaceMap(){if(!spaceMapOpen)return;spaceMapOpen=false;pendingWarpBody=null;spaceMapOverlay.classList.add('hidden');spaceMapWarpStatus.classList.add('hidden');document.body.classList.remove('map-open');if(state.gameState==='playing'&&!warpInProgress){state.paused=false;attemptPointerLock();}}
     function toggleSpaceMap(){if(spaceMapOpen)closeSpaceMap();else openSpaceMap();}
@@ -1599,7 +1424,6 @@
       player.position.copy(flightPosition);
       setLoopAudioMode('warpDrive',false);warpOverlay.classList.add('hidden');setWarpGameplayVisibility(false);warpInProgress=false;warpTargetId=null;setRocketFlightUI();showFlightPrompt(warpFuelType==='rainbow_opal' ? (warpFuelConsumed ? 'WARP COMPLETE · Rainbow Opal consumed' : 'WARP COMPLETE · Rainbow Opal preserved') : 'WARP COMPLETE · Moon Quartz used');
     }
-    spaceMapHabitableToggle?.addEventListener('change',()=>{spaceMapHabitableZone=!!spaceMapHabitableToggle.checked;drawSpaceMap();});
     spaceMapClose.addEventListener('click',closeSpaceMap);
     spaceMapReset.addEventListener('click',resetSpaceMapView);
     spaceMapCanvas.addEventListener('pointerdown',(e)=>{
@@ -1628,16 +1452,7 @@
       spaceMapPanY += (my-cy-spaceMapPanY)*(1-nextZoom/oldZoom);
       spaceMapZoom=nextZoom;clampSpaceMapPan(rect.width,rect.height);drawSpaceMap();
     },{passive:false});
-    spaceMapCanvas.addEventListener('click',(e)=>{
-      if(!spaceMapOpen||warpInProgress)return;
-      if(spaceMapDragMoved){spaceMapDragMoved=false;return;}
-      const rect=spaceMapCanvas.getBoundingClientRect(),x=e.clientX-rect.left,y=e.clientY-rect.top,layout=spaceMapCanvas._spaceMapLayout;if(!layout)return;
-      let picked=null,best=Infinity;
-      for(const [id,pos] of Object.entries(layout.positions)){const p=layout.toScreen(pos),d=Math.hypot(x-p.x,y-p.y),hit=id==='sun'?26:18;if(d<=hit&&d<best){best=d;picked=id;}}
-      if(!picked){spaceMapWarpStatus.innerHTML='<div>Select a celestial body to warp there.</div>';spaceMapWarpStatus.classList.remove('hidden');return;}
-      if(!getWarpDriveRocket()){pendingWarpBody=null;spaceMapWarpStatus.innerHTML='<div>Warp Drive required to travel between celestial bodies.</div><div style="margin-top:6px;color:rgba(225,235,255,.58);font-weight:600;">You can still use the Space Map for navigation.</div>';spaceMapWarpStatus.classList.remove('hidden');return;}
-      if(pendingWarpBody===picked)startWarp(picked);else showWarpConfirmation(picked);
-    });
+    spaceMapCanvas.addEventListener('click',(e)=>{if(!spaceMapOpen||warpInProgress)return;if(spaceMapDragMoved){spaceMapDragMoved=false;return;}const rect=spaceMapCanvas.getBoundingClientRect(),x=e.clientX-rect.left,y=e.clientY-rect.top,layout=spaceMapCanvas._spaceMapLayout;if(!layout)return;let picked=null,best=Infinity;for(const [id,pos] of Object.entries(layout.positions)){const p=layout.toScreen(pos),d=Math.hypot(x-p.x,y-p.y),hit=id==='sun'?26:18;if(d<=hit&&d<best){best=d;picked=id;}}if(!picked){spaceMapWarpStatus.innerHTML='<div>Select a celestial body to warp there.</div>';spaceMapWarpStatus.classList.remove('hidden');return;}if(pendingWarpBody===picked)startWarp(picked);else showWarpConfirmation(picked);});
     window.addEventListener('resize',()=>{if(spaceMapOpen){const rect=spaceMapViewportWrap.getBoundingClientRect();clampSpaceMapPan(rect.width,rect.height);drawSpaceMap();}});
 
     mapClose.addEventListener('click', closePlanetMap);
@@ -1723,23 +1538,6 @@
     const cloudLayer = new THREE.Group();
     // cloudLayer is Ivis-local and is attached to planetSystem below.
 
-    // A single planet-wide storm cloud shell replaces the many small cloud clusters
-    // during rain/thunderstorms. It sits just above the normal cloud layer and is
-    // rendered from the inside so it reads like a soft grey atmospheric deck.
-    const weatherCloudShellGeo = new THREE.SphereGeometry(CLOUD_LAYER_RADIUS, 48, 24);
-    const weatherCloudShellMat = new THREE.MeshBasicMaterial({
-      color: 0x59616a,
-      transparent: true,
-      opacity: 0.90,
-      side: THREE.BackSide,
-      depthTest: true,
-      depthWrite: false,
-      fog: false
-    });
-    const weatherCloudShell = new THREE.Mesh(weatherCloudShellGeo, weatherCloudShellMat);
-    weatherCloudShell.visible = false;
-    weatherCloudShell.renderOrder = 9;
-
     const cloudPuffGeo = new THREE.SphereGeometry(1, 12, 8);
     const cloudPuffMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
@@ -1789,10 +1587,33 @@
       addCloudCluster(dir, 0.75 + Math.random() * 0.8);
     }
 
-    // Rain/thunderstorms use the single weatherCloudShell above. Keeping the regular
-    // cloud clusters separate means clear weather stays soft and scattered, while storm
-    // weather gets one continuous grey cloud deck instead of thousands of separate puffs.
+    // Rain and thunderstorms now use a dense planet-wide cloud deck: about 50x the
+    // normal 72-cluster coverage. Extra storm clouds are lightweight (one puff each)
+    // so the weather can cover the whole planet without exploding the mesh count.
     const BASE_CLOUD_COUNT = 72;
+    const WEATHER_CLOUD_COUNT = 3600;
+    const EXTRA_WEATHER_CLOUD_COUNT = WEATHER_CLOUD_COUNT - BASE_CLOUD_COUNT;
+    const THUNDER_CLOUD_START = WEATHER_CLOUD_COUNT;
+    for (let i = 0; i < EXTRA_WEATHER_CLOUD_COUNT; i++) {
+      // Fibonacci-sphere placement keeps the rainy cloud deck evenly distributed over
+      // the entire planet rather than leaving large uncovered patches.
+      const t = (i + 0.5) / EXTRA_WEATHER_CLOUD_COUNT;
+      const y = 1 - 2 * t;
+      const radial = Math.sqrt(Math.max(0, 1 - y * y));
+      const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+      const theta = i * goldenAngle;
+      const dir = new THREE.Vector3(Math.cos(theta) * radial, y, Math.sin(theta) * radial);
+      addCloudCluster(dir, 0.60 + Math.random() * 0.55, 1);
+    }
+
+    const cloudShellFade = () => {
+      const a = cloudMat.opacity;
+      cloudLayer.children.forEach(cluster => {
+        cluster.children.forEach(puff => {
+          puff.material.opacity = a > 0 ? (0.58 + 0.28 * (a / 0.06)) : 0;
+        });
+      });
+    };
 
     // ---------- dynamic weather ----------
     // Automatic rain starts about once every two in-game days. Creative/freeplay gets
@@ -1859,18 +1680,10 @@
       rainPositions[i * 6 + 3] = end.x; rainPositions[i * 6 + 4] = end.y; rainPositions[i * 6 + 5] = end.z;
     }
 
-    function getIvisLocalWeatherCenter() {
+    function rebuildRainDrops() {
       const activeCamera = playerState.inRocket ? flightCamera : camera;
       const center = new THREE.Vector3();
       activeCamera.getWorldPosition(center);
-      // weatherRainGroup is parented to planetSystem, so its particle positions must be
-      // expressed in Ivis-local space. This became important once Ivis started orbiting
-      // the Sun; using raw world coordinates made the rain volume miss the player entirely.
-      return planetSystem.worldToLocal(center);
-    }
-
-    function rebuildRainDrops() {
-      const center = getIvisLocalWeatherCenter();
       const down = center.clone().normalize().multiplyScalar(-1);
       for (let i = 0; i < rainDropCount; i++) setRainParticle(i, center, down);
       rainGeo.attributes.position.needsUpdate = true;
@@ -1882,7 +1695,9 @@
       if (!visible) return;
       // The particle volume follows the current player/ship position, so rain does not
       // remain anchored to the place where the storm originally began.
-      const center = getIvisLocalWeatherCenter();
+      const activeCamera = playerState.inRocket ? flightCamera : camera;
+      const center = new THREE.Vector3();
+      activeCamera.getWorldPosition(center);
       for (let i = 0; i < rainDropCount; i++) {
         const idx = i * 6;
         const sx = rainPositions[idx], sy = rainPositions[idx + 1], sz = rainPositions[idx + 2];
@@ -1913,58 +1728,30 @@
       const strength = building ? THREE.MathUtils.clamp(weatherBuildTimer / WEATHER_BUILDUP_SECONDS, 0, 1) : (raining ? 1 : clearStrength);
       const weatherActive = building || raining || clearing;
       const playerRadius = playerState.inRocket ? flightPosition.distanceTo(ivisSolarOrbitPosition) : player.position.length();
+      // Weather is local to the planet's surface, not tied to where the storm was started.
+      // Anywhere below the cloud deck can receive rain; above the cloud deck it clears.
       const underClouds = playerRadius < CLOUD_LAYER_RADIUS - 1;
-      const cloudVisibility = THREE.MathUtils.clamp(0.15 + (1 - THREE.MathUtils.clamp(playerRadius / 280, 0, 1)) * 0.85, 0, 1);
-      const nearIvis = playerRadius < ROCKET_ATMOSPHERE_RADIUS * 2.4;
-      const visibleFactor = underClouds ? cloudVisibility : 0;
+      const cloudVisibility = 1 - THREE.MathUtils.clamp((playerRadius - 150) / 150, 0, 1);
+      const cloudWeatherFade = underClouds ? 1 : 0;
+      const visibleFactor = THREE.MathUtils.clamp(cloudVisibility * cloudWeatherFade, 0, 1);
 
-      // During rain/thunderstorms the scattered clear-weather clouds disappear completely.
-      // The single grey weather shell below becomes the only cloud deck.
-      cloudLayer.children.forEach(cluster => cluster.children.forEach(puff => {
-        if (weatherActive) {
-          puff.material.opacity = 0;
-        } else {
-          puff.material.color.setHex(0xffffff);
-          puff.material.opacity = visibleFactor * (0.52 + 0.24 * cloudVisibility);
-        }
+      // Weather only changes cloud/rain materials. It deliberately never changes the
+      // renderer, scene background, camera, planet root, or planet materials.
+      cloudLayer.children.forEach((cluster, clusterIndex) => cluster.children.forEach(puff => {
+        const base = 0.52 + 0.24 * cloudVisibility;
+        const isWeatherExtra = clusterIndex >= BASE_CLOUD_COUNT && clusterIndex < THUNDER_CLOUD_START;
+        const stormMultiplier = isWeatherExtra ? (weatherActive ? 1 : 0) : 1;
+        puff.material.color.setHex(weatherActive ? 0x4f565f : 0xffffff);
+        puff.material.opacity = visibleFactor * base * (0.72 + strength * 0.28) * stormMultiplier;
         puff.material.depthTest = true;
         puff.material.depthWrite = false;
       }));
-
-      // Keep the normal high atmospheric cloud layer subtle and white. The storm shell is
-      // intentionally separate so weather never tints the whole sky.
-      cloudMat.color.setHex(0xffffff);
-      cloudMat.opacity = visibleFactor * 0.06;
+      cloudMat.color.setHex(weatherActive ? 0x3e454d : 0xffffff);
+      cloudMat.opacity = visibleFactor * (weatherActive ? (0.018 + 0.035 * strength) : 0.06);
       cloudMat.depthTest = true;
       cloudMat.depthWrite = false;
-
-      weatherCloudShell.visible = weatherActive && nearIvis && state.gameState === 'playing';
-      weatherCloudShellMat.opacity = (weatherActive && nearIvis)
-        ? THREE.MathUtils.lerp(0.82, 0.90, strength)
-        : 0;
-      weatherCloudShellMat.color.setHex(weatherThunderstorm ? 0x4d555f : 0x59616a);
-
       rainMat.opacity = (raining && isWeatherAllowedHere()) ? 0.72 : 0;
       if (weatherControlStatus) weatherControlStatus.textContent = 'WEATHER: ' + (raining ? (weatherThunderstorm ? 'THUNDERSTORM' : 'RAINING') : building ? (weatherThunderstorm ? 'THUNDERSTORM BUILDING' : 'STORM BUILDING') : clearing ? 'CLEARING' : 'CLEAR');
-    }
-
-    function resetWeatherToClear() {
-      weatherState = 'clear';
-      weatherThunderstorm = false;
-      weatherForced = false;
-      weatherTimer = 0;
-      weatherBuildTimer = 0;
-      weatherRainTimer = 0;
-      weatherClearTimer = 0;
-      automaticRainNumber = 0;
-      lightningTimer = 0;
-      lightningFlashTimer = 0;
-      lightningBoltTimer = 0;
-      if (lightningFlash) lightningFlash.style.opacity = '0';
-      if (typeof lightningBolt !== 'undefined') lightningBolt.visible = false;
-      weatherRainGroup.visible = false;
-      weatherCloudShell.visible = false;
-      updateWeatherVisuals();
     }
 
     function startRain(forced = false, thunderstorm = false) {
@@ -2380,10 +2167,7 @@
     // 10000+ units instead of being blended into the blue/space fog.
     const sunMaterial = new THREE.MeshBasicMaterial({
       color: 0xffd45c,
-      fog: false,
-      transparent: true,
-      opacity: 1,
-      depthWrite: false
+      fog: false
     });
     const sunMesh = new THREE.Mesh(
       new THREE.SphereGeometry(SUN_RADIUS, 48, 48),
@@ -2392,58 +2176,11 @@
     // Keep the Sun eligible for rendering at its large orbital distance.
     sunMesh.frustumCulled = false;
     const sunLight = new THREE.DirectionalLight(0xfff3d6, 2.1);
-    const sunLightTarget = new THREE.Object3D();
-    // Ivis' current world-space center is used by the Sun/planet lighting system.
-    // Declare it before the first lighting setup touches it so startup cannot hit the TDZ.
-    const ivisSolarOrbitPosition = new THREE.Vector3();
-    sunLight.target = sunLightTarget;
     const initialSunDirection = new THREE.Vector3(520, 120, 150).normalize();
     sunMesh.position.copy(initialSunDirection).multiplyScalar(SUN_DISTANCE);
     sunLight.position.copy(sunMesh.position);
-    sunLightTarget.position.copy(ivisSolarOrbitPosition);
-    // Real-time shadowing makes the Sun read as the source of the world's light instead of
-    // a detached brightness multiplier. The shadow camera is intentionally broad enough to
-    // cover Ivis and its nearby props while remaining lightweight.
-    sunLight.castShadow = true;
-    sunLight.shadow.mapSize.set(2048, 2048);
-    sunLight.shadow.bias = -0.00045;
-    sunLight.shadow.normalBias = 0.018;
-    sunLight.shadow.camera.left = -2200;
-    sunLight.shadow.camera.right = 2200;
-    sunLight.shadow.camera.top = 2200;
-    sunLight.shadow.camera.bottom = -2200;
-    sunLight.shadow.camera.near = 50;
-    sunLight.shadow.camera.far = 24000;
     scene.add(sunMesh);
-    scene.add(sunLightTarget);
     scene.add(sunLight);
-
-    // The visible Sun should behave like an actual sky object: on a planet's night side
-    // it fades completely below the local horizon instead of producing a bright disc/glare.
-    // In open space it remains fully visible.
-    function setSolarDiscVisibility(surfaceSunDot, inSpace = false, atmosphereBlend = 0) {
-      if (inSpace) {
-        sunMesh.visible = true;
-        sunMaterial.opacity = 1;
-        return;
-      }
-      const horizonFade = THREE.MathUtils.smoothstep(surfaceSunDot, -0.08, 0.16);
-      sunMaterial.opacity = horizonFade * (1 - THREE.MathUtils.clamp(atmosphereBlend, 0, 1));
-      sunMesh.visible = sunMaterial.opacity > 0.002;
-    }
-
-    // Small reusable local lights are used only on a handful of gameplay props. Keeping
-    // the count low avoids the performance cost of hundreds of point lights while still
-    // giving important objects a believable glow at night or while active.
-    function attachLocalPointLight(root, color, intensity, distance) {
-      if (!root) return null;
-      const light = new THREE.PointLight(color, intensity, distance, 2);
-      light.castShadow = false;
-      light.userData.baseIntensity = intensity;
-      light.userData.baseColor = color;
-      root.add(light);
-      return light;
-    }
 
     // ---------- Ivis solar orbit ----------
     // Ivis now travels around the same Sun as Cordelia and Syspo. The initial orbit phase
@@ -2452,6 +2189,7 @@
     const IVIS_SUN_ORBIT_DISTANCE = SUN_DISTANCE;
     const IVIS_SUN_ORBIT_PERIOD = 1800; // 30 minutes per full orbit
     let ivisSolarOrbitAngle = 0;
+    const ivisSolarOrbitPosition = new THREE.Vector3();
     const ivisSolarOrbitBasisA = new THREE.Vector3();
     const ivisSolarOrbitBasisB = new THREE.Vector3();
     const ivisSolarOrbitInitialDirection = sunMesh.position.clone().normalize().multiplyScalar(-1);
@@ -2468,9 +2206,6 @@
         .addScaledVector(ivisSolarOrbitBasisA, Math.cos(ivisSolarOrbitAngle) * IVIS_SUN_ORBIT_DISTANCE)
         .addScaledVector(ivisSolarOrbitBasisB, Math.sin(ivisSolarOrbitAngle) * IVIS_SUN_ORBIT_DISTANCE);
       if (typeof planetSystem !== 'undefined') planetSystem.position.copy(ivisSolarOrbitPosition);
-      // The Sun is fixed in space, so its directional light must continuously aim at
-      // Ivis's new orbital position rather than the old world origin.
-      sunLightTarget.position.copy(ivisSolarOrbitPosition);
     }
     // Initial position is exactly the historical world origin.
     ivisSolarOrbitPosition.copy(sunMesh.position)
@@ -3312,8 +3047,8 @@
       const sunset = 1 - Math.min(1, Math.abs(sunDot) / 0.35);
       const night = THREE.MathUtils.smoothstep(-sunDot, 0.02, 0.42);
 
-      ambientLight.intensity = THREE.MathUtils.lerp(0.0, 0.34, daylight);
-      cordeliaSunLight.intensity = THREE.MathUtils.lerp(0.0, 2.2, daylight);
+      ambientLight.intensity = THREE.MathUtils.lerp(0.08, 0.34, daylight);
+      cordeliaSunLight.intensity = THREE.MathUtils.lerp(0.03, 2.2, daylight);
       cordeliaSunLight.color.setHex(sunset > 0.05 && daylight < 0.55 ? 0xffa58a : 0xfff0d0);
 
       cordeliaTempSkyColor.copy(CORDELIA_NIGHT_SKY).lerp(CORDELIA_DAY_SKY, daylight);
@@ -3322,7 +3057,6 @@
       if (sunset > 0) cordeliaTempFogColor.lerp(CORDELIA_SUNSET_FOG, sunset * 0.70);
 
       const atmosphereBlend = THREE.MathUtils.smoothstep(altitude, ROCKET_ATMOSPHERE_FADE_START, ROCKET_ATMOSPHERE_RADIUS);
-      setSolarDiscVisibility(sunDot, false, atmosphereBlend);
       cordeliaTempSkyColor.lerp(SPACE_SKY, atmosphereBlend);
       cordeliaTempFogColor.lerp(SPACE_FOG, atmosphereBlend);
       skyMat.color.copy(cordeliaTempSkyColor);
@@ -3449,13 +3183,10 @@
     const cordeliaOrbitBasisB = new THREE.Vector3();
     let cordeliaOrbitAngle = 0;
     const sunInitialDirection = sunMesh.position.clone().normalize();
-    // Keep Cordelia's solar orbit in the map's XZ plane so its orbital ring is rendered as
-    // a true circle in the top-down Space Map while remaining a genuine circular 3D orbit.
-    cordeliaOrbitBasisA.set(sunInitialDirection.x,0,sunInitialDirection.z);
-    if(cordeliaOrbitBasisA.lengthSq()<0.0001) cordeliaOrbitBasisA.set(1,0,0);
-    cordeliaOrbitBasisA.normalize();
-    cordeliaOrbitBasisB.set(-cordeliaOrbitBasisA.z,0,cordeliaOrbitBasisA.x).normalize();
-    const cordeliaSunLight = new THREE.DirectionalLight(0xfff0d0, 0.0);
+    const referenceAxis = Math.abs(sunInitialDirection.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+    cordeliaOrbitBasisA.crossVectors(sunInitialDirection, referenceAxis).normalize();
+    cordeliaOrbitBasisB.crossVectors(sunInitialDirection, cordeliaOrbitBasisA).normalize();
+    const cordeliaSunLight = new THREE.DirectionalLight(0xfff0d0, 2.2);
     cordeliaSunLight.frustumCulled = false;
     scene.add(cordeliaSunLight);
     const cordeliaSunTarget = new THREE.Object3D();
@@ -3476,9 +3207,6 @@
     }
     updateCordelia(0);
 
-    // Global ambient fill is kept low and is driven by the active body's daylight amount.
-    // Celestial directional lights are exclusive to the body being viewed so one planet's
-    // sunlight cannot accidentally illuminate another planet's night side.
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.12);
     scene.add(ambientLight);
 
@@ -3501,53 +3229,6 @@
     const droppedItemBobPos = new THREE.Vector3();
     const tempFogColor = new THREE.Color();
 
-    function getNightAmountAtSurface(worldPos, bodyId = 'ivis') {
-      const center = getSurfaceBodyWorldCenter(bodyId, new THREE.Vector3());
-      const surfaceDir = worldPos.clone().sub(center);
-      if (surfaceDir.lengthSq() < 0.0001) return 0;
-      surfaceDir.normalize();
-      const sunDir = sunMesh.position.clone().sub(center);
-      if (sunDir.lengthSq() < 0.0001) return 0;
-      sunDir.normalize();
-      return THREE.MathUtils.smoothstep(-surfaceDir.dot(sunDir), 0.02, 0.42);
-    }
-
-    function syncDynamicSunLighting() {
-      const activeRocketInSpace = playerState.inRocket && playerState.rocketInSpace;
-      let activeBodyId = 'ivis';
-      if (cordeliaWalking) activeBodyId = 'cordelia';
-      else if (moonWalking) activeBodyId = 'moon';
-      else if (omegaWalkingBodyId) activeBodyId = omegaWalkingBodyId;
-
-      if (activeRocketInSpace) {
-        setSolarDiscVisibility(1, true);
-        sunLight.castShadow = false;
-        cordeliaSunLight.castShadow = false;
-        cordeliaSunLight.intensity = 0.0;
-        sunLight.position.copy(sunMesh.position);
-        sunLightTarget.position.copy(ivisSolarOrbitPosition);
-        return;
-      }
-
-      const center = getSurfaceBodyWorldCenter(activeBodyId, new THREE.Vector3());
-      if (activeBodyId === 'cordelia') {
-        sunLight.castShadow = false;
-        cordeliaSunLight.castShadow = true;
-        cordeliaSunLight.position.copy(sunMesh.position);
-        cordeliaSunTarget.position.copy(center);
-        return;
-      }
-
-      // Cordelia's dedicated solar light must not illuminate Ivis/Moon/Omega bodies.
-      cordeliaSunLight.intensity = 0.0;
-      cordeliaSunLight.castShadow = false;
-      sunLight.castShadow = true;
-      cordeliaSunLight.castShadow = false;
-      sunLight.position.copy(sunMesh.position);
-      sunLightTarget.position.copy(center);
-      if (sunLight.shadow && sunLight.shadow.camera) sunLight.shadow.camera.updateProjectionMatrix();
-    }
-
     function updateDayNight(delta) {
       // Rotate the whole planet once every DAY_LENGTH_SECONDS around its local axis.
       // Ivis simultaneously orbits the stationary Sun on a much longer solar cycle. Different terrain
@@ -3565,42 +3246,9 @@
       if (playerIsInCordeliaAtmosphere(playerWorldPos)) {
         onCordeliaAtmosphere = true;
         applyCordeliaAtmosphere(playerWorldPos);
-        sunLight.castShadow = false;
-        cordeliaSunLight.castShadow = true;
-        sunLightTarget.position.copy(cordeliaWorldPosition);
-        cordeliaSunTarget.position.copy(cordeliaWorldPosition);
         return;
       }
       onCordeliaAtmosphere = false;
-      cordeliaSunLight.intensity = 0.0;
-      cordeliaSunLight.castShadow = false;
-      sunLight.castShadow = true;
-
-      if (moonWalking) {
-        moonMesh.getWorldPosition(moonWorldPosition);
-        tempPlayerDir.copy(playerWorldPos).sub(moonWorldPosition).normalize();
-        tempSunDir.copy(sunMesh.position).sub(moonWorldPosition).normalize();
-        const moonSunDot = tempPlayerDir.dot(tempSunDir);
-        const moonDaylight = THREE.MathUtils.smoothstep(moonSunDot, -0.48, -0.10);
-        const moonSunset = 1 - Math.min(1, Math.abs(moonSunDot) / 0.35);
-        ambientLight.intensity = THREE.MathUtils.lerp(0.0, 0.20, moonDaylight);
-        sunLight.intensity = THREE.MathUtils.lerp(0.0, 2.35, moonDaylight);
-        setSolarDiscVisibility(moonSunDot);
-        sunLight.color.setHex(moonSunset > 0.05 && moonDaylight < 0.55 ? 0xb7a0ff : 0xfff4dc);
-        sunLightTarget.position.copy(moonWorldPosition);
-        sunLight.position.copy(sunMesh.position);
-        const moonNight = THREE.MathUtils.smoothstep(-moonSunDot, 0.02, 0.42);
-        tempSkyColor.copy(new THREE.Color(0x050817)).lerp(new THREE.Color(0x18202d), moonDaylight);
-        if (moonSunset > 0) tempSkyColor.lerp(new THREE.Color(0x6d5b88), moonSunset * 0.34);
-        scene.background.copy(tempSkyColor);
-        skyMat.color.copy(tempSkyColor);
-        tempFogColor.copy(new THREE.Color(0x050817)).lerp(new THREE.Color(0x20262c), moonDaylight);
-        sceneFog.color.copy(tempFogColor);
-        starMat.opacity = THREE.MathUtils.clamp(moonNight * 1.12, 0, 1);
-        cloudMat.opacity = 0;
-        return;
-      }
-
       tempPlayerDir.copy(playerWorldPos).sub(ivisSolarOrbitPosition).normalize();
 
       // The fixed sun's position gives us a constant direction from the planet center.
@@ -3613,18 +3261,9 @@
       const night = THREE.MathUtils.smoothstep(-sunDot, 0.02, 0.42);
 
       // Fade the ambient fill down at night so the far side really becomes dark.
-      ambientLight.intensity = THREE.MathUtils.lerp(0.0, 0.34, daylight);
-      sunLight.intensity = THREE.MathUtils.lerp(0.0, 2.1, daylight);
+      ambientLight.intensity = THREE.MathUtils.lerp(0.08, 0.34, daylight);
+      sunLight.intensity = THREE.MathUtils.lerp(0.03, 2.1, daylight);
       sunLight.color.copy(sunset > 0.05 && daylight < 0.55 ? new THREE.Color(0xff9b6a) : new THREE.Color(0xfff3d6));
-      // Aim the shared Sun light at the active non-Cordelia surface. This keeps sunlight
-      // aligned with the actual solar direction as Ivis orbits the star.
-      let lightingCenter = ivisSolarOrbitPosition;
-      if (moonWalking) lightingCenter = moonWorldPosition;
-      else if (omegaWalkingBodyId === 'aurora') lightingCenter = auroraWorldPosition;
-      else if (omegaWalkingBodyId === 'mileria') lightingCenter = mileriaWorldPosition;
-      else if (omegaWalkingBodyId === 'syspo') lightingCenter = syspoWorldPosition;
-      sunLightTarget.position.copy(lightingCenter);
-      sunLight.position.copy(sunMesh.position);
 
       // Sky: blue in daytime, orange around the horizon, nearly black at night.
       tempSkyColor.copy(NIGHT_SKY).lerp(DAY_SKY, daylight);
@@ -3635,7 +3274,6 @@
       // center, keeping the atmospheric band proportional to the doubled planet size.
       const playerRadius = playerWorldPos.distanceTo(ivisSolarOrbitPosition);
       const atmosphereBlendForStorm = THREE.MathUtils.smoothstep(playerRadius, ROCKET_ATMOSPHERE_FADE_START, ROCKET_ATMOSPHERE_RADIUS);
-      setSolarDiscVisibility(sunDot, false, atmosphereBlendForStorm);
       const weatherUnderClouds = playerRadius < CLOUD_LAYER_RADIUS - 1;
       const rainDarken = weatherUnderClouds && (weatherState === 'building' || weatherState === 'raining')
         ? (weatherThunderstorm ? 0.42 : 0.28) * (1 - atmosphereBlendForStorm)
@@ -3665,13 +3303,14 @@
       starMat.opacity = Math.max(nightStarOpacity, atmosphereBlend);
       cloudMat.opacity = THREE.MathUtils.lerp(0.01, 0.06, daylight) * (1 - atmosphereBlend);
       const cloudVisibility = THREE.MathUtils.clamp(0.15 + daylight * 0.9, 0, 1) * (1 - atmosphereBlend);
-      if (!((typeof weatherState !== 'undefined') && (weatherState === 'building' || weatherState === 'raining' || weatherState === 'clearing'))) {
-        cloudLayer.children.forEach(cluster => {
-          cluster.children.forEach(puff => {
-            puff.material.opacity = (0.45 + 0.3 * Math.random()) * cloudVisibility;
-          });
+      cloudLayer.children.forEach((cluster, clusterIndex) => {
+        const isRainExtra = clusterIndex >= BASE_CLOUD_COUNT && clusterIndex < THUNDER_CLOUD_START;
+        const isThunderExtra = clusterIndex >= THUNDER_CLOUD_START;
+        cluster.children.forEach(puff => {
+          const stormMultiplier = isThunderExtra ? ((weatherState === 'raining' && weatherThunderstorm) ? 1 : 0) : (isRainExtra ? (weatherState === 'raining' ? 1 : 0) : 1);
+          puff.material.opacity = (0.45 + 0.3 * Math.random()) * cloudVisibility * stormMultiplier;
         });
-      }
+      });
     }
 
     // ---------- planet (terrain-deformed sphere) ----------
@@ -3683,13 +3322,8 @@
 
     // Ivis-local atmosphere/weather objects must travel with the planet as it orbits the Sun.
     // Keeping them under planetSystem prevents clouds/rain from being left behind in solar space.
-    cloudMesh.userData.noWorldShadow = true;
-    cloudLayer.userData.noWorldShadow = true;
-    weatherCloudShell.userData.noWorldShadow = true;
-    weatherRainGroup.userData.noWorldShadow = true;
     planetSystem.add(cloudMesh);
     planetSystem.add(cloudLayer);
-    planetSystem.add(weatherCloudShell);
     planetSystem.add(weatherRainGroup);
 
     const planetGeo = new THREE.SphereGeometry(PLANET_RADIUS, 128, 128);
@@ -3868,7 +3502,6 @@
     const furnaces = worldState.furnaces;
     const launchPads = worldState.launchPads;
     const containers = worldState.containers;
-    const sleepingBags = worldState.sleepingBags;
     const droppedItems = worldState.droppedItems;
     let activeContainer = null;
     let nextContainerId = 1;
@@ -4072,9 +3705,7 @@
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
       group.rotateY(yaw);
       ctx.parent.add(group);
-      const furnaceLight = attachLocalPointLight(group, 0xff8a3d, 1.75, 7.5);
-      if (furnaceLight) { furnaceLight.position.set(0, 0.50, 0.55); furnaceLight.visible = false; }
-      const furnace = { root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id, inventory: { fuel: null, input: null, output: null }, smeltStartedAt: 0, localLight: furnaceLight };
+      const furnace = { root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id, inventory: { fuel: null, input: null, output: null }, smeltStartedAt: 0 };
       furnaces.push(furnace);
       return furnace;
     }
@@ -4383,9 +4014,6 @@
       const plate = new THREE.Mesh(new THREE.BoxGeometry(7.8, 0.18, 4.8), plateMat); plate.position.y = 0.09; group.add(plate);
       const inner = new THREE.Mesh(new THREE.BoxGeometry(6.65, 0.055, 3.65), darkMat); inner.position.y = 0.205; group.add(inner);
       for (const [x,z] of [[-3.25,-1.85],[3.25,-1.85],[-3.25,1.85],[3.25,1.85]]) { const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.11,0.11,0.05,10), new THREE.MeshStandardMaterial({ color:0xbfc6cc, roughness:0.3, metalness:0.9 })); bolt.position.set(x,0.22,z); group.add(bolt); }
-      const padLight = attachLocalPointLight(group, 0xbfeaff, 0.9, 9);
-      if (padLight) padLight.position.set(0, 0.85, 0);
-      group.userData.localLight = padLight;
       group.scale.setScalar(scale); return group;
     }
 
@@ -4505,8 +4133,6 @@
         group.add(createFurnaceVisual(0.58));
       } else if (typeId === 'container') {
         group.add(createContainerVisual(0.62));
-      } else if (typeId === 'sleeping_bag') {
-        group.add(createSleepingBagVisual(0.82));
       } else if (typeId === 'rocket_engine') {
         group.add(createRocketEngineVisual(0.62));
       } else if (typeId === 'upgraded_engine') {
@@ -4536,11 +4162,6 @@
       } else if (typeId === 'container') {
         fpModel = createContainerVisual(0.78);
         tpModel = createContainerVisual(0.54);
-      } else if (typeId === 'sleeping_bag') {
-        fpModel = createSleepingBagVisual(0.72);
-        tpModel = createSleepingBagVisual(0.50);
-        fpModel.rotation.x = -0.18;
-        tpModel.rotation.x = -0.12;
       } else if (typeId === 'jerrycan') {
         group.add(createJerrycanVisual(0.72));
       } else if (item.kind === 'crystal' && crystalById[typeId]) {
@@ -4568,32 +4189,30 @@
       // The previous implementation mixed world-unit offsets into a normalized
       // planet direction, which could throw the item dozens of units away on
       // the planet's surface.
-      const ctx = getPlaceableSurfaceContext();
       const playerDir = player.position.clone().normalize();
       const look = new THREE.Vector3();
       camera.getWorldDirection(look).normalize();
-      const bodyWorldQuat = ctx.parent.getWorldQuaternion(new THREE.Quaternion());
-      const lookLocal = look.applyQuaternion(bodyWorldQuat.clone().invert());
-      const tangent = lookLocal.sub(playerDir.clone().multiplyScalar(lookLocal.dot(playerDir)));
+      const tangent = look.sub(playerDir.clone().multiplyScalar(look.dot(playerDir)));
       if (tangent.lengthSq() < 0.0001) tangent.set(1, 0, 0);
       tangent.normalize();
+
       const dropDistance = 1.25;
-      const surfaceOffset = playerDir.clone().multiplyScalar(0.01).add(tangent.multiplyScalar(dropDistance / Math.max(1, ctx.radius)));
+      const surfaceOffset = playerDir.clone().multiplyScalar(0.01).add(tangent.multiplyScalar(dropDistance / PLANET_RADIUS));
       const offsetDir = playerDir.clone().add(surfaceOffset).normalize();
-      const h = ctx.getHeight(offsetDir);
-      const groundPosLocal = offsetDir.clone().multiplyScalar(ctx.radius + h + 0.30);
+      const h = heightAt(offsetDir);
+      const groundPos = offsetDir.clone().multiplyScalar(PLANET_RADIUS + h + 0.30);
+
       const group = createDroppedItemVisual(typeId);
-      group.position.copy(groundPosLocal);
+      group.position.copy(groundPos);
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), offsetDir);
       group.rotateY(Math.random() * Math.PI * 2);
-      ctx.parent.add(group);
-      const groundPos = group.getWorldPosition(new THREE.Vector3());
+      planetSystem.add(group);
+
       const drop = {
         root: group,
         typeId,
         count,
         direction: offsetDir.clone(),
-        surfaceBodyId: ctx.id,
         basePosition: groundPos.clone(),
         bob: Math.random() * Math.PI * 2
       };
@@ -5102,7 +4721,6 @@
       { id: 'grass_fiber', name: 'Grass Fiber', kind: 'grass_fiber', css: '#79a95b', maxStack: 10 },
       { id: 'woven_grass_fiber', name: 'Woven Grass Fiber', kind: 'woven_grass_fiber', css: '#8b6d42', maxStack: 10 },
       { id: 'backpack', name: 'Backpack', kind: 'backpack', maxStack: 1 },
-      { id: 'sleeping_bag', name: 'Sleeping Bag', kind: 'sleeping_bag', maxStack: 1 },
       { id: 'stone', name: 'Stone', kind: 'stone', css: '#8a929a', maxStack: 10 },
       { id: 'iron_ore', name: 'Iron Ore', kind: 'iron_ore', css: '#767a7f', maxStack: 10 },
       { id: 'copper_ore', name: 'Copper Ore', kind: 'copper_ore', css: '#c86b32', maxStack: 10 },
@@ -5164,7 +4782,6 @@
       grass_fiber: { description: 'Plant fibers gathered from the grasslands.', how: 'Harvest grass with a scythe.', used: 'Used in fiber-based crafting recipes.' },
       container: { description: 'A sturdy portable container with twenty independent item slots.', how: 'Craft it from six Iron Plates.', used: 'Place it on any landable celestial body and open it with Right Click to store items.' },
       woven_grass_fiber: { description: 'Grass fiber woven into a stronger material.', how: 'Craft it from Grass Fiber.', used: 'Used in more advanced crafting and utility items.' },
-      sleeping_bag: { description: 'A compact bedroll made from woven plant fibers.', how: 'Craft it from Woven Grass Fiber and Grass Fiber.', used: 'Place it on Ivis, Aurora, or Cordelia and right-click it at night to sleep for three in-game minutes.' },
       backpack: { description: 'A wearable storage pack that gives you more room for supplies.', how: 'Craft or obtain a Backpack when its recipe becomes available.', used: 'Provides extra storage space for your adventure.' },
       stone: { description: 'Common rock collected from the surface and boulders.', how: 'Mine rocks and mountain stone with a pickaxe.', used: 'Used for tools, furnaces, and other crafting.' },
       iron_ore: { description: 'Dark ore chunks containing useful iron.', how: 'Mine iron-bearing boulders with a suitable pickaxe.', used: 'Smelt it in a furnace to make Iron Ingots.' },
@@ -6433,31 +6050,24 @@
         if (sunset > 0) tempSkyColor.lerp(AURORA_SUNSET_SKY, sunset * 0.76);
         tempFogColor.copy(AURORA_NIGHT_SKY).lerp(AURORA_DAY_SKY, daylight);
         if (sunset > 0) tempFogColor.lerp(AURORA_SUNSET_SKY, sunset * 0.68);
-        ambientLight.intensity = THREE.MathUtils.lerp(0.0, 0.38, daylight);
-        sunLight.intensity = THREE.MathUtils.lerp(0.0, 2.2, daylight);
-        setSolarDiscVisibility(sunDot, false, atmosphereBlend);
-        sunLightTarget.position.copy(center);
-        sunLight.position.copy(sunMesh.position);
+        ambientLight.intensity = THREE.MathUtils.lerp(0.09, 0.38, daylight);
+        sunLight.intensity = THREE.MathUtils.lerp(0.04, 2.2, daylight);
       } else if (bodyId === 'mileria') {
         const day = new THREE.Color(0x6d7780), nightCol = new THREE.Color(0x10151b);
         tempSkyColor.copy(nightCol).lerp(day, daylight);
         if (sunset > 0) tempSkyColor.lerp(new THREE.Color(0xc07b61), sunset * 0.56);
         tempFogColor.copy(nightCol).lerp(day, daylight);
         if (sunset > 0) tempFogColor.lerp(new THREE.Color(0xc07b61), sunset * 0.46);
-        ambientLight.intensity = THREE.MathUtils.lerp(0.0, 0.28, daylight);
-        sunLight.intensity = THREE.MathUtils.lerp(0.0, 1.8, daylight);
-        setSolarDiscVisibility(sunDot, false, atmosphereBlend);
-        sunLightTarget.position.copy(center);
-        sunLight.position.copy(sunMesh.position);
+        ambientLight.intensity = THREE.MathUtils.lerp(0.08, 0.28, daylight);
+        sunLight.intensity = THREE.MathUtils.lerp(0.03, 1.8, daylight);
       } else {
         const day = new THREE.Color(0x4c5f9a), nightCol = new THREE.Color(0x05050d);
         tempSkyColor.copy(nightCol).lerp(day, daylight);
         if (sunset > 0) tempSkyColor.lerp(SYSP0_SUNSET_SKY, sunset * 0.52);
         tempFogColor.copy(nightCol).lerp(day, daylight);
         if (sunset > 0) tempFogColor.lerp(SYSP0_SUNSET_SKY, sunset * 0.46);
-        ambientLight.intensity = THREE.MathUtils.lerp(0.0, 0.30, daylight);
-        sunLight.intensity = THREE.MathUtils.lerp(0.0, 1.95, daylight);
-        setSolarDiscVisibility(sunDot, false, atmosphereBlend);
+        ambientLight.intensity = THREE.MathUtils.lerp(0.06, 0.30, daylight);
+        sunLight.intensity = THREE.MathUtils.lerp(0.02, 1.95, daylight);
       }
       tempSkyColor.lerp(SPACE_SKY, atmosphereBlend * 0.85);
       tempFogColor.lerp(SPACE_FOG, atmosphereBlend * 0.85);
@@ -6770,9 +6380,6 @@
       booth.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, boothDir, tangent.clone().negate()));
       booth.userData.isTelephoneBooth = true;
       booth.userData.collision = { halfX: 0.72, halfZ: 0.72, padding: 0.18 };
-      const boothLight = attachLocalPointLight(booth, 0xffd98a, 1.6, 9);
-      if (boothLight) { boothLight.position.set(0, 1.85, 0); boothLight.userData.nightOnly = true; }
-      booth.userData.localLight = boothLight;
       planetSystem.add(booth);
       telephoneBooth = booth;
       return booth;
@@ -7624,238 +7231,6 @@
       return group;
     }
 
-    function createSleepingBagVisual(scale = 1) {
-      if (sleepingBagModelTemplate) {
-        const actual = sleepingBagModelTemplate.clone(true);
-        actual.scale.setScalar(scale);
-        actual.traverse(node => { if (node.isMesh) node.frustumCulled = false; });
-        return actual;
-      }
-      const group = new THREE.Group();
-      const mat = new THREE.MeshStandardMaterial({ color: 0x7eaa4e, roughness: 0.94, side: THREE.DoubleSide });
-      const bag = new THREE.Mesh(new THREE.BoxGeometry(0.80, 0.16, 1.70), mat);
-      bag.position.y = 0.08;
-      group.add(bag);
-      group.scale.setScalar(scale);
-      return group;
-    }
-
-    function getSleepingBagIconDataURL() {
-      if (sleepingBagIconDataURL || !sleepingBagModelTemplate || !THREE.WebGLRenderer) return sleepingBagIconDataURL;
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 128; canvas.height = 128;
-        const iconRenderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
-        iconRenderer.setPixelRatio(1);
-        iconRenderer.setSize(128, 128, false);
-        iconRenderer.setClearColor(0x000000, 0);
-        const iconScene = new THREE.Scene();
-        const iconCamera = new THREE.PerspectiveCamera(28, 1, 0.1, 20);
-        const model = sleepingBagModelTemplate.clone(true);
-        model.scale.setScalar(1.18);
-        model.rotation.y = -0.62;
-        model.rotation.x = 0.16;
-        iconScene.add(model);
-        iconScene.add(new THREE.AmbientLight(0xffffff, 1.18));
-        const key = new THREE.DirectionalLight(0xffffff, 1.65); key.position.set(3, 4, 5); iconScene.add(key);
-        const fill = new THREE.DirectionalLight(0xbfd9ff, 0.62); fill.position.set(-3, 2, -4); iconScene.add(fill);
-        iconCamera.position.set(2.65, 2.25, 3.35);
-        iconCamera.lookAt(0, 0.22, 0);
-        iconRenderer.render(iconScene, iconCamera);
-        sleepingBagIconDataURL = canvas.toDataURL('image/png');
-        iconRenderer.dispose();
-        return sleepingBagIconDataURL;
-      } catch (e) {
-        console.warn('Sleeping bag 3D inventory icon unavailable; using the texture.', e);
-        return null;
-      }
-    }
-
-    function getSurfaceBodyWorldCenter(bodyId, out = new THREE.Vector3()) {
-      if (bodyId === 'ivis') return out.copy(ivisSolarOrbitPosition);
-      if (bodyId === 'moon') return moonMesh.getWorldPosition(out);
-      if (bodyId === 'cordelia') return cordeliaMesh.getWorldPosition(out);
-      if (bodyId === 'aurora' || bodyId === 'mileria') return getOmegaBodyWorldPosition(bodyId, out);
-      return out.copy(ivisSolarOrbitPosition);
-    }
-
-    function getPlanetCompassState() {
-      if (state.gameState !== 'playing' || playerState.inRocket || sleepingActive) return null;
-      const bodyId = omegaWalkingBodyId || (moonWalking ? 'moon' : (cordeliaWalking ? 'cordelia' : 'ivis'));
-      const center = getSurfaceBodyWorldCenter(bodyId, new THREE.Vector3());
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
-      const surfaceNormal = playerWorld.clone().sub(center);
-      if (surfaceNormal.lengthSq() < 0.0001) return null;
-      surfaceNormal.normalize();
-      const parent = bodyId === 'ivis' ? planetSystem : (bodyId === 'moon' ? moonMesh : (bodyId === 'cordelia' ? cordeliaMesh : getOmegaMesh(bodyId)));
-      if (!parent) return null;
-      const bodyWorldQuat = parent.getWorldQuaternion(new THREE.Quaternion());
-      const north = new THREE.Vector3(0, 1, 0).applyQuaternion(bodyWorldQuat).normalize();
-      north.addScaledVector(surfaceNormal, -north.dot(surfaceNormal));
-      if (north.lengthSq() < 0.0001) return null;
-      north.normalize();
-      const east = new THREE.Vector3().crossVectors(surfaceNormal, north).normalize();
-      const forward = camera.getWorldDirection(new THREE.Vector3());
-      forward.addScaledVector(surfaceNormal, -forward.dot(surfaceNormal));
-      if (forward.lengthSq() < 0.0001) forward.copy(north);
-      forward.normalize();
-      let heading = THREE.MathUtils.radToDeg(Math.atan2(forward.dot(east), forward.dot(north)));
-      if (heading < 0) heading += 360;
-      return { bodyId, heading };
-    }
-
-    function updateCompassHud() {
-      const hud = document.getElementById('compassHud');
-      if (!hud) return;
-      const info = getPlanetCompassState();
-      if (!info) { hud.classList.add('hidden'); return; }
-      hud.classList.remove('hidden');
-      const labels = ['N','NE','E','SE','S','SW','W','NW'];
-      const sector = Math.round(info.heading / 45) % 8;
-      document.querySelectorAll('#compassStrip span').forEach((el, i) => el.classList.toggle('active', i === sector));
-      const headingEl = document.getElementById('compassHeading');
-      if (headingEl) headingEl.textContent = labels[sector] + ' · ' + Math.round(info.heading) + '°';
-    }
-
-    function canPlaceSleepingBagHere(ctx = getPlaceableSurfaceContext()) {
-      return !!ctx && (ctx.id === 'ivis' || ctx.id === 'aurora' || ctx.id === 'cordelia');
-    }
-
-    function createSleepingBagObject(dir, yaw = Math.random() * Math.PI * 2, surfaceBodyId = 'ivis') {
-      const ctx = getPlaceableSurfaceContext(surfaceBodyId);
-      const group = createSleepingBagVisual(1.0);
-      const h = ctx.getHeight(dir);
-      group.position.copy(dir).multiplyScalar(ctx.radius + h + 0.025);
-      group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-      group.rotateY(yaw);
-      ctx.parent.add(group);
-      const bag = { root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id };
-      sleepingBags.push(bag);
-      return bag;
-    }
-
-    function findNearbySleepingBag() {
-      if (state.gameState !== 'playing' || playerState.inRocket) return null;
-      const ctx = getPlaceableSurfaceContext();
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
-      let best = null, bestDistance = Infinity;
-      for (const bag of sleepingBags) {
-        if (!bag.root?.visible || (bag.surfaceBodyId || 'ivis') !== ctx.id) continue;
-        const pos = bag.root.getWorldPosition(new THREE.Vector3());
-        const d = pos.distanceTo(playerWorld);
-        if (d <= 3.7 && d < bestDistance) { bestDistance = d; best = bag; }
-      }
-      return best;
-    }
-
-    function isSleepingBagNighttime(bag) {
-      if (!bag) return false;
-      const center = getSurfaceBodyWorldCenter(bag.surfaceBodyId || 'ivis', new THREE.Vector3());
-      const bagWorld = bag.root.getWorldPosition(new THREE.Vector3());
-      const surfaceDir = bagWorld.clone().sub(center).normalize();
-      const sunDir = sunMesh.position.clone().sub(center).normalize();
-      const night = THREE.MathUtils.smoothstep(-surfaceDir.dot(sunDir), 0.02, 0.42);
-      return night > 0.55;
-    }
-
-    function finishSleeping() {
-      if (!sleepingActive) return;
-      sleepingActive = false;
-      player.attach(camera);
-      camera.position.copy(playerState.thirdPerson ? CAM_THIRD : CAM_FIRST);
-      camera.rotation.set(playerState.pitch, 0, 0);
-      playerBody.visible = true;
-      document.body.classList.remove('sleeping');
-      const overlay = document.getElementById('sleepOverlay');
-      if (overlay) overlay.classList.add('hidden');
-      sleepingBagInUse = null;
-      sleepingRealElapsed = 0;
-      sleepingGameRemaining = 0;
-      setHeldItem(uiState.equippedItemType);
-      setFlashlight(sleepingPreviousFlashlight);
-      updatePlayerHatVisibility();
-      updateCompassHud();
-      attemptPointerLock();
-      updateCrystalPrompt();
-    }
-
-    function trySleepInNearbySleepingBag() {
-      if (sleepingActive || state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || uiState.telephoneOpen || economyState.merchantOpen) return false;
-      const bag = findNearbySleepingBag();
-      if (!bag || !isSleepingBagNighttime(bag)) return false;
-      if (playerState.heightOffset > 0.08) return false;
-      sleepingActive = true;
-      sleepingBagInUse = bag;
-      sleepingRealElapsed = 0;
-      sleepingGameRemaining = SLEEP_GAME_SECONDS;
-      sleepingPreviousFlashlight = !!playerState.flashlightOn;
-      clearPhysicalKeys();
-      for (const k in systemState.keys) systemState.keys[k] = false;
-      if (document.pointerLockElement === canvas) document.exitPointerLock();
-      setFlashlight(false);
-      playerBody.visible = false;
-      heldCrystalFirstPerson.visible = false;
-      heldCrystalThirdPerson.visible = false;
-      document.body.classList.add('sleeping');
-      const overlay = document.getElementById('sleepOverlay');
-      if (overlay) overlay.classList.remove('hidden');
-      bag.root.add(camera);
-      camera.position.set(0, 0.53, -0.35);
-      camera.lookAt(new THREE.Vector3(0, 0.53, -1.05));
-      return true;
-    }
-
-    function tryPickupNearbySleepingBag() {
-      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.equippedItemType || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || uiState.containerOpen || uiState.telephoneOpen || economyState.merchantOpen) return false;
-      const bag = findNearbySleepingBag();
-      if (!bag) return false;
-      if (!addItemToInventory('sleeping_bag', 1, null, true)) {
-        const prompt = document.getElementById('crystalPrompt');
-        prompt.classList.remove('hidden');
-        prompt.textContent = 'Inventory full — make room first';
-        return true;
-      }
-      const idx = sleepingBags.indexOf(bag);
-      if (idx >= 0) sleepingBags.splice(idx, 1);
-      if (bag.root?.parent) bag.root.parent.remove(bag.root);
-      refreshEquippedItem();
-      updateHotbarUI();
-      updateInventoryUI();
-      const prompt = document.getElementById('crystalPrompt');
-      prompt.classList.remove('hidden');
-      prompt.innerHTML = '<span class="promptKey">+1</span> Sleeping bag picked up';
-      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 650);
-      return true;
-    }
-
-    function tryPlaceSleepingBag() {
-      if (uiState.equippedItemType !== 'sleeping_bag' || state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || uiState.containerOpen) return false;
-      const placement = getActivePlaceablePlacement();
-      if (!canPlaceSleepingBagHere(placement.ctx)) {
-        const prompt = document.getElementById('crystalPrompt');
-        prompt.classList.remove('hidden');
-        prompt.innerHTML = '<span class="promptKey">LOCKED</span> Sleeping bags can only be placed on Ivis, Aurora, or Cordelia';
-        return true;
-      }
-      if (!isFurnacePlacementAreaClear(placement.dir, placement.ctx.id)) {
-        const prompt = document.getElementById('crystalPrompt');
-        prompt.classList.remove('hidden');
-        prompt.innerHTML = '<span class="promptKey">BLOCKED</span> Find a clear area to place the sleeping bag';
-        return true;
-      }
-      const idx = getSelectedHotbarInventoryIndex();
-      const slot = inventorySlots[idx];
-      if (!slot || slot.typeId !== 'sleeping_bag') return false;
-      createSleepingBagObject(placement.dir, Math.random() * Math.PI * 2, placement.ctx.id);
-      inventorySlots[idx] = null;
-      refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
-      const prompt = document.getElementById('crystalPrompt');
-      prompt.classList.remove('hidden');
-      prompt.innerHTML = '<span class="promptKey">PLACED</span> Sleeping bag placed';
-      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 700);
-      return true;
-    }
-
     function createDrillVisual(scale = 1) {
       const group = new THREE.Group();
       const bodyMat = new THREE.MeshStandardMaterial({ color: 0x4f5559, roughness: 0.55, metalness: 0.42 });
@@ -8655,27 +8030,6 @@
       if (data.kind === 'iron_plate') { icon.style.background = 'linear-gradient(145deg,#cbd0d5 0%,#6e747a 62%,#aeb5bb 100%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.25),0 0 8px rgba(160,170,180,.24)'; }
       if (data.kind === 'titanium_plate') { icon.style.background = 'linear-gradient(145deg,#f7fcff 0%,#9eb2c1 58%,#dce8ef 100%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.4),0 0 9px rgba(180,215,235,.34)'; }
       if (data.kind === 'wrench') { icon.classList.add(data.wrenchTier === 'titanium' ? 'titaniumWrench' : 'ironWrench'); icon.innerHTML = '<span class="wrenchIconGlyph"></span>'; }
-      if (typeId === 'sleeping_bag') {
-        const tex = getSleepingBagIconDataURL();
-        if (tex) {
-          icon.style.backgroundImage = 'url("' + tex + '")';
-          icon.style.backgroundSize = 'contain';
-          icon.style.backgroundPosition = 'center';
-          icon.style.backgroundRepeat = 'no-repeat';
-          icon.style.imageRendering = 'pixelated';
-          icon.style.backgroundColor = 'rgba(65,90,45,.16)';
-          icon.style.boxShadow = '0 0 10px rgba(130,175,90,.22)';
-        } else {
-          const texFallback = window.PocketUniverseSleepingBagTextureDataURL;
-          if (texFallback) {
-            icon.style.backgroundImage = 'url("' + texFallback + '")';
-            icon.style.backgroundSize = 'contain';
-            icon.style.backgroundPosition = 'center';
-            icon.style.backgroundRepeat = 'no-repeat';
-            icon.style.imageRendering = 'pixelated';
-          }
-        }
-      }
       if (data.kind === 'container') {
         const tex = window.PocketUniverseContainerTextureDataURL;
         if (tex) { icon.style.backgroundImage = 'url("' + tex + '")'; icon.style.backgroundSize = 'contain'; icon.style.backgroundPosition = 'center'; icon.style.backgroundRepeat = 'no-repeat'; icon.style.imageRendering = 'pixelated'; icon.style.backgroundColor = 'rgba(82,95,105,.18)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.12), 0 0 10px rgba(150,170,185,.22)'; }
@@ -9537,12 +8891,6 @@
         output: { typeId: 'backpack', count: 1 }
       },
       {
-        id: 'sleeping_bag',
-        name: 'Sleeping Bag',
-        ingredients: [{ typeId: 'woven_grass_fiber', count: 3 }, { typeId: 'grass_fiber', count: 6 }],
-        output: { typeId: 'sleeping_bag', count: 1 }
-      },
-      {
         id: 'furnace',
         name: 'Furnace',
         ingredients: [{ typeId: 'stone', count: 5 }, { typeId: 'planks', count: 3 }],
@@ -9924,48 +9272,6 @@
     function startFurnaceSmeltingIfReady() {
       if (activeFurnace && furnaceCanSmelt(activeFurnace) && !activeFurnace.smeltStartedAt) {
         activeFurnace.smeltStartedAt=performance.now();
-      }
-    }
-
-    function updateLocalLights(delta = 0) {
-      // Only a small number of nearby gameplay props use real point lights. This keeps
-      // the scene inexpensive while making the key interactable objects feel grounded.
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
-      const inRocket = playerState.inRocket;
-
-      if (typeof telephoneBooth !== 'undefined' && telephoneBooth?.userData?.localLight) {
-        const light = telephoneBooth.userData.localLight;
-        const boothWorld = telephoneBooth.getWorldPosition(new THREE.Vector3());
-        const distance = inRocket ? Infinity : playerWorld.distanceTo(boothWorld);
-        const night = getNightAmountAtSurface(boothWorld, 'ivis');
-        light.visible = distance < 28 && !onCordeliaAtmosphere;
-        if (light.visible) {
-          const flicker = 0.94 + 0.045 * Math.sin(performance.now() * 0.006);
-          light.intensity = THREE.MathUtils.lerp(0.06, 1.85, night) * flicker;
-        }
-      }
-
-      for (const pad of launchPads) {
-        const light = pad.root?.userData?.localLight;
-        if (!light) continue;
-        const padWorld = pad.root.getWorldPosition(new THREE.Vector3());
-        const distance = inRocket ? Infinity : playerWorld.distanceTo(padWorld);
-        const night = getNightAmountAtSurface(padWorld, pad.surfaceBodyId || 'ivis');
-        light.visible = distance < 30;
-        if (light.visible) light.intensity = THREE.MathUtils.lerp(0.04, 1.25, night);
-      }
-
-      for (const furnace of furnaces) {
-        const light = furnace.localLight;
-        if (!light) continue;
-        const active = furnaceCanSmelt(furnace);
-        const furnaceWorld = furnace.root.getWorldPosition(new THREE.Vector3());
-        const distance = inRocket ? Infinity : playerWorld.distanceTo(furnaceWorld);
-        light.visible = active && distance < 26;
-        if (light.visible) {
-          const flicker = 0.90 + 0.16 * (0.5 + 0.5 * Math.sin(performance.now() * 0.012 + furnace.root.id));
-          light.intensity = 1.55 * flicker;
-        }
       }
     }
 
@@ -13640,16 +12946,9 @@
         const padRight = new THREE.Vector3(1, 0, 0).applyQuaternion(padWorldQuat).normalize();
         const padUp = new THREE.Vector3(0, 1, 0).applyQuaternion(padWorldQuat).normalize();
         exitWorldPos.addScaledVector(padRight, 5.0);
-        // Ivis now orbits the Sun, so its planet center is no longer the world origin.
-        // Calculate the exit direction relative to Ivis' CURRENT orbital position, then
-        // rebuild the surface position around that moving center. Using world-origin
-        // normalization here would teleport the player to a completely different place.
-        const ivisCenter = ivisSolarOrbitPosition.clone();
-        const exitDir = exitWorldPos.clone().sub(ivisCenter);
-        if (exitDir.lengthSq() < 0.0001) exitDir.copy(padUp);
-        else exitDir.normalize();
+        const exitDir = exitWorldPos.clone().normalize();
         const exitRadius = PLANET_RADIUS + heightAt(exitDir) + 1.15;
-        exitWorldPos.copy(ivisCenter).addScaledVector(exitDir, exitRadius);
+        exitWorldPos.copy(exitDir).multiplyScalar(exitRadius);
 
         const padForward = new THREE.Vector3(0, 0, 1).applyQuaternion(padWorldQuat);
         padForward.addScaledVector(padUp, -padForward.dot(padUp)).normalize();
@@ -14377,8 +13676,8 @@
     // The save is a normal JSON file, so the player can keep it outside the browser and
     // move it between computers. A small browser-local backup is also written whenever
     // we save/leave a world, which is useful if the downloaded file is forgotten.
-    const SAVE_VERSION = 18;
-    const LOCAL_SAVE_KEY = "pocketUniverseSave_v18";
+    const SAVE_VERSION = 17;
+    const LOCAL_SAVE_KEY = "pocketUniverseSave_v17";
 
     function serializeSave() {
       commitActiveBackpackStorage();
@@ -14497,15 +13796,14 @@
           surfaceBodyId: pad.surfaceBodyId || 'ivis'
         })),
         containers: containers.map(container => ({ containerId: container.containerId, direction: container.direction.toArray(), yaw: container.yaw, surfaceBodyId: container.surfaceBodyId || 'ivis', inventory: container.inventory.map(slot => slot ? { typeId: slot.typeId, count: slot.count, ...(itemById[slot.typeId]?.tool ? { durability: slot.durability } : {}) } : null) })),
-        sleepingBags: sleepingBags.map(bag => ({ direction: bag.direction.toArray(), yaw: bag.yaw, surfaceBodyId: bag.surfaceBodyId || 'ivis' })),
         drills: placedDrills.map(drill => ({ direction: drill.direction.toArray(), yaw: drill.yaw, durability: drill.durability, surfaceBodyId: drill.surfaceBodyId || 'ivis' })),
         conciergeDeliveries: conciergeDeliveryOrders.map(order => ({ id: order.id, items: order.items.map(line => ({ typeId: line.typeId, count: line.count })), phase: order.phase, progress: Number(order.progress)||0, elapsed: Number(order.elapsed)||0, departureElapsed: Number(order.departureElapsed)||0, waitTime: getConciergeDeliveryWaitTime(order), expedited: !!order.expedited })),
-        droppedItems: droppedItems.map(drop => ({ typeId: drop.typeId, count: drop.count, direction: drop.direction.toArray(), surfaceBodyId: drop.surfaceBodyId || 'ivis' }))
+        droppedItems: droppedItems.map(drop => ({ typeId: drop.typeId, count: drop.count, direction: drop.direction.toArray() }))
       };
     }
 
     function applySaveData(data) {
-      if (!Array.from({ length: 18 }, (_, i) => i + 1).includes(data?.version)) {
+      if (!data || ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes(data.version)) {
         throw new Error("Unsupported or invalid save file.");
       }
 
@@ -14887,16 +14185,6 @@
         }
       }
 
-      for (const bag of sleepingBags) if (bag.root && bag.root.parent) bag.root.parent.remove(bag.root);
-      sleepingBags.length = 0;
-      if (Array.isArray(data.sleepingBags)) {
-        for (const saved of data.sleepingBags) {
-          if (!Array.isArray(saved.direction)) continue;
-          const bodyId = ['ivis', 'aurora', 'cordelia'].includes(saved.surfaceBodyId) ? saved.surfaceBodyId : 'ivis';
-          createSleepingBagObject(new THREE.Vector3().fromArray(saved.direction).normalize(), Number.isFinite(saved.yaw) ? saved.yaw : 0, bodyId);
-        }
-      }
-
       if (activeConciergeDeliveryVisual?.root?.parent) activeConciergeDeliveryVisual.root.parent.remove(activeConciergeDeliveryVisual.root);
       activeConciergeDeliveryVisual = null; conciergeDeliveryOrders = []; nextConciergeOrderId = 1;
       if (Array.isArray(data.conciergeDeliveries)) {
@@ -14952,16 +14240,14 @@
         for (const saved of data.droppedItems) {
           if (!itemById[saved.typeId] || !Array.isArray(saved.direction)) continue;
           const dir = new THREE.Vector3().fromArray(saved.direction).normalize();
-          const bodyId = ['ivis', 'aurora', 'cordelia', 'moon', 'mileria'].includes(saved.surfaceBodyId) ? saved.surfaceBodyId : 'ivis';
-          const ctx = getPlaceableSurfaceContext(bodyId);
-          const h = ctx.getHeight(dir);
+          const h = heightAt(dir);
           const root = createDroppedItemVisual(saved.typeId);
-          root.position.copy(dir).multiplyScalar(ctx.radius + h + 0.28);
+          root.position.copy(dir).multiplyScalar(PLANET_RADIUS + h + 0.28);
           root.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
           root.rotateY(Math.random() * Math.PI * 2);
-          ctx.parent.add(root);
-          const basePosition = root.getWorldPosition(new THREE.Vector3());
-          droppedItems.push({ root, typeId: saved.typeId, count: Math.max(1, Math.floor(saved.count || 1)), direction: dir.clone(), surfaceBodyId: bodyId, basePosition, bob: Math.random() * Math.PI * 2 });
+          planetSystem.add(root);
+          const basePosition = root.position.clone();
+          droppedItems.push({ root, typeId: saved.typeId, count: Math.max(1, Math.floor(saved.count || 1)), direction: dir.clone(), basePosition, bob: Math.random() * Math.PI * 2 });
         }
       }
 
@@ -15049,9 +14335,6 @@
 
     function loadGameFromData(data) {
       closeAchievements();
-      // Weather is a live world effect and is intentionally not persisted in saves.
-      // Loading a save therefore always starts with a clear Ivis sky.
-      resetWeatherToClear();
       applySaveData(data);
       updateInventoryActionButton();
       state.gameState = "playing";
@@ -15103,7 +14386,6 @@
     }
 
     function resetPlayerState() {
-      if (sleepingActive) finishSleeping();
       if (playerState.inRocket) exitRocketFlight(true);
       resetInventory();
       economyState.credits = 0;
@@ -15120,11 +14402,6 @@
       playerState.rocketInSpace = false;
       playerState.rocketLanded = false;
       playerState.rocketFuelTimer = 0;
-      sleepingActive = false;
-      sleepingBagInUse = null;
-      sleepingRealElapsed = 0;
-      sleepingGameRemaining = SLEEP_GAME_SECONDS;
-      document.body.classList.remove('sleeping');
       moonWalking = false;
       moonGravityActive = false;
       moonDustTimer = 0;
@@ -15967,14 +15244,6 @@
         return;
       }
 
-      const nearbySleepingBag = !uiState.equippedItemType ? findNearbySleepingBag() : null;
-      if (nearbySleepingBag) {
-        prompt.classList.remove('hidden');
-        if (isSleepingBagNighttime(nearbySleepingBag)) prompt.innerHTML = '<span class="promptKey">E</span> Pick up · <span class="promptKey">RMB</span> Sleep · 3 in-game minutes';
-        else prompt.innerHTML = '<span class="promptKey">E</span> Pick up sleeping bag · <span class="promptKey">NIGHT ONLY</span> Sleeping is available after sunset';
-        return;
-      }
-
       const nearbyDelivery = !uiState.equippedItemType ? findNearbyConciergeDelivery() : null;
       if (nearbyDelivery) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">E</span> Collect Concierge Delivery'; return; }
       const nearbyRocketPad = !uiState.equippedItemType ? findRocketEntryPad() : null;
@@ -16009,14 +15278,6 @@
         return;
       }
       nearbyDroppedItem = null;
-
-      if (uiState.equippedItemType === 'sleeping_bag') {
-        const placement = getActivePlaceablePlacement();
-        prompt.classList.remove('hidden');
-        if (!canPlaceSleepingBagHere(placement.ctx)) prompt.innerHTML = '<span class="promptKey">LOCKED</span> Sleeping bags can only be placed on Ivis, Aurora, or Cordelia';
-        else prompt.innerHTML = '<span class="promptKey">E</span> Place Sleeping Bag';
-        return;
-      }
 
       const nearbyUpgradeableRocket = findNearbyUpgradeableRocket();
       if (nearbyUpgradeableRocket && uiState.equippedItemType === 'warp_drive_mk2') {
@@ -16262,7 +15523,6 @@
     }
     function goToMenu() {
       closeAchievements();
-      if (sleepingActive) finishSleeping();
       if (playerState.inRocket) exitRocketFlight(true);
       // Keep an automatic browser backup before resetting the live world. The portable JSON
       // save is still created with the Save Game button.
@@ -16287,7 +15547,6 @@
       if (weatherControlOverlay) weatherControlOverlay.classList.add('hidden');
       if (weatherControlToggle) weatherControlToggle.classList.add('hidden');
       if (document.pointerLockElement === canvas) document.exitPointerLock();
-      resetWeatherToClear();
       resetPlayerState();
 
       transitionFade.classList.add("show");
@@ -16327,12 +15586,10 @@
 
     function startGame(mode = 'survival') {
       closeAchievements();
-      if (sleepingActive) finishSleeping();
       state.gameMode = mode === 'freeplay' ? 'freeplay' : 'survival';
       updateInventoryActionButton();
 
-      // Starting a new game always begins with clear weather as well as a fresh player state.
-      resetWeatherToClear();
+      // Starting a new game always begins with the normal fresh-player state.
       resetPlayerState();
       // Freeplay is a sandbox, so the Journal opens as a complete encyclopedia.
       // Survival keeps the normal discovery-based progression.
@@ -16405,7 +15662,6 @@
     window.addEventListener('contextmenu', (e) => { if (uiState.telephoneOpen) { e.preventDefault(); e.stopPropagation(); } }, true);
     window.addEventListener('mousedown', (e) => {
       if (e.button !== 2) return;
-      if (trySleepInNearbySleepingBag()) { e.preventDefault(); return; }
       if (state.gameState === 'playing' && !playerState.inRocket && uiState.equippedItemType === 'journal' && !uiState.craftingOpen && !uiState.furnaceOpen && !economyState.merchantOpen && !cosmeticShopOpen && !journalOpen) {
         e.preventDefault(); e.stopPropagation(); openJournal(false); return;
       }
@@ -16442,7 +15698,6 @@
       if (uiState.furnaceOpen) e.preventDefault();
     });
     window.addEventListener('contextmenu', (e) => {
-      if (trySleepInNearbySleepingBag()) { e.preventDefault(); return; }
       if (state.gameState === 'playing' && !playerState.inRocket && uiState.equippedItemType === 'journal' && !uiState.craftingOpen && !uiState.furnaceOpen && !economyState.merchantOpen && !cosmeticShopOpen && !journalOpen) {
         e.preventDefault(); e.stopPropagation(); openJournal(false); return;
       }
@@ -16659,8 +15914,6 @@
         if (uiState.equippedItemType === 'drill' && tryPlaceDrill()) return;
         if (uiState.equippedItemType === 'launch_pad' && tryPlaceLaunchPad()) return;
         if (uiState.equippedItemType === 'container' && tryPlaceContainer()) return;
-        if (uiState.equippedItemType === 'sleeping_bag' && tryPlaceSleepingBag()) return;
-        if (!uiState.equippedItemType && tryPickupNearbySleepingBag()) return;
         if (uiState.equippedItemType === 'rocket' && tryPlaceRocketOnNearbyPad()) return;
         if (tryPickupNearbyDroppedItem()) return;
         if (tryCollectNearbyMoonQuartz()) return;
@@ -17653,33 +16906,6 @@
       if (economyState.credits >= 1000) awardAchievement('credits_1000');
     }
 
-    function configureWorldShadows() {
-      const isNoShadowTree = (node) => {
-        let cur = node;
-        while (cur) {
-          if (cur.userData?.noWorldShadow) return true;
-          cur = cur.parent;
-        }
-        return false;
-      };
-      const roots = [planetSystem, moonMesh, cordeliaMesh, syspoSystem];
-      for (const root of roots) {
-        if (!root) continue;
-        root.traverse(node => {
-          if (!node.isMesh || isNoShadowTree(node)) return;
-          node.castShadow = true;
-          node.receiveShadow = true;
-        });
-      }
-      // The background Sun is self-lit and the large sky/star layers should never enter
-      // the world shadow pass.
-      sunMesh.userData.noWorldShadow = true;
-      stars.userData.noWorldShadow = true;
-      if (typeof skyMesh !== 'undefined') skyMesh.userData.noWorldShadow = true;
-    }
-    configureWorldShadows();
-
-
     // ---------- main loop ----------
     let interactionPromptUpdateTimer = 0;
     const clock = new THREE.Clock();
@@ -17698,10 +16924,6 @@
         }
       }
       const delta = Math.min(clock.getDelta(), 0.05);
-      const sleepingWasActive = sleepingActive;
-      const sleepGameStep = sleepingWasActive ? Math.min(delta * SLEEP_TIME_SCALE, sleepingGameRemaining) : delta;
-      if (sleepingWasActive) sleepingGameRemaining = Math.max(0, sleepingGameRemaining - sleepGameStep);
-      const simulationDelta = sleepingWasActive ? sleepGameStep : delta;
       updateParticles(delta);
       updateSpecialParticles(delta);
       updateFinalParticles(delta);
@@ -17716,7 +16938,7 @@
 
       // Ivis orbits the Sun during gameplay. Keep the main-menu preview centered at the origin
       // so its existing camera and presentation are unchanged.
-      if (state.gameState === 'playing') updateIvisSolarOrbit(simulationDelta);
+      if (state.gameState === 'playing') updateIvisSolarOrbit(delta);
       else {
         planetSystem.position.set(0, 0, 0);
         ivisSolarOrbitPosition.copy(sunMesh.position)
@@ -17725,27 +16947,25 @@
 
       // Run the sun/day-night simulation in both game and menu so the planet preview
       // also shows the same lighting system.
-      updateDayNight(simulationDelta);
+      updateDayNight(delta);
       nightSamplePlayerPos.copy(player.getWorldPosition(nightSamplePlayerPos));
       const ps = nightSamplePlayerPos.lengthSq() > 0.000001 ? nightSamplePlayerPos.normalize() : nightSamplePlayerPos.set(0, 1, 0);
       nightSampleSunPos.copy(sunMesh.position);
       const ss = nightSampleSunPos.lengthSq() > 0.000001 ? nightSampleSunPos.normalize() : nightSampleSunPos.set(0, 1, 0);
-      window.currentNightAmount = THREE.MathUtils.smoothstep(-ps.dot(ss), 0.02, 0.42);
+      const currentNightAmount = THREE.MathUtils.smoothstep(-ps.dot(ss), 0.02, 0.42);
       if (state.gameState === 'playing') {
-        updateSurvivalAchievementTelemetry(delta, window.currentNightAmount || 0);
+        updateSurvivalAchievementTelemetry(delta, currentNightAmount);
         updateTreeSaplings();
-        updateMoon(simulationDelta);
-        updateCordelia(simulationDelta);
-        updateOmegaSystem(simulationDelta);
-        updateConciergeDeliveries(simulationDelta);
-        updateWeather(simulationDelta);
-        syncDynamicSunLighting();
+        updateMoon(delta);
+        updateCordelia(delta);
+        updateOmegaSystem(delta);
+        updateConciergeDeliveries(delta);
+        updateWeather(delta);
         player.getWorldPosition(omegaAtmosphereWorldPos);
         updateOmegaAtmosphere(omegaAtmosphereWorldPos);
         updateWeatherControlVisibility();
         updateCrystalRespawns();
         updateAllFurnaceSmelting();
-        updateLocalLights(delta);
         updateAmbientAudio();
       }
       updateMusic(delta);
@@ -17804,7 +17024,7 @@
         }
         flashlightStatus.classList.toggle("hidden", !playerState.flashlightOn);
         updatePlayerHatVisibility();
-        if (!solarHazardLock && !spaceFuelHazardLock && !syspoHazardLock && !sleepingActive) {
+        if (!solarHazardLock && !spaceFuelHazardLock && !syspoHazardLock) {
           if (playerState.inRocket && !warpInProgress) {
             updateRocketFlight(delta);
             setRocketFlightUI();
@@ -17819,18 +17039,6 @@
           }
           updateAccountStatisticsTelemetry(delta);
           updateAccountAchievementTelemetry(delta);
-        }
-        updateCompassHud();
-        if (sleepingWasActive) {
-          sleepingRealElapsed += delta;
-          const overlayText = document.getElementById('sleepOverlaySubtext');
-          if (overlayText) {
-            const remainingSeconds = Math.max(0, sleepingGameRemaining);
-            const mins = Math.floor(remainingSeconds / 60);
-            const secs = Math.floor(remainingSeconds % 60);
-            overlayText.textContent = mins + ':' + String(secs).padStart(2, '0') + ' remaining';
-          }
-          if (sleepingRealElapsed >= SLEEP_REAL_SECONDS - 0.001 || sleepingGameRemaining <= 0) finishSleeping();
         }
         renderer.render(scene, activeCamera);
         if (mapOpen) {

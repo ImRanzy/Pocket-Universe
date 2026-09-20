@@ -17,6 +17,7 @@
     backpackOpen: false,
     furnaceOpen: false,
     shipInventoryOpen: false,
-    containerOpen: false
+    containerOpen: false,
+    telephoneOpen: false
   });
 })();

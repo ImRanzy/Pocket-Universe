@@ -16,6 +16,7 @@
     furnaces: [],
     launchPads: [],
     containers: [],
+    sleepingBags: [],
     droppedItems: []
   };
 })();

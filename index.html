@@ -13,6 +13,25 @@
 
 <div id="staminaWrap"><div id="staminaLabel">SPRINT</div><div id="staminaBar"></div></div>
   <div id="flashlightStatus" class="hidden">FLASHLIGHT ON · F</div>
+  <div id="compassHud" class="hidden" aria-label="Planet compass">
+  <div id="compassTitle">COMPASS</div>
+  <div id="compassStrip">
+    <span data-dir="N">N</span>
+    <span data-dir="NE">NE</span>
+    <span data-dir="E">E</span>
+    <span data-dir="SE">SE</span>
+    <span data-dir="S">S</span>
+    <span data-dir="SW">SW</span>
+    <span data-dir="W">W</span>
+    <span data-dir="NW">NW</span>
+  </div>
+  <div id="compassNeedle"></div>
+  <div id="compassHeading">N · 0°</div>
+</div>
+<div id="sleepOverlay" class="hidden" aria-live="polite">
+  <div id="sleepOverlayTitle">SLEEPING…</div>
+  <div id="sleepOverlaySubtext">3:00 remaining</div>
+</div>
   <div id="rocketFlightStatus" class="hidden">
   <div id="rocketFlightTitle">ROCKET STATUS</div>
   <div id="rocketFlightFlightStats">
@@ -49,7 +68,7 @@
         <div id="spaceMapTitle">SPACE NAVIGATION</div>
         <div id="spaceMapSubtitle">WARP DRIVE · SYSTEM OVERVIEW</div>
       </div>
-      <div id="spaceMapHeaderActions"><button id="spaceMapReset" title="Reset map view"><span class="spaceMapResetIcon">↺</span><span>RESET VIEW</span></button><button id="spaceMapClose" title="Close space map">×</button></div>
+      <div id="spaceMapHeaderActions"><label id="spaceMapHabitableControl" title="Show the 7,000u–19,000u habitable zone"><input id="spaceMapHabitableToggle" type="checkbox"><span id="spaceMapHabitableLabel">HABITABLE ZONE</span></label><button id="spaceMapReset" title="Reset map view"><span class="spaceMapResetIcon">↺</span><span>RESET VIEW</span></button><button id="spaceMapClose" title="Close space map">×</button></div>
     </div>
     <div id="spaceMapViewportWrap">
       <canvas id="spaceMapCanvas"></canvas>
@@ -65,6 +84,119 @@
       <div id="spaceMapHint">DRAG TO PAN · SCROLL TO ZOOM · CLICK A BODY TO WARP</div>
       <div id="spaceMapWarpStatus" class="hidden"></div>
     </div>
+  </div>
+</div>
+<div id="telephoneOverlay" class="hidden" aria-hidden="true">
+  <div id="telephonePanel" role="dialog" aria-modal="true" aria-labelledby="telephoneTitle">
+    <div id="telephoneHeader">
+      <div>
+        <div class="telephoneEyebrow">GALACTIC TELECOMMUNICATIONS NETWORK</div>
+        <h1 id="telephoneTitle">PUBLIC COMMUNICATION TERMINAL</h1>
+      </div>
+      <button id="telephoneClose" class="telephoneClose" type="button" title="Close telephone">×</button>
+    </div>
+
+    <div id="telephoneStage">
+      <div id="telephoneStickyNote">
+        <div class="stickyTape"></div>
+        <div class="stickyTitle">IMPORTANT NUMBERS</div>
+        <div class="stickyLine"><span>HELNA</span><strong>482-0193</strong></div>
+        <div class="stickyLine"><span>CONCIERGE</span><strong>900-0001</strong></div>
+      </div>
+
+      <div id="telephoneDialSection">
+        <div class="telephoneLabel">DIAL NUMBER</div>
+        <div id="telephoneNumberDisplay">—</div>
+        <div id="telephoneDialStatus" aria-live="polite">READY</div>
+
+        <div id="telephoneKeypad" aria-label="Telephone keypad">
+          <button type="button" class="telephoneKey" data-digit="1">1</button>
+          <button type="button" class="telephoneKey" data-digit="2">2</button>
+          <button type="button" class="telephoneKey" data-digit="3">3</button>
+          <button type="button" class="telephoneKey" data-digit="4">4</button>
+          <button type="button" class="telephoneKey" data-digit="5">5</button>
+          <button type="button" class="telephoneKey" data-digit="6">6</button>
+          <button type="button" class="telephoneKey" data-digit="7">7</button>
+          <button type="button" class="telephoneKey" data-digit="8">8</button>
+          <button type="button" class="telephoneKey" data-digit="9">9</button>
+          <button type="button" class="telephoneKey telephoneKeySpecial" data-action="clear">CLEAR</button>
+          <button type="button" class="telephoneKey" data-digit="0">0</button>
+          <button type="button" class="telephoneKey telephoneKeySpecial" data-action="backspace">⌫</button>
+        </div>
+
+        <button type="button" id="telephoneCallButton">☎ CALL</button>
+        <div id="telephoneConnectionPanel" class="hidden">
+          <div id="telephoneConnectionTitle">LINE CONNECTED</div>
+          <div id="telephoneConnectionTarget"></div>
+          <button type="button" id="telephoneHangupButton">HANG UP</button>
+        </div>
+
+      </div>
+
+      <div id="telephoneDialoguePanel" class="hidden">
+        <div id="telephoneDialogueStatus">SECURE VOICE LINK</div>
+        <div id="telephoneDialogueContent">
+          <div id="telephoneDialoguePortrait" aria-label="Conversation portrait">
+            <canvas id="telephoneDialoguePortraitCanvas"></canvas>
+            <div id="telephoneDialoguePortraitLabel">CONTACT</div>
+          </div>
+          <div id="telephoneDialogueMain">
+            <div id="telephoneDialogueSpeakerName">CONTACT</div>
+            <div id="telephoneDialogueText" aria-live="polite"></div>
+            <div id="telephoneDialogueChoices" aria-label="Dialogue choices"></div>
+            <div id="telephoneConciergeShopPanel" class="hidden" aria-label="Concierge shop">
+              <button type="button" id="telephoneConciergeBuyGoodbye" class="telephoneCommerceGoodbye">GOODBYE</button>
+              <div class="telephoneShopHeader">
+                <div>
+                  <div class="telephoneShopEyebrow">GALACTIC CONCIERGE · ORDER TERMINAL</div>
+                  <h2>AVAILABLE FOR DELIVERY</h2>
+                </div>
+                <div class="telephoneShopCredits" id="telephoneShopCredits">¢0</div>
+              </div>
+              <div id="telephoneConciergeOrderConfirm" class="telephoneOrderConfirm hidden" role="dialog" aria-label="Confirm order">
+                <div class="telephoneOrderConfirmEyebrow">CONFIRM DELIVERY ORDER</div>
+                <div id="telephoneConciergeOrderConfirmItem" class="telephoneOrderConfirmItem">1 × Item</div>
+                <div id="telephoneConciergeOrderConfirmCost" class="telephoneOrderConfirmCost">Total: ¢0</div>
+                <div id="telephoneConciergeOrderConfirmEta" class="telephoneOrderConfirmEta">Delivery arrives in 1m 00s + 5s descent</div>
+                <button type="button" id="telephoneConciergeOrderFastButton" class="telephoneOrderFastButton">DELIVER FASTER · 2× PRICE</button>
+                <div class="telephoneOrderConfirmNote">Expedited delivery cuts the waiting time in half (30–60 seconds); the final 5-second rocket descent stays the same.</div>
+                <div class="telephoneOrderConfirmActions">
+                  <button type="button" id="telephoneConciergeOrderConfirmButton" class="telephoneOrderConfirmButton">ORDER</button>
+                  <button type="button" id="telephoneConciergeOrderCancelButton" class="telephoneOrderCancelButton">CANCEL</button>
+                </div>
+              </div>
+              <div id="telephoneConciergeShopList" class="telephoneShopList"></div>
+              <div id="telephoneConciergeShopStatus" class="telephoneShopStatus" aria-live="polite"></div>
+            </div>
+            <div id="telephoneConciergeSellPanel" class="hidden" aria-label="Concierge sell terminal">
+              <button type="button" id="telephoneConciergeSellGoodbye" class="telephoneCommerceGoodbye">GOODBYE</button>
+              <div class="telephoneShopHeader">
+                <div>
+                  <div class="telephoneShopEyebrow">GALACTIC CONCIERGE · TRADE TERMINAL</div>
+                  <h2>SELL ITEMS</h2>
+                </div>
+                <div class="telephoneShopCredits" id="telephoneConciergeSellCredits">¢0</div>
+              </div>
+              <div class="telephoneSellLayout">
+                <div id="telephoneConciergeSellList" class="telephoneShopList telephoneSellList"></div>
+                <div class="telephoneSellDetails">
+                  <div id="telephoneConciergeSellSelectedName" class="telephoneSellSelectedName">Select an item</div>
+                  <div id="telephoneConciergeSellOwned" class="telephoneSellOwned">Click an item to select it</div>
+                  <div id="telephoneConciergeSellPrice" class="telephoneSellPrice">—</div>
+                  <label>How many? <input id="telephoneConciergeSellQuantity" class="telephoneShopQty" type="number" min="1" value="1"></label>
+                  <div id="telephoneConciergeSellTotal" class="telephoneSellTotal">Total: ¢0</div>
+                  <button type="button" id="telephoneConciergeSellButton" class="telephoneShopOrder" disabled>SELL</button>
+                </div>
+              </div>
+              <div id="telephoneConciergeSellStatus" class="telephoneShopStatus" aria-live="polite"></div>
+            </div>
+          </div>
+        </div>
+        <button type="button" id="telephoneDialogueHangupButton">HANG UP</button>
+      </div>
+    </div>
+
+    <div id="telephoneFooter">USE THE MOUSE TO DIAL · ESC TO CLOSE</div>
   </div>
 </div>
 <div id="warpOverlay" class="hidden" aria-hidden="true">
@@ -700,6 +832,9 @@
 <script src="js/wrench-model-data.js"></script>
 <script src="js/blueprint-model-data.js"></script>
 <script src="js/container-model-data.js"></script>
+<script src="js/telephone-booth-model-data.js"></script>
+<script src="js/sleeping-bag-model-data.js"></script>
+<script src="js/delivery-rocket-model-data.js"></script>
   <script src="js/state/player-state.js"></script>
 <script src="js/state/inventory-state.js"></script>
 <script src="js/state/ui-state.js"></script>
