@@ -2305,25 +2305,23 @@
     // or perspective size attenuation. This makes every star remain visible instead of
     // becoming sub-pixel tiny or being hidden by the giant sky sphere.
     const starPositions = [];
-    // The star field is centered on the actual Sun so it surrounds the WHOLE solar system,
-    // not Ivis/the original world origin. Syspo reaches ~18,000u from the Sun, so the
-    // nearest stars begin beyond the planetary system and the far field extends well past it.
+    // Use an even spherical distribution so there is no sparse "hole" in the middle
+    // of the player's view. A Fibonacci sphere gives much more uniform coverage than
+    // independently random directions, especially with a relatively small star count.
     const STAR_COUNT = 5000;
-    const STAR_CENTER = new THREE.Vector3(520, 120, 150).normalize().multiplyScalar(10000);
     for (let i = 0; i < STAR_COUNT; i++) {
+      // Use genuinely random directions and, importantly, a wide range of depths.
+      // Keeping every star on almost the same radius made the field look like a
+      // giant dotted sphere around the camera. Varying the distance makes the sky
+      // read as an open volume of space instead. The minimum stays just outside the
+      // sky sphere so depth testing still lets the planet/terrain occlude the stars.
       const y = Math.random() * 2 - 1;
       const radial = Math.sqrt(Math.max(0, 1 - y * y));
       const theta = Math.random() * Math.PI * 2;
-      // Broad shell around the Sun: 22,000 -> 180,000 units. This keeps the visible
-      // star field far outside Ivis/Syspo while still filling the entire system.
-      const starRadius = 22000 + Math.pow(Math.random(), 0.58) * 158000;
+      const starRadius = 1455 + Math.pow(Math.random(), 0.62) * 7000;
       const x = Math.cos(theta) * radial;
       const z = Math.sin(theta) * radial;
-      starPositions.push(
-        STAR_CENTER.x + x * starRadius,
-        STAR_CENTER.y + y * starRadius,
-        STAR_CENTER.z + z * starRadius
-      );
+      starPositions.push(x * starRadius, y * starRadius, z * starRadius);
     }
     const starGeo = new THREE.BufferGeometry();
     starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3));
@@ -2334,10 +2332,16 @@
       transparent: true,
       opacity: 0,
       fog: false,
+      // Keep stars white at extreme distance and let nearer terrain/objects occlude them
+      // naturally instead of drawing the stars through the planet. The star sphere is
+      // slightly closer than the sky sphere, so the sky still provides the backdrop.
       depthTest: true,
       depthWrite: false
     });
     const stars = new THREE.Points(starGeo, starMat);
+    // Render the stars after the sky sphere but before normal world geometry.
+    // Depth testing keeps stars behind the planet/terrain while their larger sky radius
+    // and camera-follow behavior keep them visible across the full FOV at any altitude.
     stars.renderOrder = -1;
     stars.frustumCulled = false;
     scene.add(stars);
@@ -3373,7 +3377,6 @@
     const cordeliaRockSpawns = [];
     const cordeliaTungstenSpawns = [];
     const cordeliaCrystalSpawns = [];
-    const cordeliaCactusSpawns = [];
     function scatterCordeliaCacti(count = 140) {
       for (let i = 0; i < count; i++) {
         let dir;
@@ -3386,7 +3389,6 @@
         placeCordeliaProp(cactus, dir, 0.05);
         cactus.rotateY(Math.random() * Math.PI * 2);
         cordeliaMesh.add(cactus);
-        cordeliaCactusSpawns.push({ root: cactus, direction: dir.clone().normalize() });
       }
     }
 
@@ -3817,8 +3819,6 @@
       }
     }
 
-    const ivisFlowerDirs = [];
-
     function scatterFlowers(count) {
       let placed = 0, attempts = 0;
       while (placed < count && attempts < count * 20) {
@@ -3829,7 +3829,6 @@
         if (isWater(dir)) continue;
         const h = heightAt(dir);
         if (h > ROCK_LEVEL) continue;
-        ivisFlowerDirs.push(dir.clone());
 
         const flower = new THREE.Group();
         const stem = new THREE.Mesh(flowerStemGeo, flowerStemMat);
@@ -4030,31 +4029,9 @@
       bird.t = 0;
     }
 
-    // Bird population: 50 total. Five groups of five birds fly in V formations; the
-    // remaining 25 birds fly independently. Packs share one route/timebase so the V stays
-    // together, while each bird keeps its own wing-flap phase for a lively look.
-    const IVIS_BIRD_COUNT = 50;
-    const IVIS_BIRD_PACK_COUNT = 5;
-    const IVIS_BIRD_PACK_SIZE = 5;
-    const ivisBirdPacks = [];
-
-    function makeBirdPack(members) {
-      const leader = members[0];
-      const pack = { leader, members };
-      leader.pack = pack;
-      leader.packSlot = 0;
-      for (let i = 1; i < members.length; i++) {
-        members[i].pack = pack;
-        members[i].packSlot = i;
-      }
-      ivisBirdPacks.push(pack);
-      return pack;
-    }
-
     // Start birds on different directed mountain pairs so the first flock already uses
-    // several parts of Ivis rather than converging on one route. Five groups of five are
-    // deliberately started on different routes/timings; the rest are solo travelers.
-    for (let i = 0; i < IVIS_BIRD_COUNT; i++) {
+    // several parts of Ivis rather than converging on one route.
+    for (let i = 0; i < 10; i++) {
       const routeIndex = i % IVIS_BIRD_ROUTES.length;
       const [routeStart, routeEnd] = IVIS_BIRD_ROUTES[routeIndex];
       const bird = createIvisBird(routeIndex);
@@ -4063,86 +4040,7 @@
       bird.previousMountain = routeStart;
       bird.t = Math.random();
       bird.avoidanceLift = 0;
-      bird.pack = null;
-      bird.packSlot = -1;
       ivisBirds.push(bird);
-    }
-
-    for (let packIndex = 0; packIndex < IVIS_BIRD_PACK_COUNT; packIndex++) {
-      const members = ivisBirds.slice(packIndex * IVIS_BIRD_PACK_SIZE, (packIndex + 1) * IVIS_BIRD_PACK_SIZE);
-      const pack = makeBirdPack(members);
-      const [routeStart, routeEnd] = IVIS_BIRD_ROUTES[(packIndex * 3) % IVIS_BIRD_ROUTES.length];
-      const sharedT = 0.08 + packIndex * 0.14;
-      for (const member of members) {
-        member.routeStart = routeStart;
-        member.routeEnd = routeEnd;
-        member.previousMountain = routeStart;
-        member.t = THREE.MathUtils.clamp(sharedT + (Math.random() - 0.5) * 0.012, 0.02, 0.92);
-        member.avoidanceLift = 0;
-        member.packState = 'FLYING';
-      }
-      pack.leader.t = sharedT;
-    }
-
-    function birdFormationOffset(slot) {
-      // Local tangent-plane V formation: leader at the front, then two staggered rows.
-      // Distances are intentionally generous so five birds remain visually distinct.
-      const forwardBack = [0, 4.8, 4.8, 9.2, 9.2][slot] || 0;
-      const side = [0, -4.2, 4.2, -8.0, 8.0][slot] || 0;
-      return { forwardBack, side };
-    }
-
-    function sampleBirdFormationPosition(sampled, next, slot, extraAltitude = 0) {
-      const normal = sampled.dir.clone().normalize();
-      let forward = next.clone().sub(sampled.position);
-      forward.sub(normal.clone().multiplyScalar(forward.dot(normal)));
-      if (forward.lengthSq() < 1e-8) {
-        forward = new THREE.Vector3().crossVectors(normal, new THREE.Vector3(0, 1, 0));
-        if (forward.lengthSq() < 1e-8) forward = new THREE.Vector3(1, 0, 0);
-      }
-      forward.normalize();
-      const right = new THREE.Vector3().crossVectors(normal, forward).normalize();
-      const form = birdFormationOffset(slot);
-      const offset = forward.clone().multiplyScalar(-form.forwardBack).add(right.clone().multiplyScalar(form.side));
-      const radius = sampled.position.length() + extraAltitude;
-      return offset.lengthSq() > 0
-        ? sampled.position.clone().add(offset).normalize().multiplyScalar(radius)
-        : sampled.position.clone().setLength(radius);
-    }
-
-    function orientBirdToFlightAtPosition(bird, position, nextPosition) {
-      orientBirdToFlight(bird, position, nextPosition);
-    }
-
-    function syncPackRoute(pack, currentMountain) {
-      // Every member shares the leader's route/timestamp. This keeps the V formation intact
-      // when the flock reaches a mountain and picks a new destination.
-      chooseNextBirdRoute(pack.leader, currentMountain);
-      for (const member of pack.members) {
-        if (member === pack.leader) continue;
-        member.routeStart = pack.leader.routeStart;
-        member.routeEnd = pack.leader.routeEnd;
-        member.previousMountain = pack.leader.previousMountain;
-        member.t = pack.leader.t;
-        member.avoidanceLift = pack.leader.avoidanceLift;
-      }
-    }
-
-    function setPackResting(pack) {
-      const restDir = MOUNTAIN_DIRS[pack.leader.routeEnd].clone().normalize();
-      const restPos = restDir.multiplyScalar(birdSurfaceRadius(restDir) + 1.65);
-      for (const member of pack.members) {
-        member.state = 'RESTING';
-        member.restTimer = pack.leader.restTimer;
-        const tangent = new THREE.Vector3().crossVectors(restDir, new THREE.Vector3(0, 1, 0));
-        if (tangent.lengthSq() < 1e-8) tangent.set(1, 0, 0);
-        tangent.normalize();
-        const side = new THREE.Vector3().crossVectors(restDir, tangent).normalize();
-        const form = birdFormationOffset(member.packSlot);
-        const offset = tangent.clone().multiplyScalar(form.side).add(side.clone().multiplyScalar(form.forwardBack));
-        const p = restPos.clone().add(offset).normalize().multiplyScalar(restPos.length());
-        member.root.position.copy(p);
-      }
     }
 
     function updateIvisBirds(delta) {
@@ -4152,32 +4050,21 @@
 
       const now = performance.now();
       const frameSamples = [];
-      const actors = [];
-      const seenActors = new Set();
 
-      function addActor(bird) {
-        const actor = bird.pack ? bird.pack.leader : bird;
-        if (!seenActors.has(actor)) {
-          seenActors.add(actor);
-          actors.push(actor);
-        }
-        return actor;
-      }
-
-      // First advance each solo bird and each pack leader. Pack members inherit the leader's
-      // route/timestamp, which gives the group a genuine moving V instead of five unrelated birds.
+      // First advance each bird and collect its intended, collision-free position.
       for (const bird of ivisBirds) {
-        if (bird.pack && bird !== bird.pack.leader) continue;
+        const route = [bird.routeStart, bird.routeEnd];
 
         if (bird.state === 'RESTING') {
+          const restingDir = MOUNTAIN_DIRS[bird.routeEnd].clone().normalize();
+          const restingPos = restingDir.multiplyScalar(birdSurfaceRadius(restingDir) + 1.65);
+          bird.root.position.copy(restingPos);
+          orientBirdToFlight(bird, restingPos, restingPos.clone().add(restingDir));
+          bird.root.rotation.z = Math.sin(now * 0.0024 + bird.flapPhase) * 0.015;
+          bird.leftWing.rotation.x = -0.08;
+          bird.rightWing.rotation.x = 0.08;
           bird.restTimer -= delta;
-          if (bird.pack) {
-            for (const member of bird.pack.members) member.restTimer = bird.restTimer;
-            if (bird.restTimer <= 0) {
-              syncPackRoute(bird.pack, bird.routeEnd);
-              for (const member of bird.pack.members) member.state = 'FLYING';
-            }
-          } else if (bird.restTimer <= 0) {
+          if (bird.restTimer <= 0) {
             chooseNextBirdRoute(bird, bird.routeEnd);
             bird.state = 'FLYING';
           }
@@ -4189,57 +4076,29 @@
           bird.t = 1;
           bird.state = 'RESTING';
           bird.restTimer = 1.3 + Math.random() * 1.4;
-          if (bird.pack) {
-            bird.pack.leader.t = 1;
-            setPackResting(bird.pack);
-          }
           continue;
         }
 
-        const actor = addActor(bird);
-        if (bird.pack) {
-          for (const member of bird.pack.members) {
-            member.t = bird.t;
-            member.routeStart = bird.routeStart;
-            member.routeEnd = bird.routeEnd;
-          }
-        }
-      }
-
-      // Build per-bird intended positions for collision prediction. Pack members use the same
-      // route sample but receive a tangent-plane V offset around their shared flight center.
-      for (const bird of ivisBirds) {
-        if (bird.pack && bird.state === 'RESTING') continue;
-        const route = [bird.routeStart, bird.routeEnd];
         const sampled = sampleBirdRoute(route, THREE.MathUtils.clamp(bird.t, 0, 1));
         const lookT = THREE.MathUtils.clamp(bird.t + 0.008, 0, 1);
-        const aheadCenter = sampleBirdRoute(route, lookT).position;
-        const current = bird.pack
-          ? sampleBirdFormationPosition(sampled, aheadCenter, bird.packSlot)
-          : sampled.position.clone();
-        const nextCenter = sampleBirdRoute(route, lookT).position;
-        const next = bird.pack
-          ? sampleBirdFormationPosition(sampleBirdRoute(route, lookT), sampleBirdRoute(route, THREE.MathUtils.clamp(bird.t + 0.016, 0, 1)).position, bird.packSlot)
-          : nextCenter.clone();
-        const velocity = next.clone().sub(current).normalize().multiplyScalar(bird.speed);
-        frameSamples.push({ bird, current, next, velocity, actor: addActor(bird), targetLift: 0 });
+        const ahead = sampleBirdRoute(route, lookT).position;
+        const velocity = ahead.clone().sub(sampled.position).normalize().multiplyScalar(bird.speed);
+        frameSamples.push({ bird, sampled, ahead, velocity, targetLift: 0 });
       }
 
-      // Predictive avoidance. Birds in the same V are excluded from collision checks; birds
-      // from different packs/solo travelers get a shared altitude lane so a whole flock keeps
-      // its formation while passing another bird.
+      // Collision avoidance: birds that are closing on each other get separated radially.
+      // One bird takes a gentle altitude lane above the other, preventing face-to-face
+      // clipping while preserving the mountain-to-mountain flight path.
       const COLLISION_CHECK_DISTANCE = 14.0;
       const MIN_SEPARATION = 2.6;
-      const actorLiftTargets = new Map();
       for (let i = 0; i < frameSamples.length; i++) {
         const a = frameSamples[i];
         for (let j = i + 1; j < frameSamples.length; j++) {
           const b = frameSamples[j];
-          if (a.actor === b.actor) continue;
-
-          const deltaPos = a.current.clone().sub(b.current);
+          const deltaPos = a.sampled.position.clone().sub(b.sampled.position);
           const dist = deltaPos.length();
           if (dist > COLLISION_CHECK_DISTANCE) continue;
+
           const relativeVelocity = a.velocity.clone().sub(b.velocity);
           const closing = deltaPos.dot(relativeVelocity) < 0;
           if (!closing && dist > MIN_SEPARATION) continue;
@@ -4249,331 +4108,39 @@
             0, 1
           );
           const lift = urgency * 11.5;
-          const aIndex = ivisBirds.indexOf(a.actor);
-          const bIndex = ivisBirds.indexOf(b.actor);
-          const chosen = aIndex < bIndex ? a.actor : b.actor;
-          actorLiftTargets.set(chosen, Math.max(actorLiftTargets.get(chosen) || 0, lift));
+          // Deterministic priority stops both birds from choosing the same avoidance lane.
+          const aIndex = ivisBirds.indexOf(a.bird);
+          const bIndex = ivisBirds.indexOf(b.bird);
+          if (aIndex < bIndex) {
+            a.targetLift = Math.max(a.targetLift, lift);
+          } else {
+            b.targetLift = Math.max(b.targetLift, lift);
+          }
         }
       }
 
-      for (const bird of actors) {
-        const targetLift = actorLiftTargets.get(bird) || 0;
-        bird.avoidanceLift = THREE.MathUtils.lerp(
-          bird.avoidanceLift,
-          targetLift,
-          1 - Math.exp(-delta * 9)
-        );
-        if (bird.pack) {
-          for (const member of bird.pack.members) member.avoidanceLift = bird.avoidanceLift;
-        }
-      }
-
-      // Apply final positions, orientation and wing animation.
+      // Apply avoidance smoothly so birds don't snap upward when another bird passes by.
       for (const frame of frameSamples) {
         const bird = frame.bird;
-        const actorLift = frame.actor.avoidanceLift || 0;
-        const route = [bird.routeStart, bird.routeEnd];
-        const center = sampleBirdRoute(route, bird.t, actorLift);
-        const lookT = THREE.MathUtils.clamp(bird.t + 0.008, 0, 1);
-        const centerNext = sampleBirdRoute(route, lookT, actorLift);
-        const current = bird.pack
-          ? sampleBirdFormationPosition(center, centerNext.position, bird.packSlot, 0)
-          : center.position;
-        const next = bird.pack
-          ? sampleBirdFormationPosition(centerNext, sampleBirdRoute(route, THREE.MathUtils.clamp(bird.t + 0.016, 0, 1), actorLift).position, bird.packSlot, 0)
-          : centerNext.position;
+        bird.avoidanceLift = THREE.MathUtils.lerp(
+          bird.avoidanceLift,
+          frame.targetLift,
+          1 - Math.exp(-delta * 9)
+        );
 
+        const sampled = sampleBirdRoute(bird.routeStart === frame.sampled.dir ? [0,1] : [bird.routeStart, bird.routeEnd], bird.t, bird.avoidanceLift);
+        // The guard above is only defensive; routeStart/routeEnd are the canonical route.
+        const route = [bird.routeStart, bird.routeEnd];
+        const current = sampleBirdRoute(route, bird.t, bird.avoidanceLift).position;
+        const lookT = THREE.MathUtils.clamp(bird.t + 0.008, 0, 1);
+        const next = sampleBirdRoute(route, lookT, bird.avoidanceLift).position;
         bird.root.position.copy(current);
-        orientBirdToFlightAtPosition(bird, current, next);
+        orientBirdToFlight(bird, current, next);
 
         const flap = Math.sin(now * 0.020 + bird.flapPhase);
         bird.leftWing.rotation.x = -0.55 + flap * 0.75;
         bird.rightWing.rotation.x = 0.55 - flap * 0.75;
         bird.root.rotation.z += Math.sin(now * 0.004 + bird.flapPhase) * 0.0008;
-      }
-
-      // Resting visuals for packs use a compact fan spread across the mountain instead of all
-      // five birds occupying exactly the same landing point.
-      for (const pack of ivisBirdPacks) {
-        if (pack.leader.state !== 'RESTING') continue;
-        const restDir = MOUNTAIN_DIRS[pack.leader.routeEnd].clone().normalize();
-        const restPos = restDir.multiplyScalar(birdSurfaceRadius(restDir) + 1.65);
-        let tangent = new THREE.Vector3().crossVectors(restDir, new THREE.Vector3(0, 1, 0));
-        if (tangent.lengthSq() < 1e-8) tangent.set(1, 0, 0);
-        tangent.normalize();
-        const sideAxis = new THREE.Vector3().crossVectors(restDir, tangent).normalize();
-        for (const member of pack.members) {
-          const form = birdFormationOffset(member.packSlot);
-          const offset = tangent.clone().multiplyScalar(form.side * 0.35).add(sideAxis.clone().multiplyScalar(form.forwardBack * 0.2));
-          const p = restPos.clone().add(offset).normalize().multiplyScalar(restPos.length());
-          member.root.position.copy(p);
-          orientBirdToFlight(member, p, p.clone().add(restDir));
-          member.leftWing.rotation.x = -0.08;
-          member.rightWing.rotation.x = 0.08;
-        }
-      }
-    }
-
-
-    // ---------- Day 13 Phase 1: Ivis butterflies ----------
-    // Stable 3D butterfly implementation. Butterflies are ordinary meshes parented to
-    // planetSystem, so Ivis's spin/orbit carries them automatically. Unlike the earlier
-    // attempts, their placement uses the exact flower anchor radius and their materials are
-    // explicitly unlit + fog-free so they remain visible in the large Ivis world.
-    const ivisButterflies = [];
-    const ivisButterflyGroup = new THREE.Group();
-    ivisButterflyGroup.name = 'IvisWildlifeButterflies';
-    ivisButterflyGroup.frustumCulled = false;
-    planetSystem.add(ivisButterflyGroup);
-
-    const BUTTERFLY_COUNT = 90;
-    const BUTTERFLY_PATCH_COUNT = 20;
-    const BUTTERFLY_SPAWN_DIR = new THREE.Vector3(0, 1, 0);
-    const ivisButterflyPatches = [];
-
-    // Build 20 real flower anchors, with several guaranteed around the actual spawn pole.
-    // The remaining anchors are spread around Ivis so exploration still matters.
-    if (ivisFlowerDirs.length) {
-      const candidates = ivisFlowerDirs.map(d => d.clone().normalize());
-      const wanted = Math.min(BUTTERFLY_PATCH_COUNT, candidates.length);
-      candidates.sort((a, b) => a.angleTo(BUTTERFLY_SPAWN_DIR) - b.angleTo(BUTTERFLY_SPAWN_DIR));
-      const nearCount = Math.min(10, wanted);
-      for (let i = 0; i < nearCount; i++) ivisButterflyPatches.push(candidates[i].clone());
-
-      while (ivisButterflyPatches.length < wanted) {
-        let best = null;
-        let bestScore = -Infinity;
-        for (const dir of candidates) {
-          if (ivisButterflyPatches.some(p => p.angleTo(dir) < 0.06)) continue;
-          let minAngle = Math.PI;
-          for (const picked of ivisButterflyPatches) minAngle = Math.min(minAngle, picked.angleTo(dir));
-          if (minAngle > bestScore) { bestScore = minAngle; best = dir; }
-        }
-        if (!best) break;
-        ivisButterflyPatches.push(best.clone());
-      }
-    }
-
-    // Fog-free/unlit materials keep these tiny creatures readable on the huge planet.
-    const butterflyBodyMaterial = new THREE.MeshBasicMaterial({
-      color: 0x1c3140, fog: false
-    });
-    const butterflyHeadMaterial = new THREE.MeshBasicMaterial({
-      color: 0x10232d, fog: false
-    });
-    const butterflyWingUpperMaterial = new THREE.MeshBasicMaterial({
-      color: 0x5b96ff, side: THREE.DoubleSide, fog: false
-    });
-    const butterflyWingLowerMaterial = new THREE.MeshBasicMaterial({
-      color: 0x315bd7, side: THREE.DoubleSide, fog: false
-    });
-
-    const butterflyBodyGeometry = new THREE.CylinderGeometry(0.10, 0.13, 0.42, 8);
-    const butterflyHeadGeometry = new THREE.SphereGeometry(0.11, 8, 6);
-    const butterflyWingShape = new THREE.Shape();
-    butterflyWingShape.moveTo(0, 0);
-    butterflyWingShape.bezierCurveTo(0.18, 0.34, 0.60, 0.48, 0.82, 0.14);
-    butterflyWingShape.bezierCurveTo(0.60, -0.02, 0.25, -0.03, 0, 0);
-    const butterflyWingGeometry = new THREE.ShapeGeometry(butterflyWingShape);
-
-    function createIvisButterfly(index) {
-      const butterfly = new THREE.Group();
-      butterfly.name = 'IvisButterfly';
-      butterfly.frustumCulled = false;
-      butterfly.renderOrder = 10;
-
-      const body = new THREE.Mesh(butterflyBodyGeometry, butterflyBodyMaterial);
-      body.rotation.z = Math.PI / 2;
-      body.frustumCulled = false;
-      butterfly.add(body);
-
-      const head = new THREE.Mesh(butterflyHeadGeometry, butterflyHeadMaterial);
-      head.position.x = 0.28;
-      head.frustumCulled = false;
-      butterfly.add(head);
-
-      const upperLeft = new THREE.Group();
-      const upperRight = new THREE.Group();
-      const lowerLeft = new THREE.Group();
-      const lowerRight = new THREE.Group();
-      butterfly.add(upperLeft, upperRight, lowerLeft, lowerRight);
-
-      function addWing(target, sign, material, scale) {
-        const wing = new THREE.Mesh(butterflyWingGeometry, material);
-        wing.position.z = 0;
-        wing.scale.setScalar(scale);
-        wing.rotation.y = sign * 0.28;
-        wing.frustumCulled = false;
-        target.add(wing);
-      }
-
-      // Wing groups are offset only along the body axis, keeping the roots visibly joined.
-      upperLeft.position.z = 0.035;
-      upperRight.position.z = -0.035;
-      lowerLeft.position.z = 0.015;
-      lowerRight.position.z = -0.015;
-      addWing(upperLeft, -1, butterflyWingUpperMaterial, 1.0);
-      addWing(upperRight, 1, butterflyWingUpperMaterial, 1.0);
-      addWing(lowerLeft, -1, butterflyWingLowerMaterial, 0.72);
-      addWing(lowerRight, 1, butterflyWingLowerMaterial, 0.72);
-
-      butterfly.scale.setScalar(0.6);
-      ivisButterflyGroup.add(butterfly);
-
-      const patchIndex = index % Math.max(1, ivisButterflyPatches.length);
-      return {
-        root: butterfly,
-        upperLeft,
-        upperRight,
-        lowerLeft,
-        lowerRight,
-        patchIndex,
-        targetPatchIndex: patchIndex,
-        state: 'RESTING',
-        flightT: 0,
-        flightDuration: 1.5,
-        flutterPhase: Math.random() * Math.PI * 2,
-        driftPhase: Math.random() * Math.PI * 2,
-        driftRadius: 0.35 + Math.random() * 0.9,
-        driftAngle: Math.random() * Math.PI * 2,
-        currentForward: new THREE.Vector3(1, 0, 0)
-      };
-    }
-
-    function butterflySurfaceRadius(dir) {
-      return PLANET_RADIUS + heightAt(dir);
-    }
-
-    function butterflyTangentBasis(dir) {
-      const normal = dir.clone().normalize();
-      let tangent = new THREE.Vector3().crossVectors(normal, new THREE.Vector3(0, 1, 0));
-      if (tangent.lengthSq() < 1e-8) tangent.set(1, 0, 0);
-      tangent.normalize();
-      const side = new THREE.Vector3().crossVectors(normal, tangent).normalize();
-      return { normal, tangent, side };
-    }
-
-    function butterflyPatchPosition(patchIndex, driftAngle, driftRadius, extraHeight = 2.0) {
-      const dir = ivisButterflyPatches[patchIndex].clone().normalize();
-      const { normal, tangent, side } = butterflyTangentBasis(dir);
-      const offset = tangent.clone().multiplyScalar(Math.cos(driftAngle) * driftRadius)
-        .add(side.clone().multiplyScalar(Math.sin(driftAngle) * driftRadius));
-      const radius = butterflySurfaceRadius(dir) + extraHeight;
-      return normal.multiplyScalar(radius).add(offset);
-    }
-
-    function chooseButterflyFlightTarget(butterfly) {
-      if (ivisButterflyPatches.length < 2) return false;
-      let next = butterfly.patchIndex;
-      for (let tries = 0; tries < 12 && next === butterfly.patchIndex; tries++) {
-        next = Math.floor(Math.random() * ivisButterflyPatches.length);
-      }
-      if (next === butterfly.patchIndex) next = (butterfly.patchIndex + 1) % ivisButterflyPatches.length;
-      butterfly.targetPatchIndex = next;
-      butterfly.flightT = 0;
-      butterfly.flightDuration = 2.2 + Math.random() * 1.0;
-      butterfly.state = 'FLEEING';
-      return true;
-    }
-
-    function slerpDirection(a, b, t) {
-      const angle = a.angleTo(b);
-      if (angle < 1e-6) return a.clone().lerp(b, t).normalize();
-      const sinAngle = Math.sin(angle);
-      if (Math.abs(sinAngle) < 1e-6) return a.clone().lerp(b, t).normalize();
-      return a.clone().multiplyScalar(Math.sin((1 - t) * angle) / sinAngle)
-        .add(b.clone().multiplyScalar(Math.sin(t * angle) / sinAngle))
-        .normalize();
-    }
-
-    function sampleButterflyFlight(startPatch, endPatch, t) {
-      const startDir = ivisButterflyPatches[startPatch].clone().normalize();
-      const endDir = ivisButterflyPatches[endPatch].clone().normalize();
-      const dir = slerpDirection(startDir, endDir, t);
-      const baseR = THREE.MathUtils.lerp(butterflySurfaceRadius(startDir), butterflySurfaceRadius(endDir), t);
-      const arc = Math.sin(Math.PI * t) * 3.5;
-      return { dir, position: dir.multiplyScalar(baseR + 2.0 + arc) };
-    }
-
-    function orientButterflyToFlight(butterfly, position, nextPosition) {
-      const normal = position.clone().normalize();
-      let forward = nextPosition.clone().sub(position);
-      forward.sub(normal.clone().multiplyScalar(forward.dot(normal)));
-      if (forward.lengthSq() < 1e-8) {
-        forward = new THREE.Vector3().crossVectors(normal, new THREE.Vector3(0, 1, 0));
-        if (forward.lengthSq() < 1e-8) forward.set(1, 0, 0);
-      }
-      forward.normalize();
-      const right = new THREE.Vector3().crossVectors(normal, forward).normalize();
-      const correctedForward = new THREE.Vector3().crossVectors(right, normal).normalize();
-      const matrix = new THREE.Matrix4().makeBasis(correctedForward, normal, right);
-      butterfly.root.quaternion.setFromRotationMatrix(matrix);
-      butterfly.currentForward.copy(correctedForward);
-    }
-
-    // Guarantee a visible local population near the spawn area while still maintaining all
-    // 20 patches around the planet. This prevents the first-person player from starting in an
-    // empty area even on a different random flower distribution.
-    for (let i = 0; i < BUTTERFLY_COUNT && ivisButterflyPatches.length; i++) {
-      const butterfly = createIvisButterfly(i);
-      butterfly.driftAngle += i * 0.71;
-      const pos = butterflyPatchPosition(butterfly.patchIndex, butterfly.driftAngle, butterfly.driftRadius, 2.15);
-      butterfly.root.position.copy(pos);
-      orientButterflyToFlight(butterfly, pos, pos.clone().add(new THREE.Vector3(0.25, 0.18, 0.12)));
-      ivisButterflies.push(butterfly);
-    }
-
-    function updateIvisButterflies(delta) {
-      const onIvis = state.gameState === 'playing' && !state.paused && !playerState.inRocket &&
-        !moonWalking && !cordeliaWalking && !omegaWalkingBodyId && ivisButterflyPatches.length > 1;
-      ivisButterflyGroup.visible = onIvis;
-      if (!onIvis) return;
-
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
-      const now = performance.now();
-      for (const butterfly of ivisButterflies) {
-        const worldPos = butterfly.root.getWorldPosition(new THREE.Vector3());
-        const nearby = worldPos.distanceTo(playerWorld) < 8.0;
-
-        if (butterfly.state === 'RESTING') {
-          if (nearby) {
-            chooseButterflyFlightTarget(butterfly);
-          } else {
-            butterfly.driftAngle += delta * (0.55 + Math.sin(butterfly.driftPhase) * 0.08);
-            const resting = butterflyPatchPosition(
-              butterfly.patchIndex,
-              butterfly.driftAngle + Math.sin(now * 0.0016 + butterfly.driftPhase) * 0.35,
-              butterfly.driftRadius,
-              2.05 + Math.sin(now * 0.003 + butterfly.flutterPhase) * 0.22
-            );
-            const next = butterflyPatchPosition(butterfly.patchIndex, butterfly.driftAngle + 0.08, butterfly.driftRadius, 2.05);
-            butterfly.root.position.copy(resting);
-            orientButterflyToFlight(butterfly, resting, next);
-          }
-        } else {
-          butterfly.flightT += delta / butterfly.flightDuration;
-          const t = THREE.MathUtils.clamp(butterfly.flightT, 0, 1);
-          const sample = sampleButterflyFlight(butterfly.patchIndex, butterfly.targetPatchIndex, t);
-          const ahead = sampleButterflyFlight(
-            butterfly.patchIndex,
-            butterfly.targetPatchIndex,
-            THREE.MathUtils.clamp(t + 0.03, 0, 1)
-          );
-          butterfly.root.position.copy(sample.position);
-          orientButterflyToFlight(butterfly, sample.position, ahead.position);
-          if (t >= 1) {
-            butterfly.patchIndex = butterfly.targetPatchIndex;
-            butterfly.state = 'RESTING';
-            butterfly.driftAngle = Math.random() * Math.PI * 2;
-            butterfly.driftRadius = 0.35 + Math.random() * 0.9;
-          }
-        }
-
-        const flap = Math.sin(now * 0.020 + butterfly.flutterPhase);
-        butterfly.upperLeft.rotation.x = -0.42 - flap * 0.78;
-        butterfly.upperRight.rotation.x = 0.42 + flap * 0.78;
-        butterfly.lowerLeft.rotation.x = -0.30 - flap * 0.56;
-        butterfly.lowerRight.rotation.x = 0.30 + flap * 0.56;
       }
     }
 
@@ -6204,302 +5771,6 @@
     // Build Cordelia's surface detail only after the crystal visual factory exists.
     const cordelia = createCordelia();
     scatterCordeliaCacti();
-
-
-    // ---------- Day 13 Phase 1: Cordelia silverfish ----------
-    // Small 3D black insects. They prefer Cordelia's bright hemisphere and flee to a nearby
-    // cactus when the player approaches. The whole system lives under cordeliaMesh so the
-    // insects follow Cordelia's rotation and solar orbit automatically.
-    const cordeliaSilverfish = [];
-    const cordeliaSilverfishGroup = new THREE.Group();
-    cordeliaSilverfishGroup.name = 'CordeliaWildlifeSilverfish';
-    cordeliaSilverfishGroup.frustumCulled = false;
-    cordeliaMesh.add(cordeliaSilverfishGroup);
-
-    const SILVERFISH_COUNT = 15;
-    const SILVERFISH_PLAYER_RADIUS = 7.0;
-    const SILVERFISH_HIDE_RADIUS = 0.75;
-    const SILVERFISH_WANDER_SPEED = 0.16;
-    const SILVERFISH_FLEE_DURATION = 1.45;
-    const SILVERFISH_SURFACE_HEIGHT = 0.72;
-    const SILVERFISH_BRIGHTNESS_THRESHOLD = 0.24;
-
-    const silverfishBodyMaterial = new THREE.MeshBasicMaterial({ color: 0x111111, fog: false });
-    const silverfishHeadMaterial = new THREE.MeshBasicMaterial({ color: 0x0a0a0a, fog: false });
-    const silverfishLegMaterial = new THREE.MeshBasicMaterial({ color: 0x292929, fog: false });
-    const silverfishBodyGeometry = new THREE.SphereGeometry(0.13, 8, 6);
-    const silverfishHeadGeometry = new THREE.SphereGeometry(0.08, 8, 6);
-    const silverfishTailGeometry = new THREE.ConeGeometry(0.07, 0.18, 6);
-    const silverfishLegGeometry = new THREE.CylinderGeometry(0.015, 0.012, 0.18, 5);
-    const silverfishAntennaGeometry = new THREE.CylinderGeometry(0.008, 0.006, 0.12, 5);
-
-    function createCordeliaSilverfish() {
-      const bug = new THREE.Group();
-      bug.name = 'CordeliaSilverfish';
-      bug.frustumCulled = false;
-
-      const body = new THREE.Mesh(silverfishBodyGeometry, silverfishBodyMaterial);
-      body.scale.set(1.55, 0.66, 0.66);
-      body.frustumCulled = false;
-      bug.add(body);
-
-      const head = new THREE.Mesh(silverfishHeadGeometry, silverfishHeadMaterial);
-      head.position.z = 0.16;
-      head.frustumCulled = false;
-      bug.add(head);
-
-      const tail = new THREE.Mesh(silverfishTailGeometry, silverfishBodyMaterial);
-      tail.rotation.x = -Math.PI / 2;
-      tail.position.z = -0.18;
-      tail.frustumCulled = false;
-      bug.add(tail);
-
-      for (let i = 0; i < 3; i++) {
-        const left = new THREE.Mesh(silverfishLegGeometry, silverfishLegMaterial);
-        left.rotation.z = Math.PI / 2;
-        left.rotation.y = 0.2;
-        left.position.set(0, (i - 1) * 0.05, -0.02);
-        bug.add(left);
-        const right = left.clone();
-        right.rotation.y = -0.2;
-        right.position.z = 0.02;
-        bug.add(right);
-      }
-
-      for (const sign of [-1, 1]) {
-        const antenna = new THREE.Mesh(silverfishAntennaGeometry, silverfishLegMaterial);
-        antenna.rotation.x = -0.6;
-        antenna.rotation.z = sign * 0.2;
-        antenna.position.set(0.01, 0.05, sign * 0.07);
-        bug.add(antenna);
-      }
-
-      cordeliaSilverfishGroup.add(bug);
-      return bug;
-    }
-
-    function silverfishSurfaceRadius(dir) {
-      return CORDELIA_RADIUS + cordeliaHeightAt(dir);
-    }
-
-    function getCordeliaSunDirectionLocal() {
-      const center = cordeliaMesh.getWorldPosition(new THREE.Vector3());
-      const sunWorld = sunMesh.getWorldPosition(new THREE.Vector3());
-      const local = sunWorld.sub(center);
-      if (local.lengthSq() < 1e-8) return new THREE.Vector3(0, 1, 0);
-      return local.applyQuaternion(cordeliaMesh.quaternion.clone().invert()).normalize();
-    }
-
-    function silverfishBrightness(dir) {
-      return dir.clone().normalize().dot(getCordeliaSunDirectionLocal());
-    }
-
-    function findNearestCordeliaCactus(fromDir, requireBright = false) {
-      if (!cordeliaCactusSpawns.length) return -1;
-      let bestIndex = -1;
-      let bestAngle = Infinity;
-      for (let i = 0; i < cordeliaCactusSpawns.length; i++) {
-        const d = cordeliaCactusSpawns[i].direction;
-        if (requireBright && d.dot(getCordeliaSunDirectionLocal()) < SILVERFISH_BRIGHTNESS_THRESHOLD) continue;
-        const angle = Math.acos(THREE.MathUtils.clamp(fromDir.dot(d), -1, 1));
-        if (angle < bestAngle) { bestAngle = angle; bestIndex = i; }
-      }
-      if (bestIndex >= 0) return bestIndex;
-      for (let i = 0; i < cordeliaCactusSpawns.length; i++) {
-        const d = cordeliaCactusSpawns[i].direction;
-        const angle = Math.acos(THREE.MathUtils.clamp(fromDir.dot(d), -1, 1));
-        if (angle < bestAngle) { bestAngle = angle; bestIndex = i; }
-      }
-      return bestIndex;
-    }
-
-    function chooseSilverfishWanderTarget(bug) {
-      const preferred = [];
-      const sunDir = getCordeliaSunDirectionLocal();
-      for (let i = 0; i < cordeliaCactusSpawns.length; i++) {
-        const d = cordeliaCactusSpawns[i].direction;
-        if (d.dot(sunDir) > SILVERFISH_BRIGHTNESS_THRESHOLD) preferred.push(i);
-      }
-      let cactusIndex = -1;
-      if (preferred.length) cactusIndex = preferred[Math.floor(Math.random() * preferred.length)];
-      else cactusIndex = findNearestCordeliaCactus(bug.direction, false);
-      if (cactusIndex < 0) return false;
-
-      const anchor = cordeliaCactusSpawns[cactusIndex].direction.clone().normalize();
-      const tangent = new THREE.Vector3().crossVectors(anchor, sunDir);
-      if (tangent.lengthSq() < 1e-8) tangent.set(1, 0, 0).projectOnPlane(anchor).normalize();
-      else tangent.normalize();
-      const side = new THREE.Vector3().crossVectors(anchor, tangent).normalize();
-      const theta = Math.random() * Math.PI * 2;
-      const radius = 0.16 + Math.random() * 0.55;
-      const target = anchor.clone()
-        .multiplyScalar(Math.cos(radius))
-        .add(tangent.clone().multiplyScalar(Math.sin(radius) * Math.cos(theta)))
-        .add(side.clone().multiplyScalar(Math.sin(radius) * Math.sin(theta)))
-        .normalize();
-      bug.targetCactus = cactusIndex;
-      bug.targetDir.copy(target);
-      bug.state = 'WANDERING';
-      return true;
-    }
-
-    function beginSilverfishFlee(bug, playerDir) {
-      const from = bug.direction.clone().normalize();
-      const nearest = findNearestCordeliaCactus(from, false);
-      if (nearest < 0) return;
-      let best = nearest;
-      const bestDir = cordeliaCactusSpawns[best].direction;
-      if (bestDir.angleTo(from) < 0.10 && cordeliaCactusSpawns.length > 1) {
-        let bestAngle = Infinity;
-        for (let i = 0; i < cordeliaCactusSpawns.length; i++) {
-          if (i === best) continue;
-          const a = from.angleTo(cordeliaCactusSpawns[i].direction);
-          if (a < bestAngle) { bestAngle = a; best = i; }
-        }
-      }
-      bug.state = 'FLEEING';
-      bug.flightT = 0;
-      bug.fleeStart.copy(from);
-      bug.fleeTarget.copy(cordeliaCactusSpawns[best].direction).normalize();
-      bug.targetCactus = best;
-    }
-
-    function emergeSilverfish(bug) {
-      bug.hidden = false;
-      bug.root.visible = true;
-      bug.state = 'EMERGING';
-      bug.stateT = 0;
-      chooseSilverfishWanderTarget(bug);
-    }
-
-    function orientSilverfish(bug, position, nextPosition) {
-      const normal = position.clone().normalize();
-      let forward = nextPosition.clone().sub(position);
-      forward.sub(normal.clone().multiplyScalar(forward.dot(normal)));
-      if (forward.lengthSq() < 1e-8) {
-        forward = new THREE.Vector3().crossVectors(normal, new THREE.Vector3(0, 1, 0));
-        if (forward.lengthSq() < 1e-8) forward.set(1, 0, 0);
-      }
-      forward.normalize();
-      const right = new THREE.Vector3().crossVectors(normal, forward).normalize();
-      const correctedForward = new THREE.Vector3().crossVectors(right, normal).normalize();
-      bug.root.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, normal, correctedForward));
-    }
-
-    function buildSilverfishPopulation() {
-      cordeliaSilverfish.length = 0;
-      if (!cordeliaCactusSpawns.length) return;
-      const sunDir = getCordeliaSunDirectionLocal();
-      const brightCacti = cordeliaCactusSpawns
-        .map((c, i) => ({ i, score: c.direction.dot(sunDir) }))
-        .filter(x => x.score > SILVERFISH_BRIGHTNESS_THRESHOLD)
-        .sort((a, b) => b.score - a.score);
-      for (let i = 0; i < SILVERFISH_COUNT; i++) {
-        const root = createCordeliaSilverfish();
-        const pool = brightCacti.length ? brightCacti : cordeliaCactusSpawns.map((_, idx) => ({ i: idx }));
-        const cactusIndex = pool[i % pool.length].i;
-        const anchor = cordeliaCactusSpawns[cactusIndex].direction.clone().normalize();
-        const jitter = 0.16 + Math.random() * 0.55;
-        const axis = new THREE.Vector3().crossVectors(anchor, sunDir);
-        if (axis.lengthSq() < 1e-8) axis.set(1, 0, 0).projectOnPlane(anchor).normalize();
-        else axis.normalize();
-        const side = new THREE.Vector3().crossVectors(anchor, axis).normalize();
-        const theta = Math.random() * Math.PI * 2;
-        let dir = anchor.clone()
-          .multiplyScalar(Math.cos(jitter))
-          .add(axis.clone().multiplyScalar(Math.sin(jitter) * Math.cos(theta)))
-          .add(side.clone().multiplyScalar(Math.sin(jitter) * Math.sin(theta)))
-          .normalize();
-        // Nudge the first local population firmly onto the lit half so the player can see them.
-        if (i < Math.min(20, SILVERFISH_COUNT) && dir.dot(sunDir) < 0.30) dir = sunDir.clone();
-        const bug = {
-          root,
-          direction: dir,
-          targetDir: dir.clone(),
-          fleeStart: dir.clone(),
-          fleeTarget: anchor.clone(),
-          targetCactus: cactusIndex,
-          state: 'WANDERING',
-          stateT: Math.random() * 2.0,
-          flightT: 0,
-          hidden: false,
-          wanderPhase: Math.random() * Math.PI * 2,
-          wigglePhase: Math.random() * Math.PI * 2
-        };
-        root.position.copy(dir.clone().multiplyScalar(silverfishSurfaceRadius(dir) + SILVERFISH_SURFACE_HEIGHT));
-        cordeliaSilverfish.push(bug);
-      }
-    }
-
-    function updateCordeliaSilverfish(delta) {
-      const active = state.gameState === 'playing' && cordeliaWalking && !state.paused && cordeliaCactusSpawns.length;
-      cordeliaSilverfishGroup.visible = !!active;
-      if (!active) return;
-
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
-      const playerLocal = cordeliaMesh.worldToLocal(playerWorld.clone());
-      const playerDir = playerLocal.clone().normalize();
-      const sunDir = getCordeliaSunDirectionLocal();
-      const now = performance.now();
-
-      for (const bug of cordeliaSilverfish) {
-        const distance = bug.root.getWorldPosition(new THREE.Vector3()).distanceTo(playerWorld);
-        const nearPlayer = distance < SILVERFISH_PLAYER_RADIUS;
-
-        if (bug.state === 'HIDDEN') {
-          if (!nearPlayer) {
-            emergeSilverfish(bug);
-          } else {
-            bug.root.visible = false;
-          }
-          continue;
-        }
-
-        if ((bug.state === 'WANDERING' || bug.state === 'EMERGING') && nearPlayer) {
-          beginSilverfishFlee(bug, playerDir);
-        }
-
-        if (bug.state === 'WANDERING') {
-          // Keep the wandering area on the brighter side of Cordelia. If the current patch
-          // rotates into darkness, gently retarget to a lit cactus region.
-          if (bug.direction.dot(sunDir) < -0.02 || Math.random() < delta * 0.10) {
-            chooseSilverfishWanderTarget(bug);
-          }
-          const step = Math.min(1, delta * SILVERFISH_WANDER_SPEED);
-          bug.direction.copy(slerpDirection(bug.direction, bug.targetDir, step));
-          bug.stateT += delta;
-          if (bug.stateT > 1.1 + Math.random() * 1.5 || bug.direction.angleTo(bug.targetDir) < 0.035) {
-            bug.stateT = 0;
-            chooseSilverfishWanderTarget(bug);
-          }
-        } else if (bug.state === 'EMERGING') {
-          bug.stateT += delta;
-          if (bug.stateT > 0.3 && !nearPlayer) bug.state = 'WANDERING';
-        } else if (bug.state === 'FLEEING') {
-          bug.flightT += delta / SILVERFISH_FLEE_DURATION;
-          const t = THREE.MathUtils.clamp(bug.flightT, 0, 1);
-          const eased = t * t * (3 - 2 * t);
-          bug.direction.copy(slerpDirection(bug.fleeStart, bug.fleeTarget, eased));
-          if (t >= 1 || bug.direction.angleTo(bug.fleeTarget) < 0.04) {
-            bug.direction.copy(bug.fleeTarget);
-            bug.state = 'HIDDEN';
-            bug.stateT = 0;
-            bug.root.visible = false;
-            continue;
-          }
-        }
-
-        const dir = bug.direction.clone().normalize();
-        const wobble = Math.sin(now * 0.004 + bug.wigglePhase) * 0.028;
-        const pos = dir.clone().multiplyScalar(silverfishSurfaceRadius(dir) + SILVERFISH_SURFACE_HEIGHT + wobble);
-        const aheadDir = bug.state === 'FLEEING' ? slerpDirection(dir, bug.fleeTarget, 0.04) : slerpDirection(dir, bug.targetDir, 0.07);
-        const nextPos = aheadDir.clone().multiplyScalar(silverfishSurfaceRadius(aheadDir) + SILVERFISH_SURFACE_HEIGHT);
-        bug.root.position.copy(pos);
-        orientSilverfish(bug, pos, nextPos);
-      }
-    }
-
-    buildSilverfishPopulation();
     scatterCordeliaBoulders();
 
     function spawnCordeliaTungsten(dir, scale=.95) {
@@ -7325,424 +6596,6 @@
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
       group.add(disk);
       auroraMesh.add(group);
-    }
-
-    // ---------- Day 13 Phase 1: Mileria rock crawlers ----------
-    // Tiny crystal-like creatures that camouflage themselves as ordinary Milerian minerals
-    // until the player approaches. When disturbed, they dart across the surface at a steady
-    // speed of about 2 world units/second and settle again once they have put enough distance
-    // between themselves and the player. They live under mileriaMesh, so Mileria's own orbit and
-    // rotation carry them automatically.
-    const mileriaRockCrawlers = [];
-    const mileriaRockCrawlerGroup = new THREE.Group();
-    mileriaRockCrawlerGroup.name = 'MileriaRockCrawlers';
-    mileriaRockCrawlerGroup.frustumCulled = false;
-    mileriaMesh.add(mileriaRockCrawlerGroup);
-
-    const MILERIA_ROCK_CRAWLER_COUNT = 5;
-    const MILERIA_ROCK_CRAWLER_SPEED = 2.6;
-    const MILERIA_ROCK_CRAWLER_ALERT_RADIUS = 4.8;
-    const MILERIA_ROCK_CRAWLER_CALM_RADIUS = 11.5;
-    const MILERIA_ROCK_CRAWLER_SURFACE_OFFSET = 0.10;
-
-    // Each crawler gets its own mineral hue so a group of five feels like a collection of
-    // naturally occurring crystals rather than five copies of the same creature.
-    const ROCK_CRAWLER_HUES = [
-      { main: 0x55d8ff, dark: 0x2477a8, glow: 0x9eeeff },
-      { main: 0xa96dff, dark: 0x5b348f, glow: 0xd9b7ff },
-      { main: 0xffb84d, dark: 0xa66a1a, glow: 0xffdf9b },
-      { main: 0x64e88f, dark: 0x2b8050, glow: 0xb7ffd0 },
-      { main: 0xff6fcf, dark: 0x9b3f7f, glow: 0xffb9e7 }
-    ];
-    const rockCrawlerShardA = new THREE.OctahedronGeometry(0.34, 0);
-    const rockCrawlerShardB = new THREE.OctahedronGeometry(0.22, 0);
-    const rockCrawlerShardC = new THREE.TetrahedronGeometry(0.18, 0);
-
-    function createMileriaRockCrawler(hueSet, index) {
-      const crawler = new THREE.Group();
-      crawler.name = 'MileriaRockCrawler';
-      crawler.frustumCulled = false;
-
-      const mainMat = new THREE.MeshStandardMaterial({
-        color: hueSet.main,
-        roughness: 0.22,
-        metalness: 0.28,
-        emissive: hueSet.main,
-        emissiveIntensity: 0.16,
-        flatShading: true,
-        fog: false
-      });
-      const darkMat = new THREE.MeshStandardMaterial({
-        color: hueSet.dark,
-        roughness: 0.38,
-        metalness: 0.16,
-        emissive: hueSet.dark,
-        emissiveIntensity: 0.08,
-        flatShading: true,
-        fog: false
-      });
-      const glintMat = new THREE.MeshBasicMaterial({
-        color: hueSet.glow,
-        transparent: true,
-        opacity: 0.82,
-        depthWrite: false,
-        fog: false
-      });
-
-      // Deliberately crystal-like silhouette: while resting these should be easy to mistake
-      // for an ordinary mineral shard on Mileria's rocky ground.
-      const main = new THREE.Mesh(rockCrawlerShardA, mainMat);
-      main.scale.set(0.72, 1.15, 0.82);
-      main.rotation.z = (Math.random() - 0.5) * 0.18;
-      crawler.add(main);
-
-      const sideA = new THREE.Mesh(rockCrawlerShardB, darkMat);
-      sideA.position.set(0.18, 0.08, 0.10);
-      sideA.rotation.set(0.15, 0.35, -0.22);
-      sideA.scale.y = 1.25;
-      crawler.add(sideA);
-
-      const sideB = new THREE.Mesh(rockCrawlerShardC, mainMat);
-      sideB.position.set(-0.16, -0.02, -0.10);
-      sideB.rotation.set(-0.22, -0.30, 0.18);
-      crawler.add(sideB);
-
-      // Tiny glints catch the eye without making the crawler look like a particle effect.
-      const glintGroup = new THREE.Group();
-      glintGroup.name = 'CrystalGlints';
-      const glintGeo = new THREE.SphereGeometry(0.045, 5, 5);
-      const glints = [];
-      const glintOffsets = [
-        new THREE.Vector3(0.16, 0.22, 0.12),
-        new THREE.Vector3(-0.13, 0.10, -0.16),
-        new THREE.Vector3(0.02, 0.34, -0.06)
-      ];
-      glintOffsets.forEach((offset, glintIndex) => {
-        const glint = new THREE.Mesh(glintGeo, glintMat);
-        glint.position.copy(offset);
-        glint.userData.phase = index * 1.7 + glintIndex * 2.1;
-        glint.userData.baseScale = 0.72 + glintIndex * 0.10;
-        glintGroup.add(glint);
-        glints.push(glint);
-      });
-      crawler.add(glintGroup);
-      crawler.userData.crystalGlints = glints;
-      crawler.userData.crystalHue = hueSet;
-
-      crawler.scale.setScalar(0.78 + Math.random() * 0.16);
-      return crawler;
-    }
-
-    function rockCrawlerChooseDirectionAwayFromPlayer(crawler) {
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
-      const playerLocal = mileriaMesh.worldToLocal(playerWorld.clone());
-      let currentDir = crawler.root.position.clone().normalize();
-      let away = currentDir.clone().sub(playerLocal.normalize());
-      away.sub(currentDir.clone().multiplyScalar(away.dot(currentDir)));
-      if (away.lengthSq() < 1e-8) {
-        away = new THREE.Vector3(-currentDir.z, 0, currentDir.x);
-        if (away.lengthSq() < 1e-8) away.set(1, 0, 0);
-        away.sub(currentDir.clone().multiplyScalar(away.dot(currentDir)));
-      }
-      away.normalize();
-
-      // Add a small deterministic-looking lateral variation so five crawlers don't all flee
-      // in exactly the same line when the player approaches a cluster.
-      const tangentSide = new THREE.Vector3().crossVectors(currentDir, away).normalize();
-      const lateral = Math.sin(crawler.phase) * 0.28;
-      away.addScaledVector(tangentSide, lateral).normalize();
-
-      crawler.fleeTargetDir = currentDir.clone();
-      crawler.fleeDirection = away;
-      crawler.state = 'FLEEING';
-    }
-
-    function rockCrawlerAdvance(crawler, delta) {
-      const dir = crawler.root.position.clone().normalize();
-      const tangent = crawler.fleeDirection.clone();
-      tangent.sub(dir.clone().multiplyScalar(tangent.dot(dir)));
-      if (tangent.lengthSq() < 1e-8) return;
-      tangent.normalize();
-      const angularStep = (MILERIA_ROCK_CRAWLER_SPEED * delta) / Math.max(1, MILERIA_RADIUS);
-      const axis = new THREE.Vector3().crossVectors(dir, tangent).normalize();
-      const q = new THREE.Quaternion().setFromAxisAngle(axis, angularStep);
-      const nextDir = dir.clone().applyQuaternion(q).normalize();
-      const h = mileriaHeightAt(nextDir);
-      crawler.root.position.copy(nextDir).multiplyScalar(MILERIA_RADIUS + h + MILERIA_ROCK_CRAWLER_SURFACE_OFFSET);
-      crawler.root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), nextDir);
-      crawler.root.rotateY(crawler.yaw);
-
-      // A tiny body tilt while moving sells the otherwise motionless crystal silhouette.
-      crawler.root.rotation.x += Math.sin(crawler.time * 12.0) * 0.025;
-    }
-
-    function buildMileriaRockCrawlerPopulation() {
-      mileriaRockCrawlerGroup.clear();
-      mileriaRockCrawlers.length = 0;
-      const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-      for (let i = 0; i < MILERIA_ROCK_CRAWLER_COUNT; i++) {
-        // Keep the five creatures well separated across Mileria instead of placing them all
-        // around one landing area. This keeps them genuinely rare.
-        const y = 0.78 - i * 0.31;
-        const radial = Math.sqrt(Math.max(0.02, 1 - y * y));
-        const angle = 0.85 + i * goldenAngle * 1.37;
-        const dir = new THREE.Vector3(Math.cos(angle) * radial, y, Math.sin(angle) * radial).normalize();
-        const hueSet = ROCK_CRAWLER_HUES[i % ROCK_CRAWLER_HUES.length];
-        const root = createMileriaRockCrawler(hueSet, i);
-        const h = mileriaHeightAt(dir);
-        root.position.copy(dir).multiplyScalar(MILERIA_RADIUS + h + MILERIA_ROCK_CRAWLER_SURFACE_OFFSET);
-        root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-        root.rotateY(Math.random() * Math.PI * 2);
-        mileriaRockCrawlerGroup.add(root);
-        mileriaRockCrawlers.push({
-          root,
-          state: 'RESTING',
-          phase: Math.random() * Math.PI * 2,
-          time: Math.random() * 10,
-          yaw: Math.random() * Math.PI * 2,
-          fleeDirection: new THREE.Vector3(1, 0, 0),
-          fleeTargetDir: dir.clone()
-        });
-      }
-    }
-
-    function updateMileriaRockCrawlers(delta) {
-      const active = state.gameState === 'playing' && !state.paused && !playerState.inRocket &&
-        omegaWalkingBodyId === 'mileria';
-      mileriaRockCrawlerGroup.visible = !!active;
-      if (!active) return;
-
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
-      for (const crawler of mileriaRockCrawlers) {
-        crawler.time += delta;
-        if (crawler.root.userData.crystalGlints) {
-          crawler.root.userData.crystalGlints.forEach((glint, glintIndex) => {
-            const wave = 0.5 + 0.5 * Math.sin(crawler.time * 4.8 + glint.userData.phase);
-            const pulse = 0.72 + wave * 0.95;
-            glint.scale.setScalar(pulse * glint.userData.baseScale);
-            glint.material.opacity = 0.30 + wave * 0.60;
-            glint.position.y += Math.sin(crawler.time * 2.1 + glintIndex) * 0.0008;
-          });
-        }
-        const worldPos = crawler.root.getWorldPosition(new THREE.Vector3());
-        const distance = worldPos.distanceTo(playerWorld);
-
-        if (crawler.state === 'RESTING') {
-          if (distance <= MILERIA_ROCK_CRAWLER_ALERT_RADIUS) rockCrawlerChooseDirectionAwayFromPlayer(crawler);
-        } else if (crawler.state === 'FLEEING') {
-          rockCrawlerAdvance(crawler, delta);
-          const newDistance = crawler.root.getWorldPosition(new THREE.Vector3()).distanceTo(playerWorld);
-          if (newDistance >= MILERIA_ROCK_CRAWLER_CALM_RADIUS) {
-            crawler.state = 'RESTING';
-            crawler.root.rotation.x = 0;
-          }
-        }
-      }
-    }
-
-    buildMileriaRockCrawlerPopulation();
-
-    // ---------- Day 13 Phase 1: Aurora glowfish ----------
-    // Small bioluminescent 3D fish that travel in schools around Aurora's lakes.
-    // They live under auroraMesh, so the fish inherit Aurora's orbit and rotation automatically.
-    const auroraGlowfish = [];
-    const auroraGlowfishGroup = new THREE.Group();
-    auroraGlowfishGroup.name = 'AuroraGlowfish';
-    auroraGlowfishGroup.frustumCulled = false;
-    auroraMesh.add(auroraGlowfishGroup);
-
-    const AURORA_GLOWFISH_COUNT = 28;
-    const AURORA_GLOWFISH_PER_SCHOOL = 7;
-    const AURORA_GLOWFISH_SWIM_SPEED = 0.34;
-    const AURORA_GLOWFISH_PLAYER_RADIUS = 8.5;
-    const AURORA_GLOWFISH_SURFACE_OFFSET = 0.38;
-
-    const glowfishBodyMaterial = new THREE.MeshStandardMaterial({
-      color: 0x52d9ff,
-      emissive: 0x1da9e8,
-      emissiveIntensity: 1.35,
-      roughness: 0.34,
-      metalness: 0.0,
-      fog: false
-    });
-    const glowfishLightMaterial = new THREE.MeshBasicMaterial({
-      color: 0xbaf4ff,
-      fog: false
-    });
-    const glowfishFinMaterial = new THREE.MeshStandardMaterial({
-      color: 0x2a9ed1,
-      emissive: 0x0c5e86,
-      emissiveIntensity: 0.72,
-      roughness: 0.4,
-      metalness: 0.0,
-      fog: false
-    });
-    const glowfishBodyGeometry = new THREE.SphereGeometry(0.28, 10, 7);
-    const glowfishHeadGeometry = new THREE.SphereGeometry(0.18, 8, 6);
-    const glowfishTailGeometry = new THREE.ConeGeometry(0.19, 0.34, 6);
-    const glowfishFinGeometry = new THREE.ConeGeometry(0.12, 0.22, 5);
-    const glowfishEyeGeometry = new THREE.SphereGeometry(0.045, 6, 5);
-
-    function createAuroraGlowfish() {
-      const fish = new THREE.Group();
-      fish.name = 'AuroraGlowfish';
-      fish.frustumCulled = false;
-
-      const body = new THREE.Mesh(glowfishBodyGeometry, glowfishBodyMaterial);
-      body.scale.set(1.35, 0.64, 2.0);
-      body.position.z = 0.03;
-      body.frustumCulled = false;
-      fish.add(body);
-
-      const head = new THREE.Mesh(glowfishHeadGeometry, glowfishLightMaterial);
-      head.position.z = 0.47;
-      head.scale.set(1.0, 0.86, 0.95);
-      head.frustumCulled = false;
-      fish.add(head);
-
-      const eyeL = new THREE.Mesh(glowfishEyeGeometry, glowfishLightMaterial);
-      eyeL.position.set(-0.10, 0.05, 0.60);
-      const eyeR = eyeL.clone();
-      eyeR.position.x = 0.10;
-      fish.add(eyeL, eyeR);
-
-      const tail = new THREE.Mesh(glowfishTailGeometry, glowfishBodyMaterial);
-      tail.rotation.x = Math.PI / 2;
-      tail.position.z = -0.48;
-      tail.scale.set(1.0, 1.0, 0.9);
-      tail.frustumCulled = false;
-      fish.add(tail);
-
-      const dorsal = new THREE.Mesh(glowfishFinGeometry, glowfishFinMaterial);
-      dorsal.rotation.x = Math.PI;
-      dorsal.position.y = 0.22;
-      dorsal.position.z = -0.02;
-      fish.add(dorsal);
-
-      const ventral = new THREE.Mesh(glowfishFinGeometry, glowfishFinMaterial);
-      ventral.position.y = -0.20;
-      ventral.position.z = -0.02;
-      fish.add(ventral);
-
-      // Tiny halo sphere gives the bioluminescent fish a readable glow without adding
-      // dozens of point lights to Aurora.
-      const halo = new THREE.Mesh(
-        new THREE.SphereGeometry(0.39, 10, 7),
-        new THREE.MeshBasicMaterial({
-          color: 0x59dfff,
-          transparent: true,
-          opacity: 0.10,
-          depthWrite: false,
-          fog: false
-        })
-      );
-      halo.renderOrder = 3;
-      fish.add(halo);
-
-      auroraGlowfishGroup.add(fish);
-      return fish;
-    }
-
-    function auroraGlowfishBasis(center) {
-      const ref = Math.abs(center.y) < 0.88 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
-      const tangent = new THREE.Vector3().crossVectors(ref, center).normalize();
-      const side = new THREE.Vector3().crossVectors(center, tangent).normalize();
-      return { tangent, side };
-    }
-
-    function auroraGlowfishPosition(fish, timeSec) {
-      const center = auroraLakeDirs[fish.lakeIndex].clone().normalize();
-      const { tangent, side } = auroraGlowfishBasis(center);
-      const schoolTime = timeSec * fish.speed + fish.phase;
-      const radiusAngle = fish.radiusAngle + Math.sin(schoolTime * 0.63 + fish.offsetPhase) * 0.010;
-      const angle = schoolTime + fish.angleOffset;
-      const dir = center.clone().multiplyScalar(Math.cos(radiusAngle))
-        .addScaledVector(tangent, Math.sin(radiusAngle) * Math.cos(angle))
-        .addScaledVector(side, Math.sin(radiusAngle) * Math.sin(angle))
-        .normalize();
-
-      // Aurora's current lake surface is a tangent disk. Keep the fish just above its
-      // depressed terrain so it remains visible through the translucent water surface.
-      const surfaceRadius = AURORA_RADIUS + auroraHeightAt(dir) + AURORA_GLOWFISH_SURFACE_OFFSET;
-      const bob = Math.sin(timeSec * 1.7 + fish.bobPhase) * 0.10;
-      const pos = dir.multiplyScalar(surfaceRadius + bob);
-      return { pos, dir };
-    }
-
-    function orientAuroraGlowfish(fish, position, nextPosition) {
-      const normal = position.clone().normalize();
-      let forward = nextPosition.clone().sub(position);
-      forward.sub(normal.clone().multiplyScalar(forward.dot(normal)));
-      if (forward.lengthSq() < 1e-8) {
-        forward = new THREE.Vector3().crossVectors(normal, new THREE.Vector3(0, 1, 0));
-        if (forward.lengthSq() < 1e-8) forward.set(1, 0, 0);
-      }
-      forward.normalize();
-      const right = new THREE.Vector3().crossVectors(normal, forward).normalize();
-      const correctedForward = new THREE.Vector3().crossVectors(right, normal).normalize();
-      fish.root.quaternion.setFromRotationMatrix(
-        new THREE.Matrix4().makeBasis(right, normal, correctedForward)
-      );
-    }
-
-    for (let i = 0; i < AURORA_GLOWFISH_COUNT; i++) {
-      const schoolIndex = Math.floor(i / AURORA_GLOWFISH_PER_SCHOOL) % auroraLakeDirs.length;
-      const fish = createAuroraGlowfish();
-      fish.scale.setScalar(0.62);
-      const fishState = {
-        root: fish,
-        lakeIndex: schoolIndex,
-        phase: Math.random() * Math.PI * 2,
-        angleOffset: (i % AURORA_GLOWFISH_PER_SCHOOL) / AURORA_GLOWFISH_PER_SCHOOL * Math.PI * 2,
-        offsetPhase: Math.random() * Math.PI * 2,
-        bobPhase: Math.random() * Math.PI * 2,
-        radiusAngle: 0.045 + Math.random() * 0.055,
-        speed: 0.82 + Math.random() * 0.26,
-        scatter: 0,
-        scatterPhase: Math.random() * Math.PI * 2
-      };
-      const sample = auroraGlowfishPosition(fishState, Math.random() * 10);
-      fish.position.copy(sample.pos);
-      auroraGlowfish.push(fishState);
-    }
-
-    function updateAuroraGlowfish(delta) {
-      const active = state.gameState === 'playing' && !state.paused && !playerState.inRocket &&
-        omegaWalkingBodyId === 'aurora';
-      auroraGlowfishGroup.visible = !!active;
-      if (!active) return;
-
-      const now = performance.now() * 0.001;
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
-
-      for (const fish of auroraGlowfish) {
-        const worldPos = fish.root.getWorldPosition(new THREE.Vector3());
-        const nearPlayer = worldPos.distanceTo(playerWorld) < AURORA_GLOWFISH_PLAYER_RADIUS;
-        if (nearPlayer) fish.scatter = Math.min(1, fish.scatter + delta * 2.5);
-        else fish.scatter = Math.max(0, fish.scatter - delta * 0.7);
-
-        const sample = auroraGlowfishPosition(fish, now);
-        const ahead = auroraGlowfishPosition(fish, now + 0.18);
-        let pos = sample.pos.clone();
-
-        // A small radial/tangential scatter makes a nearby school react without destroying
-        // the underlying lake-based swimming paths.
-        if (fish.scatter > 0) {
-          const normal = sample.dir.clone();
-          const { tangent, side } = auroraGlowfishBasis(normal);
-          const s = fish.scatter;
-          const scatterOffset = tangent.clone().multiplyScalar(Math.sin(now * 3.2 + fish.scatterPhase) * 1.3 * s)
-            .addScaledVector(side, Math.cos(now * 2.7 + fish.scatterPhase) * 1.0 * s);
-          pos.add(scatterOffset);
-        }
-
-        fish.root.position.copy(pos);
-        orientAuroraGlowfish(fish, pos, ahead.pos);
-
-        // Gentle tail flick keeps the schools from feeling completely mechanical.
-        const tail = fish.root.children.find(child => child.geometry === glowfishTailGeometry);
-        if (tail) tail.rotation.z = Math.sin(now * 4.5 + fish.offsetPhase) * 0.16;
-      }
     }
 
     function createTitaniumDeposit(scale = 1) {
@@ -11519,10 +10372,8 @@
       const gravity = options.gravity ?? 0.8;
       const spread = options.spread ?? 0.9;
       const upward = options.upward ?? 0.35;
-      const attachedTo = options.attachedTo || null;
       const group = new THREE.Group();
       group.position.copy(position);
-      if (attachedTo && attachedTo.worldToLocal) group.position.copy(attachedTo.worldToLocal(group.position.clone()));
       const positions = new Float32Array(count * 3);
       const velocities = [];
       for (let i = 0; i < count; i++) {
@@ -11544,12 +10395,8 @@
       });
       const points = new THREE.Points(geometry, material);
       group.add(points);
-      if (attachedTo && attachedTo.add) {
-        attachedTo.add(group);
-      } else {
-        scene.add(group);
-      }
-      particleSystems.push({ group, geometry, material, velocities, age: 0, life, gravity, sizes: null, worldSpace: !attachedTo });
+      scene.add(group);
+      particleSystems.push({ group, geometry, material, velocities, age: 0, life, gravity, sizes: null, worldSpace: true });
     }
 
     function spawnRocketExhaust() {
@@ -11616,14 +10463,14 @@
         if (crystalSparkleTimer <= 0) {
           crystalSparkleTimer = 0.28;
           const playerWorld = player.getWorldPosition(new THREE.Vector3());
-          let nearest = null, nearestParent = null, best = Infinity;
+          let nearest = null, best = Infinity;
           for (const spawn of crystalSpawns.concat(cordeliaCrystalSpawns, auroraCrystalSpawns)) {
             if (spawn.collected || !spawn.root.visible) continue;
             const pos = spawn.root.getWorldPosition(new THREE.Vector3());
             const d = pos.distanceTo(playerWorld);
-            if (d < 10 && d < best) { best = d; nearest = pos; nearestParent = spawn.root.parent || null; }
+            if (d < 10 && d < best) { best = d; nearest = pos; }
           }
-          if (nearest) spawnWorldParticles(nearest, 0xbfeaff, { count: 2, life: 0.5, speed: 0.18, size: 0.05, gravity: -0.05, spread: 0.65, upward: 1.0, attachedTo: nearestParent });
+          if (nearest) spawnWorldParticles(nearest, 0xbfeaff, { count: 2, life: 0.5, speed: 0.18, size: 0.05, gravity: -0.05, spread: 0.65, upward: 1.0 });
         }
 
         // Water spray near the river shoreline.
@@ -11723,11 +10570,11 @@
     }
 
     function spawnDriftingLeaf(position) {
-      spawnWorldParticles(position, 0x78a94f, { count: 3, life: 2.8, speed: 0.28, size: 0.15, gravity: -0.02, spread: 1.8, upward: 1.2, attachedTo: planetSystem });
+      spawnWorldParticles(position, 0x78a94f, { count: 3, life: 2.8, speed: 0.28, size: 0.15, gravity: -0.02, spread: 1.8, upward: 1.2 });
     }
 
     function spawnSnowFlurry(position) {
-      spawnWorldParticles(position, 0xffffff, { count: 10, life: 2.2, speed: 0.32, size: 0.14, gravity: 0.08, spread: 1.4, upward: 1.1, attachedTo: planetSystem });
+      spawnWorldParticles(position, 0xffffff, { count: 10, life: 2.2, speed: 0.32, size: 0.14, gravity: 0.08, spread: 1.4, upward: 1.1 });
     }
 
     function spawnSpaceDust() {
@@ -19178,14 +18025,10 @@
         updateTreeSaplings();
         updateMoon(simulationDelta);
         updateCordelia(simulationDelta);
-        updateCordeliaSilverfish(simulationDelta);
         updateOmegaSystem(simulationDelta);
         updateConciergeDeliveries(simulationDelta);
         updateWeather(simulationDelta);
         updateIvisBirds(simulationDelta);
-        updateIvisButterflies(simulationDelta);
-        updateMileriaRockCrawlers(simulationDelta);
-      updateAuroraGlowfish(simulationDelta);
         syncDynamicSunLighting();
         player.getWorldPosition(omegaAtmosphereWorldPos);
         updateOmegaAtmosphere(omegaAtmosphereWorldPos);
