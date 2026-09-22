@@ -10,6 +10,8 @@ window.PocketUniversePlayerState = Object.seal({
   verticalVelocity: 0,
   stamina: 100,
   exhausted: false,
+  hunger: 100,
+  health: 100,
   inRocket: false,
   rocketInSpace: false,
   rocketLanded: false,

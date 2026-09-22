@@ -14,6 +14,7 @@
     ironOres: [],
     crystals: [],
     furnaces: [],
+    campfires: [],
     launchPads: [],
     containers: [],
     sleepingBags: [],

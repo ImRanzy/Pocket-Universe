@@ -5838,3 +5838,193 @@ body.telephone-open #crosshair, body.telephone-open #hotbar, body.telephone-open
 #cosmeticOverlay {
   z-index: 230;
 }
+
+/* ---------- survival HUD ---------- */
+#survivalHud {
+  position: fixed;
+  left: 22px;
+  top: 18px;
+  width: 188px;
+  display: grid;
+  gap: 8px;
+  z-index: 94;
+  pointer-events: none;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  text-shadow: 0 1px 3px rgba(0,0,0,.72);
+}
+.survivalHudMeter {
+  padding: 7px 9px 8px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 9px;
+  background: rgba(10,14,20,.62);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 6px 18px rgba(0,0,0,.16);
+  backdrop-filter: blur(7px);
+}
+.survivalHudHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 5px;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 1.35px;
+  color: rgba(255,255,255,.72);
+}
+.survivalHudHeader strong {
+  font-size: 11px;
+  letter-spacing: .3px;
+  color: #fff;
+}
+.survivalHudTrack {
+  width: 100%;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: rgba(255,255,255,.12);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.05);
+}
+#healthBar, #hungerBar {
+  width: 100%;
+  height: 100%;
+  transition: width .14s linear, background-color .2s ease;
+}
+#healthBar { background: #e86f73; }
+#hungerBar { background: #6fcf97; }
+body.state-menu #survivalHud,
+body.rocket-flight #survivalHud,
+body.sleeping #survivalHud { display: none; }
+
+#staminaWrap.staminaInactive { display: none; }
+
+
+/* ---------- account character customization ---------- */
+.accountCharacterSection {
+  margin: 14px 0 10px;
+  padding: 13px;
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.038), rgba(255,255,255,0.018));
+}
+.accountCharacterHeader {
+  margin: 0 2px 10px;
+  color: rgba(220,228,238,0.52);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1.7px;
+}
+.accountCharacterLayout {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.95fr) minmax(180px, 1.05fr);
+  gap: 12px;
+  align-items: start;
+}
+.accountCharacterPreviewFrame {
+  min-height: 290px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 38%, rgba(83,113,154,0.23), rgba(5,8,13,0.84) 72%);
+}
+#accountCharacterPreview {
+  display: block;
+  width: 100%;
+  height: 300px;
+}
+.accountCharacterSubheader {
+  display: block;
+  margin: 1px 0 8px;
+  color: rgba(220,228,238,0.52);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 1.3px;
+}
+.accountSkinColorGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.accountSkinColorCard {
+  min-width: 0;
+  padding: 7px 5px 6px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px;
+  background: rgba(3,6,10,0.34);
+  color: #eaf0f6;
+  cursor: pointer;
+  text-align: center;
+  font: inherit;
+  transition: border-color .12s ease, transform .12s ease, background .12s ease, box-shadow .12s ease;
+}
+.accountSkinColorCard:hover { transform: translateY(-1px); background: rgba(255,255,255,0.055); }
+.accountSkinColorCard.selected { border-color: rgba(154,196,255,0.95); box-shadow: 0 0 0 2px rgba(92,146,220,0.17); background: rgba(90,130,184,0.12); }
+.accountSkinColorSwatch {
+  display: block;
+  width: 28px;
+  height: 28px;
+  margin: 0 auto 5px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.22);
+  box-shadow: inset 0 1px 2px rgba(255,255,255,0.12);
+}
+.accountSkinColorLabel {
+  display: block;
+  min-height: 28px;
+  color: #edf2f6;
+  font-size: 8px;
+  line-height: 1.15;
+  font-weight: 800;
+}
+.accountSkinColorHex {
+  display: block;
+  margin-top: 2px;
+  color: rgba(220,228,238,0.43);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 7px;
+  letter-spacing: .2px;
+}
+.accountCharacterShirtInfo {
+  display: grid;
+  grid-template-columns: auto 16px 1fr;
+  gap: 6px;
+  align-items: center;
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255,255,255,0.07);
+  color: #edf2f6;
+  font-size: 10px;
+  font-weight: 800;
+}
+.accountCharacterShirtInfo .accountCharacterSubheader { margin: 0; }
+.accountShirtColorSwatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.22);
+}
+.accountCharacterShirtHint {
+  grid-column: 1 / -1;
+  color: rgba(220,228,238,0.45);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+@media (max-width: 760px) {
+  .accountCharacterLayout { grid-template-columns: 1fr; }
+  .accountCharacterPreviewFrame { min-height: 260px; }
+}
+
+/* Screenshot mode: hide gameplay HUD without pausing or changing the world. */
+body.screenshot-ui-hidden #crosshair,
+body.screenshot-ui-hidden #creditsDisplay,
+body.screenshot-ui-hidden #survivalHud,
+body.screenshot-ui-hidden #staminaWrap,
+body.screenshot-ui-hidden #flashlightStatus,
+body.screenshot-ui-hidden #compassHud,
+body.screenshot-ui-hidden #rocketFlightStatus,
+body.screenshot-ui-hidden #hotbar,
+body.screenshot-ui-hidden #crystalPrompt,
+body.screenshot-ui-hidden #sleepOverlay {
+  display: none !important;
+}

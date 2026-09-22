@@ -11,6 +11,17 @@
 <div id="crosshair"></div>
 <div id="creditsDisplay">¢ 0</div>
 
+<div id="survivalHud" aria-label="Survival status">
+  <div class="survivalHudMeter healthMeter">
+    <div class="survivalHudHeader"><span>HEALTH</span><strong id="healthValue">100</strong></div>
+    <div class="survivalHudTrack"><div id="healthBar"></div></div>
+  </div>
+  <div class="survivalHudMeter hungerMeter">
+    <div class="survivalHudHeader"><span>HUNGER</span><strong id="hungerValue">100</strong></div>
+    <div class="survivalHudTrack"><div id="hungerBar"></div></div>
+  </div>
+</div>
+
 <div id="staminaWrap"><div id="staminaLabel">SPRINT</div><div id="staminaBar"></div></div>
   <div id="flashlightStatus" class="hidden">FLASHLIGHT ON · F</div>
   <div id="compassHud" class="hidden" aria-label="Planet compass">
@@ -516,6 +527,24 @@
         <div class="accountProfileLabel">EMAIL</div>
         <div id="accountProfileEmail" class="accountProfileValue">—</div>
       </div>
+      <div class="accountCharacterSection">
+        <div class="accountCharacterHeader">CHARACTER</div>
+        <div class="accountCharacterLayout">
+          <div class="accountCharacterPreviewFrame">
+            <canvas id="accountCharacterPreview" width="320" height="340" aria-label="3D preview of your Pocket Universe character"></canvas>
+          </div>
+          <div class="accountCharacterControls">
+            <div class="accountCharacterSubheader">SKIN COLOR</div>
+            <div id="accountSkinColorGrid" class="accountSkinColorGrid"></div>
+            <div class="accountCharacterShirtInfo">
+              <span class="accountCharacterSubheader">SHIRT</span>
+              <span class="accountShirtColorSwatch" id="accountShirtColorSwatch"></span>
+              <span id="accountShirtColorName">Red</span>
+              <span class="accountCharacterShirtHint">Uses the color you own from Helna.</span>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="accountStatisticsSection">
         <div class="accountStatisticsHeader">STATISTICS</div>
         <div class="accountStatisticsGrid">
@@ -584,7 +613,8 @@
         <div class="keyRow"><span class="keyLabel">Move right</span><button class="key rebindKey" data-bind="moveRight">D</button></div>
         <div class="keyRow"><span class="keyLabel">Sprint / ship down</span><button class="key rebindKey" data-bind="sprint">Shift</button></div>
         <div class="keyRow"><span class="keyLabel">Jump / ship up</span><button class="key rebindKey" data-bind="jump">Space</button></div>
-        <div class="keyRow"><span class="keyLabel">Toggle view</span><button class="key rebindKey" data-bind="toggleView">C</button></div>
+        <div class="keyRow"><span class="keyLabel">Toggle view</span><button class="key rebindKey" data-bind="toggleView">X</button></div>
+        <div class="keyRow"><span class="keyLabel">Crouch</span><button class="key rebindKey" data-bind="crouch">C</button></div>
         <div class="keyRow"><span class="keyLabel">Flashlight</span><button class="key rebindKey" data-bind="flashlight">F</button></div>
         <div class="keyRow"><span class="keyLabel">Interact / collect / enter-exit</span><button class="key rebindKey" data-bind="interact">E</button></div>
         <div class="keyRow"><span class="keyLabel">Drop item</span><button class="key rebindKey" data-bind="drop">Q</button></div>
@@ -599,6 +629,7 @@
         <div class="keyRow"><span class="keyLabel">Look around</span><span class="keyNote">Mouse, or hold left-click and drag</span></div>
         <div class="keyRow"><span class="keyLabel">Spaceship controls</span><span class="keyNote">Uses the same Move / Up / Down bindings above</span></div>
         <div class="keyRow"><span class="keyLabel">Pause menu</span><button class="key rebindKey" data-bind="pause">Esc</button></div>
+        <div class="keyRow"><span class="keyLabel">Toggle screenshot UI</span><button class="key rebindKey" data-bind="screenshotUI">`</button></div>
         <div id="rebindStatus" class="keyNote rebindStatus">Click a control, then press a keyboard key to bind it. Left-click can also be bound back to LMB; click again to cancel.</div>
       </div>
     </div>
@@ -689,6 +720,27 @@
       <div id="settingsUpdateLogContent">
         <section class="updateLogDay updateLogLatest">
           <div class="updateLogBadge">LATEST</div>
+          <h2>Version 1.4A</h2>
+          <p class="updateLogIntro">Day 14: survival systems, Beobaka, a new player model, character customization, clothing, animation polish, and screenshot-friendly UI controls.</p>
+          <ul class="updateLogBullets">
+            <li>Added <strong>Beobaka</strong>, Ivis's new alien bunny wildlife species, with hopping, fleeing, tree avoidance, surface-aware movement, and a maintained population of 10.</li>
+            <li>Added the <strong>Beobaka harvesting and meat system</strong>: axe harvesting, red-flash/fall reaction, smoke despawn effect, hidden replacement spawning, and Raw Beobaka drops.</li>
+            <li>Added the <strong>Campfire cooking system</strong>, including placing Raw Beobaka near a campfire, cooking it over time, and producing Cooked Beobaka as a world item.</li>
+            <li>Added <strong>hunger and health</strong>: 100 Hunger, 100 Health, hunger-based movement/stamina penalties, starvation damage, and item-based hunger restoration.</li>
+            <li>Added <strong>Raw Beobaka</strong> for +10 Hunger and <strong>Cooked Beobaka</strong> for +30 Hunger, with the cooked food also restoring stamina.</li>
+            <li>Added the new <strong>Player.glb character model</strong>, replacing the old third-person player body and integrating the existing hat and item-hand systems.</li>
+            <li>Added new player <strong>walking, sprinting, jumping, eating, and Minecraft-style crouch animations</strong>, including matching arm/leg motion and smooth crouch transitions.</li>
+            <li>Added <strong>held-item hand attachment</strong> so tools and food move with the player's hand during movement and animations.</li>
+            <li>Added the new <strong>shirt model and sleeve pivots</strong>, with the shirt following the torso and sleeves following the animated arms.</li>
+            <li>Added <strong>Account character customization</strong> with a 3D player replica and 12 selectable skin colors, saved to the account.</li>
+            <li>Linked <strong>Helna's purchased color</strong> to the player's equipped shirt color while keeping skin color separate.</li>
+            <li>Added a <strong>Screenshot UI toggle</strong> on the Backquote (` / ~) key to hide gameplay HUD elements without pausing the game.</li>
+            <li>Expanded <strong>key rebinding</strong> so Screenshot UI and Escape/pause bindings can be restored and rebound correctly.</li>
+            <li>Added further <strong>player presentation and UI polish</strong>, including improved miniature character previews and smoother character-animation integration.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
           <h2>Version 1.3A</h2>
           <p class="updateLogIntro">Day 13: wildlife, living planets, environmental polish, and a larger star field.</p>
           <ul class="updateLogBullets">
@@ -711,7 +763,7 @@
             <li>Added the full <strong>delivery rocket system</strong>, including delayed delivery, final descent, order confirmation, pickup, and the optional 2× expedited delivery service.</li>
             <li>Expanded the <strong>Catalogue and lore system</strong> with Concierge and Helna entries, Survival-only contact notes, and the Blueprint catalogue entry.</li>
             <li>Integrated <strong>Helna's hat shop</strong> into Concierge dialogue without blocking the surrounding booth interface.</li>
-            <li>Added the <strong>Compass</strong> HUD and <strong>Sleeping Bag</strong>, including nighttime sleep, accelerated time progression, placement, pickup, and saved state.</li>
+            <li>Added the <strong>Compass HUD</strong> and <strong>Sleeping Bag</strong>, including nighttime sleep, accelerated time progression, placement, pickup, and saved state.</li>
             <li>Expanded the <strong>Space Map</strong> with planet-specific views, resource information, pan/zoom controls, and a toggleable <strong>Habitable Zone</strong>.</li>
             <li>Adjusted <strong>Cordelia's orbit</strong> to a clean circular path and improved orbital/map alignment and planetary movement behavior.</li>
             <li>Added and refined <strong>weather and lighting</strong>, including localized rain/cloud behavior, dynamic sunlight, night-side darkness, solar-glare fading, and local artificial lights.</li>
@@ -866,6 +918,8 @@
 <script src="js/telephone-booth-model-data.js"></script>
 <script src="js/sleeping-bag-model-data.js"></script>
 <script src="js/delivery-rocket-model-data.js"></script>
+<script src="js/player-model-data.js"></script>
+<script src="js/shirt-model-data.js"></script>
   <script src="js/state/player-state.js"></script>
 <script src="js/state/inventory-state.js"></script>
 <script src="js/state/ui-state.js"></script>

@@ -46,10 +46,7 @@
   let deliveryRocketModelTemplate = null;
   let sleepingBagModelTemplate = null;
   let playerModelTemplate = null;
-  let shirtModelTemplate = null;
   let playerModelParts = null;
-  let playerShirtParts = null;
-
   let playerModelWalkPhase = 0;
   let playerModelBaseY = 0;
   let playerModelBaseScale = null;
@@ -910,38 +907,6 @@
     });
   }
 
-
-  async function buildEmbeddedShirtModel() {
-    const source = window.PocketUniverseShirtModelGLB;
-    if (typeof source !== 'string' || !source.trim() || !window.THREE?.GLTFLoader) return null;
-    const arrayBuffer = decodeBase64ArrayBuffer(source);
-    return await new Promise((resolve, reject) => {
-      try {
-        const loader = new THREE.GLTFLoader();
-        loader.parse(arrayBuffer, '', (gltf) => {
-          const root = gltf?.scene || gltf?.scenes?.[0];
-          if (!root) { reject(new Error('shirt.glb contained no scene')); return; }
-          root.name = 'PlayerShirt';
-          root.traverse((node) => {
-            if (!node.isMesh) return;
-            node.castShadow = true;
-            node.receiveShadow = true;
-            node.frustumCulled = false;
-            node.layers.set(1);
-            if (Array.isArray(node.material)) {
-              node.material = node.material.map((mat) => mat && mat.clone ? mat.clone() : mat);
-            } else if (node.material && node.material.clone) {
-              node.material = node.material.clone();
-            }
-          });
-          resolve(root);
-        }, (error) => reject(error instanceof Error ? error : new Error('shirt.glb parse failed')));
-      } catch (error) {
-        reject(error);
-      }
-    });
-  }
-
   async function loadToolModels() {
     // The supplied OBJ files are now embedded as geometry data and become the
     // authoritative tool meshes. This avoids the unreliable external OBJ/MTL
@@ -998,8 +963,6 @@
       if (gltfLoaded) {
         try { playerModelTemplate = await buildEmbeddedPlayerModel(); }
         catch (playerModelError) { console.warn('Player.glb unavailable; procedural player fallback will be used.', playerModelError); playerModelTemplate = null; }
-        try { shirtModelTemplate = await buildEmbeddedShirtModel(); }
-        catch (shirtModelError) { console.warn('Shirt model unavailable; the player will render without a shirt.', shirtModelError); shirtModelTemplate = null; }
       } else {
         console.warn('GLTFLoader unavailable; procedural player fallback will be used.');
       }
@@ -8084,9 +8047,6 @@
     function ensureCosmeticPreview(){ }
     function updateCosmeticPreview(){
       if(cosmeticGemAmount) cosmeticGemAmount.textContent=String(accountGems);
-      updateAccountCharacterPreview();
-      renderAccountSkinColorGrid();
-      updateAccountShirtLabel();
     }
     function renderCosmeticShop(){
       if(!cosmeticColorGrid||!cosmeticHatGrid)return;
@@ -10015,68 +9975,27 @@
       playerBody.add(fallbackBody);
     }
 
-
-    function attachPlayerShirt() {
-      playerShirtParts = null;
-      if (!shirtModelTemplate || !playerModelParts?.body || !playerModelParts?.leftArm || !playerModelParts?.rightArm) return;
-      const shirtRoot = shirtModelTemplate.clone(true);
-      shirtRoot.scale.copy(playerModelBaseScale || new THREE.Vector3(PLAYER_MODEL_SCALE, PLAYER_MODEL_SCALE, PLAYER_MODEL_SCALE));
-      shirtRoot.position.set(0, PLAYER_MODEL_GROUND_OFFSET, 0);
-      shirtRoot.layers.set(1);
-      shirtRoot.traverse((node) => {
+    function tintPlayerVisual(hex) {
+      if (!playerVisual) return;
+      playerVisual.traverse((node) => {
         if (!node.isMesh) return;
-        node.layers.set(1);
-        node.castShadow = true;
-        node.receiveShadow = true;
-        if (Array.isArray(node.material)) node.material = node.material.map((mat) => mat && mat.clone ? mat.clone() : mat);
-        else if (node.material && node.material.clone) node.material = node.material.clone();
+        const materials = Array.isArray(node.material) ? node.material : [node.material];
+        for (const mat of materials) {
+          if (mat?.color) mat.color.setHex(hex);
+        }
       });
-      playerBody.add(shirtRoot);
-      shirtRoot.updateMatrixWorld(true);
-      playerVisual.updateMatrixWorld(true);
-      playerModelParts.body.updateMatrixWorld(true);
-      playerModelParts.leftArm.updateMatrixWorld(true);
-      playerModelParts.rightArm.updateMatrixWorld(true);
-
-      const pieces = shirtRoot.children.filter((node) => node && node.isObject3D);
-      if (pieces.length < 3) {
-        console.warn('Shirt model expected 3 top-level pieces (torso + two sleeves).');
-        return;
-      }
-
-      // Blockbench export order for the supplied shirt is torso, left sleeve, right sleeve.
-      const torso = pieces[1];
-      const leftSleeve = pieces[0];
-      const rightSleeve = pieces[2];
-      markShirtPart(torso);
-      markShirtPart(leftSleeve);
-      markShirtPart(rightSleeve);
-
-      // Re-parent while preserving each piece's world transform. The authored sleeve pivots
-      // now become children of the corresponding arm pivots, so every arm animation carries
-      // the sleeve with it naturally.
-      playerModelParts.body.attach(torso);
-      playerModelParts.leftArm.attach(leftSleeve);
-      playerModelParts.rightArm.attach(rightSleeve);
-
-      playerShirtParts = { torso, leftSleeve, rightSleeve, root: shirtRoot };
-      shirtRoot.remove(torso, leftSleeve, rightSleeve);
-      if (shirtRoot.parent === playerBody) playerBody.remove(shirtRoot);
     }
 
-    if (playerModelTemplate && shirtModelTemplate) attachPlayerShirt();
-
-    function applyPlayerShirtRainbow(phase) {
-      if (!playerShirtParts) return;
+    function applyPlayerModelRainbow(phase) {
+      if (!playerVisual) return;
       const hue = ((phase % (Math.PI * 2)) / (Math.PI * 2) + 1) % 1;
-      for (const part of [playerShirtParts.torso, playerShirtParts.leftSleeve, playerShirtParts.rightSleeve]) {
-        if (!part) continue;
-        part.traverse((node) => {
-          if (!node.isMesh) return;
-          const materials = Array.isArray(node.material) ? node.material : [node.material];
-          for (const mat of materials) if (mat?.color) mat.color.setHSL((hue + (node.id % 5) * 0.035) % 1, 0.80, 0.58);
-        });
-      }
+      playerVisual.traverse((node) => {
+        if (!node.isMesh) return;
+        const materials = Array.isArray(node.material) ? node.material : [node.material];
+        for (const mat of materials) {
+          if (mat?.color) mat.color.setHSL((hue + (node.id % 5) * 0.035) % 1, 0.80, 0.58);
+        }
+      });
     }
 
     function updatePlayerCrouchState(delta) {
@@ -10118,12 +10037,8 @@
       const torsoDrop = playerCrouchBlend * 0.30;
       const torsoForward = playerCrouchBlend * 0.10;
       const torsoLean = playerCrouchBlend * -0.18;
-      // The head follows the same crouch arc as the torso instead of only dropping
-      // vertically. This keeps the neck/head visually connected during the squat and
-      // gives the crouch the same low, forward-compressed feel as the rest of the body.
-      const headDrop = playerCrouchBlend * 0.30;
-      const headForward = playerCrouchBlend * 0.11;
-      const headCrouchLean = playerCrouchBlend * -0.15;
+      const headDrop = playerCrouchBlend * 0.40;
+      const headForward = playerCrouchBlend * 0.08;
       const armDrop = playerCrouchBlend * 0.18;
       const armForward = playerCrouchBlend * 0.06;
       const legDrop = playerCrouchBlend * 0.04;
@@ -10182,9 +10097,7 @@
         playerModelParts.head.position.y -= headDrop;
         playerModelParts.head.rotation.copy(base.head);
         playerModelParts.head.rotation.x += (moving && !airborne ? Math.sin(playerModelWalkPhase * 0.5) * 0.018 : 0);
-        // Match the torso's forward crouch motion so the head actually follows the
-        // body down and forward instead of appearing to float upright above it.
-        playerModelParts.head.rotation.z += headCrouchLean;
+        playerModelParts.head.rotation.z += playerCrouchBlend * -0.08;
       }
 
       if (playerHatVisual) {
@@ -14203,22 +14116,6 @@
       { id:'light_blue', name:'Light Blue', hex:0x71c8f4, cost:5 },
       { id:'rainbow', name:'Rainbow', hex:0xffffff, cost:10, rainbow:true },
     ];
-    const ACCOUNT_SKIN_COLORS = [
-      { id:'alabaster_fair', name:'Alabaster / Fair', hex:0xFFF0E1 },
-      { id:'pale_ivory', name:'Pale Ivory', hex:0xFFD1B3 },
-      { id:'light_beige', name:'Light Beige', hex:0xFCD0A1 },
-      { id:'warm_sand', name:'Warm Sand', hex:0xE7C199 },
-      { id:'honey_light_tan', name:'Honey / Light Tan', hex:0xD1A377 },
-      { id:'tan_golden_brown', name:'Tan / Golden Brown', hex:0xB07C57 },
-      { id:'rich_caramel', name:'Rich Caramel', hex:0x794429 },
-      { id:'deep_espresso', name:'Deep Espresso', hex:0x3C2219 },
-      { id:'soft_nude', name:'Soft Nude', hex:0xE8C39E },
-      { id:'tan_khaki', name:'Tan / Khaki', hex:0xD2B48C },
-      { id:'sienna_red_brown', name:'Sienna / Red-Brown', hex:0xA0522D },
-      { id:'dark_auburn', name:'Dark Auburn', hex:0x4A2E2B },
-    ];
-    const accountSkinColorById = Object.fromEntries(ACCOUNT_SKIN_COLORS.map(c => [c.id, c]));
-
     const COSMETIC_HATS = [
       { id:'banana_skin_hat', name:'Banana Hat', cost:15, fixed:true },
       { id:'fedora_hat', name:'Fedora Hat', cost:15, colored:true },
@@ -14235,7 +14132,6 @@
       ownedHats: [],
       equippedColor: 'red',
       equippedHat: null,
-      skinColor: 'alabaster_fair',
     };
     let accountCosmetics = structuredClone(DEFAULT_COSMETIC_STATE);
     let cosmeticShopOpen = false;
@@ -14291,7 +14187,6 @@
         ownedHats: [],
         equippedColor: 'red',
         equippedHat: null,
-        skinColor: 'alabaster_fair',
       };
       if (raw && typeof raw === 'object') {
         if (Array.isArray(raw.ownedColors)) state.ownedColors.push(...raw.ownedColors.filter(id => cosmeticColorById[id]));
@@ -14301,7 +14196,6 @@
           return parts.length === 2 && cosmeticHatById[parts[0]] && cosmeticColorById[parts[1]] && cosmeticHatById[parts[0]].colored;
         }));
         if (cosmeticColorById[raw.equippedColor]) state.equippedColor = raw.equippedColor;
-        if (accountSkinColorById[raw.skinColor]) state.skinColor = raw.skinColor;
         if (raw.equippedHat == null || cosmeticHatById[raw.equippedHat] || (typeof raw.equippedHat === 'string' && raw.equippedHat.includes(':'))) state.equippedHat = raw.equippedHat || null;
       }
       state.ownedColors = [...new Set(state.ownedColors)];
@@ -14344,43 +14238,13 @@
         if (child && child.userData && child.userData.cosmeticHatVisual) child.visible = hatVisible;
       }
     }
-    function markShirtPart(root) {
-      if (!root) return;
-      root.traverse((node) => { node.userData.shirtPart = true; });
-    }
-    function tintPlayerVisual(hex) {
-      if (!playerVisual) return;
-      playerVisual.traverse((node) => {
-        if (!node.isMesh || node.userData?.shirtPart) return;
-        const materials = Array.isArray(node.material) ? node.material : [node.material];
-        for (const mat of materials) if (mat?.color) mat.color.setHex(hex);
-      });
-    }
-    function tintPlayerShirt(hex) {
-      if (!playerShirtParts) return;
-      for (const part of [playerShirtParts.torso, playerShirtParts.leftSleeve, playerShirtParts.rightSleeve]) {
-        if (!part) continue;
-        part.traverse((node) => {
-          if (!node.isMesh) return;
-          const materials = Array.isArray(node.material) ? node.material : [node.material];
-          for (const mat of materials) if (mat?.color) mat.color.setHex(hex);
-        });
-      }
-    }
     function applyPlayerCosmetics() {
       if (typeof playerBody === 'undefined' || !playerBody) return;
-      const skinHex = accountSkinColorById[accountCosmetics.skinColor]?.hex ?? 0xFFF0E1;
-      const shirtHex = cosmeticColorHex(accountCosmetics.equippedColor);
-      playerBody.material.color.setHex(skinHex);
-      tintPlayerVisual(skinHex);
-      tintPlayerShirt(shirtHex);
+      const cosmeticHex = cosmeticColorHex(accountCosmetics.equippedColor);
+      playerBody.material.color.setHex(cosmeticHex);
+      tintPlayerVisual(cosmeticHex);
       while (playerBody.children.length) playerBody.remove(playerBody.children[playerBody.children.length-1]);
       if (playerVisual) playerBody.add(playerVisual);
-      if (playerShirtParts) {
-        // Re-attach the shirt after re-adding the player visual so it remains part of the
-        // animated hierarchy. Its authored sleeve pivots continue to follow the arm nodes.
-        tintPlayerShirt(shirtHex);
-      }
       playerHatVisual = null;
       const spec = getEquippedHatVisualSpec();
       if (spec) {
@@ -14403,8 +14267,7 @@
         ownedColors: [...accountCosmetics.ownedColors],
         ownedHats: [...accountCosmetics.ownedHats],
         equippedColor: accountCosmetics.equippedColor,
-        equippedHat: accountCosmetics.equippedHat,
-        skinColor: accountCosmetics.skinColor
+        equippedHat: accountCosmetics.equippedHat
       };
     }
     function updateHomeGemsAndCosmeticsUI() {
@@ -14709,222 +14572,6 @@
     });
     renderAchievements();
 
-    // ---------- account character preview ----------
-    const accountPreviewCanvas = document.getElementById("accountCharacterPreview");
-    const accountSkinColorGrid = document.getElementById("accountSkinColorGrid");
-    const accountShirtColorSwatch = document.getElementById("accountShirtColorSwatch");
-    const accountShirtColorName = document.getElementById("accountShirtColorName");
-    let accountPreviewRenderer = null;
-    let accountPreviewScene = null;
-    let accountPreviewCamera = null;
-    let accountPreviewRoot = null;
-    let accountPreviewModel = null;
-    let accountPreviewShirtParts = null;
-    let accountPreviewHat = null;
-    let accountPreviewInitialized = false;
-    let accountPreviewResizeW = 0;
-    let accountPreviewResizeH = 0;
-    let accountPreviewAngle = 0.34;
-
-    function clonePreviewMaterials(root) {
-      root.traverse((node) => {
-        if (!node.isMesh) return;
-        node.castShadow = false;
-        node.receiveShadow = true;
-        node.frustumCulled = false;
-        if (Array.isArray(node.material)) node.material = node.material.map((mat) => mat && mat.clone ? mat.clone() : mat);
-        else if (node.material && node.material.clone) node.material = node.material.clone();
-      });
-    }
-
-    function buildAccountPreviewShirt(model) {
-      if (!shirtModelTemplate || !model) return null;
-      const shirtRoot = shirtModelTemplate.clone(true);
-      const scale = playerModelBaseScale || new THREE.Vector3(PLAYER_MODEL_SCALE, PLAYER_MODEL_SCALE, PLAYER_MODEL_SCALE);
-      shirtRoot.scale.copy(scale);
-      shirtRoot.position.set(0, 0, 0);
-      clonePreviewMaterials(shirtRoot);
-      model.updateMatrixWorld(true);
-      shirtRoot.updateMatrixWorld(true);
-      const body = model.getObjectByName('body');
-      const leftArm = model.getObjectByName('L-Arm');
-      const rightArm = model.getObjectByName('R-Arm');
-      if (!body || !leftArm || !rightArm) { model.add(shirtRoot); return { torso: null, leftSleeve: null, rightSleeve: null, root: shirtRoot }; }
-      const pieces = shirtRoot.children.filter(node => node && node.isObject3D);
-      if (pieces.length < 3) { model.add(shirtRoot); return { torso: null, leftSleeve: null, rightSleeve: null, root: shirtRoot }; }
-      const torso = pieces[1], leftSleeve = pieces[0], rightSleeve = pieces[2];
-      markShirtPart(torso); markShirtPart(leftSleeve); markShirtPart(rightSleeve);
-      model.add(shirtRoot);
-      shirtRoot.updateMatrixWorld(true); model.updateMatrixWorld(true);
-      body.updateMatrixWorld(true); leftArm.updateMatrixWorld(true); rightArm.updateMatrixWorld(true);
-      body.attach(torso); leftArm.attach(leftSleeve); rightArm.attach(rightSleeve);
-      shirtRoot.remove(torso, leftSleeve, rightSleeve);
-      if (shirtRoot.parent === model) model.remove(shirtRoot);
-      return { torso, leftSleeve, rightSleeve, root: shirtRoot };
-    }
-
-    function tintPreviewGroup(root, hex, skipShirt = false) {
-      if (!root) return;
-      root.traverse((node) => {
-        if (!node.isMesh || (skipShirt && node.userData?.shirtPart)) return;
-        const materials = Array.isArray(node.material) ? node.material : [node.material];
-        for (const mat of materials) if (mat?.color) mat.color.setHex(hex);
-      });
-    }
-
-    function tintPreviewShirt(parts, hex) {
-      if (!parts) return;
-      for (const part of [parts.torso, parts.leftSleeve, parts.rightSleeve]) {
-        if (!part) continue;
-        part.traverse((node) => {
-          if (!node.isMesh) return;
-          const materials = Array.isArray(node.material) ? node.material : [node.material];
-          for (const mat of materials) if (mat?.color) mat.color.setHex(hex);
-        });
-      }
-    }
-
-    function updateAccountShirtLabel() {
-      if (!accountShirtColorSwatch || !accountShirtColorName) return;
-      const shirtId = accountCosmetics.equippedColor;
-      const color = cosmeticColorById[shirtId] || cosmeticColorById.red;
-      accountShirtColorSwatch.style.background = '#' + color.hex.toString(16).padStart(6, '0');
-      accountShirtColorName.textContent = color.name + (color.rainbow ? ' (animated)' : '');
-    }
-
-    function updateAccountCharacterPreview() {
-      if (!accountPreviewInitialized || !accountPreviewModel) {
-        updateAccountShirtLabel();
-        return;
-      }
-      const skinHex = accountSkinColorById[accountCosmetics.skinColor]?.hex ?? 0xFFF0E1;
-      const shirtHex = cosmeticColorHex(accountCosmetics.equippedColor);
-      tintPreviewGroup(accountPreviewModel, skinHex, true);
-      tintPreviewShirt(accountPreviewShirtParts, shirtHex);
-      if (accountPreviewHat) {
-        accountPreviewRoot.remove(accountPreviewHat);
-        accountPreviewHat = null;
-      }
-      const spec = getEquippedHatVisualSpec();
-      if (spec) {
-        const hat = createHatVisual(spec.baseId, cosmeticColorHex(spec.colorId));
-        hat.scale.setScalar(1.05);
-        hat.userData.cosmeticPreviewHat = true;
-        const head = accountPreviewModel.getObjectByName('head');
-        const headBox = head ? new THREE.Box3().setFromObject(head) : new THREE.Box3().setFromObject(accountPreviewModel);
-        const headCenter = headBox.getCenter(new THREE.Vector3());
-        const modelWorld = accountPreviewModel.getWorldPosition(new THREE.Vector3());
-        hat.position.set(headCenter.x - modelWorld.x, headBox.max.y - modelWorld.y + 0.08, headCenter.z - modelWorld.z);
-        accountPreviewRoot.add(hat);
-        accountPreviewHat = hat;
-        if (spec.colorId === 'rainbow') applyRainbowHatColors(hat, rainbowCosmeticTime);
-      }
-      updateAccountShirtLabel();
-    }
-
-    function ensureAccountCharacterPreview() {
-      if (accountPreviewInitialized || !accountPreviewCanvas || !window.THREE) return;
-      try {
-        accountPreviewRenderer = new THREE.WebGLRenderer({ canvas: accountPreviewCanvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
-        accountPreviewRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-        accountPreviewRenderer.setClearColor(0x000000, 0);
-        accountPreviewScene = new THREE.Scene();
-        accountPreviewCamera = new THREE.PerspectiveCamera(24, 1, 0.1, 30);
-        // The live player model and shirt meshes are rendered on layer 1. The
-        // account preview camera must see that layer as well as the normal layer.
-        accountPreviewCamera.layers.enable(1);
-        accountPreviewCamera.position.set(2.8, 1.8, 4.2);
-        accountPreviewCamera.lookAt(0, 1.15, 0);
-        accountPreviewScene.add(new THREE.HemisphereLight(0xddeaff, 0x1a1c22, 1.35));
-        const key = new THREE.DirectionalLight(0xffffff, 1.7); key.position.set(3, 4, 4); accountPreviewScene.add(key);
-        const fill = new THREE.DirectionalLight(0x9fc5ff, 0.65); fill.position.set(-3, 2, 1); accountPreviewScene.add(fill);
-        const rim = new THREE.DirectionalLight(0xffffff, 0.7); rim.position.set(0, 3, -4); accountPreviewScene.add(rim);
-
-        const model = playerModelTemplate ? playerModelTemplate.clone(true) : (playerVisual ? playerVisual.clone(true) : null);
-        if (!model) return;
-        clonePreviewMaterials(model);
-        model.scale.copy(playerModelBaseScale || new THREE.Vector3(PLAYER_MODEL_SCALE, PLAYER_MODEL_SCALE, PLAYER_MODEL_SCALE));
-        model.position.set(0, 0, 0);
-        model.rotation.set(0, PLAYERModelYawOffset(), 0);
-        accountPreviewModel = model;
-        accountPreviewRoot = new THREE.Group();
-        accountPreviewRoot.add(model);
-        accountPreviewScene.add(accountPreviewRoot);
-        accountPreviewShirtParts = buildAccountPreviewShirt(model);
-        accountPreviewRoot.scale.setScalar(1.00);
-        accountPreviewInitialized = true;
-        updateAccountCharacterPreview();
-      } catch (error) {
-        console.warn('Account character preview unavailable.', error);
-      }
-    }
-
-    function PLAYERModelYawOffset() {
-      return (typeof PLAYER_MODEL_YAW_OFFSET !== 'undefined' ? PLAYER_MODEL_YAW_OFFSET : Math.PI / 2);
-    }
-
-    function updateAccountCharacterPreviewRenderer() {
-      if (!accountPreviewInitialized || !accountPreviewRenderer || !accountPreviewCamera || !accountPreviewCanvas || accountModal.classList.contains('hidden')) return;
-      const w = Math.max(1, accountPreviewCanvas.clientWidth || 320);
-      const h = Math.max(1, accountPreviewCanvas.clientHeight || 340);
-      if (w !== accountPreviewResizeW || h !== accountPreviewResizeH) {
-        accountPreviewResizeW = w; accountPreviewResizeH = h;
-        accountPreviewRenderer.setSize(w, h, false);
-        accountPreviewCamera.aspect = w / h;
-        accountPreviewCamera.updateProjectionMatrix();
-      }
-      accountPreviewAngle += 0.18 * (1 / 60);
-      accountPreviewRoot.rotation.y = accountPreviewAngle;
-      if (accountCosmetics.equippedColor === 'rainbow' && accountPreviewHat) applyRainbowHatColors(accountPreviewHat, rainbowCosmeticTime);
-      if (accountCosmetics.equippedColor === 'rainbow') {
-        const hue = ((rainbowCosmeticTime % (Math.PI * 2)) / (Math.PI * 2) + 1) % 1;
-        for (const part of [accountPreviewShirtParts?.torso, accountPreviewShirtParts?.leftSleeve, accountPreviewShirtParts?.rightSleeve]) {
-          if (!part) continue;
-          part.traverse((node) => {
-            if (!node.isMesh) return;
-            const materials = Array.isArray(node.material) ? node.material : [node.material];
-            for (const mat of materials) if (mat?.color) mat.color.setHSL((hue + (node.id % 5) * 0.035) % 1, 0.80, 0.58);
-          });
-        }
-      }
-      accountPreviewRenderer.render(accountPreviewScene, accountPreviewCamera);
-    }
-
-    function renderAccountSkinColorGrid() {
-      if (!accountSkinColorGrid) return;
-      accountSkinColorGrid.replaceChildren();
-      for (const skin of ACCOUNT_SKIN_COLORS) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'accountSkinColorCard' + (accountCosmetics.skinColor === skin.id ? ' selected' : '');
-        button.title = skin.name + ' — #' + skin.hex.toString(16).padStart(6, '0').toUpperCase();
-        const swatch = document.createElement('span');
-        swatch.className = 'accountSkinColorSwatch';
-        swatch.style.background = '#' + skin.hex.toString(16).padStart(6, '0');
-        const label = document.createElement('span');
-        label.className = 'accountSkinColorLabel';
-        label.textContent = skin.name;
-        const hex = document.createElement('span');
-        hex.className = 'accountSkinColorHex';
-        hex.textContent = '#' + skin.hex.toString(16).padStart(6, '0').toUpperCase();
-        button.append(swatch, label, hex);
-        button.addEventListener('click', (e) => {
-          e.preventDefault(); e.stopPropagation();
-          setAccountSkinColor(skin.id);
-        });
-        accountSkinColorGrid.appendChild(button);
-      }
-    }
-
-    function setAccountSkinColor(skinId) {
-      if (!currentAccountUser || !accountSkinColorById[skinId]) return;
-      accountCosmetics.skinColor = skinId;
-      applyPlayerCosmetics();
-      renderAccountSkinColorGrid();
-      updateAccountCharacterPreview();
-      persistAchievementState();
-    }
-
     // ---------- account dialog (isolated from the menu preview) ----------
     const homeCreditsButton = document.getElementById("homeCreditsButton");
     const creditsModal = document.getElementById("creditsModal");
@@ -15002,9 +14649,6 @@
       renderAccountMode();
       accountModal.classList.remove("hidden");
       accountModal.setAttribute("aria-hidden", "false");
-      ensureAccountCharacterPreview();
-      renderAccountSkinColorGrid();
-      updateAccountCharacterPreview();
       refreshAccountState();
       setTimeout(() => accountEmail.focus(), 0);
     }
@@ -20081,7 +19725,7 @@
       moveForward: 'KeyW', moveLeft: 'KeyA', moveBackward: 'KeyS', moveRight: 'KeyD',
       sprint: 'ShiftLeft', jump: 'Space', toggleView: 'KeyX', crouch: 'KeyC', flashlight: 'KeyF',
       interact: 'KeyE', drop: 'KeyQ', inventory: 'KeyI', slot1: 'Digit1', slot2: 'Digit2',
-      slot3: 'Digit3', slot4: 'Digit4', map: 'KeyM', weather: 'KeyG', useTool: 'MouseLeft', pause: 'Escape', screenshotUI: 'Backquote'
+      slot3: 'Digit3', slot4: 'Digit4', map: 'KeyM', weather: 'KeyG', useTool: 'MouseLeft', pause: 'Escape'
     };
     const KEY_BINDING_STORAGE = 'pocketUniverseKeyBindings';
     let keyBindings = { ...DEFAULT_KEY_BINDINGS };
@@ -20105,7 +19749,7 @@
       sprint: 'Sprint / ship down', jump: 'Jump / ship up', toggleView: 'Toggle view', crouch: 'Crouch', flashlight: 'Flashlight',
       interact: 'Interact / collect / enter-exit', drop: 'Drop item', inventory: 'Inventory',
       slot1: 'Hotbar slot 1', slot2: 'Hotbar slot 2', slot3: 'Hotbar slot 3', slot4: 'Hotbar slot 4',
-      map: 'Open map', weather: 'Weather menu (Freeplay)', useTool: 'Chop / use tool', pause: 'Pause menu', screenshotUI: 'Toggle screenshot UI'
+      map: 'Open map', weather: 'Weather menu (Freeplay)', useTool: 'Chop / use tool', pause: 'Pause menu'
     };
     const getBoundCodes = (action) => {
       const code = keyBindings[action];
@@ -20115,12 +19759,6 @@
     const isActionDown = (action) => getBoundCodes(action).some(code => !!physicalKeys[code] || !!systemState.keys[code]);
     const isActionEvent = (event, action) => isKeyBoundTo(event.code, action);
     const isCrouchHeld = () => isActionDown('crouch');
-    const isScreenshotUIHidden = () => document.body.classList.contains('screenshot-ui-hidden');
-    const setScreenshotUIHidden = (hidden) => {
-      document.body.classList.toggle('screenshot-ui-hidden', !!hidden);
-      document.body.classList.toggle('screenshot-ui-active', !!hidden);
-    };
-    const toggleScreenshotUI = () => setScreenshotUIHidden(!isScreenshotUIHidden());
     const allBoundCodes = () => new Set(Object.values(keyBindings));
     const prettyKeyCode = (code) => {
       const names = { Space: 'Space', Escape: 'Esc', ShiftLeft: 'Shift', ShiftRight: 'Shift', ControlLeft: 'Ctrl', ControlRight: 'Ctrl',
@@ -20165,11 +19803,7 @@
     function finishKeyRebind(code) {
       if (!activeRebindAction || !code) return;
       const action = activeRebindAction;
-      // Escape is normally the cancel key while rebinding, but when the player is
-      // explicitly rebinding the Pause Menu action, pressing Escape should restore
-      // Escape as its binding. This gives players a reliable way to recover from
-      // accidentally moving the pause key elsewhere.
-      if (code === 'Escape' && action !== 'pause') { activeRebindAction = null; renderKeyBindings(); return; }
+      if (code === 'Escape') { activeRebindAction = null; renderKeyBindings(); return; }
       // Keep one clean binding per action: if the chosen key is already assigned,
       // swap the two actions rather than creating an invisible conflict.
       const oldCode = keyBindings[action];
@@ -20236,11 +19870,6 @@
       }
 
       physicalKeys[e.code] = true;
-      if (isActionEvent(e, 'screenshotUI') && !e.repeat && state.gameState === 'playing') {
-        e.preventDefault();
-        toggleScreenshotUI();
-        return;
-      }
       if (isActionEvent(e, 'interact') && !e.repeat && state.gameState === "playing" && !state.paused && settingsModal.classList.contains("hidden") && playerState.inRocket) {
         e.preventDefault();
         exitRocketFlight(false);
@@ -21270,8 +20899,9 @@
     function animate() {
       requestAnimationFrame(animate);
       rainbowCosmeticTime += 0.012;
-      if (accountCosmetics.equippedColor === 'rainbow') {
-        applyPlayerShirtRainbow(rainbowCosmeticTime);
+      if (accountCosmetics.equippedColor === 'rainbow' && typeof playerBody !== 'undefined' && playerBody?.material) {
+        playerBody.material.color.setHSL((rainbowCosmeticTime % 1),0.78,0.58);
+        applyPlayerModelRainbow(rainbowCosmeticTime);
       }
       const equippedHatSpec = getEquippedHatVisualSpec();
       if (equippedHatSpec?.colorId === 'rainbow') {
@@ -21282,7 +20912,6 @@
         }
       }
       const delta = Math.min(clock.getDelta(), 0.05);
-      updateAccountCharacterPreviewRenderer();
       const sleepingWasActive = sleepingActive;
       const sleepGameStep = sleepingWasActive ? Math.min(delta * SLEEP_TIME_SCALE, sleepingGameRemaining) : delta;
       if (sleepingWasActive) sleepingGameRemaining = Math.max(0, sleepingGameRemaining - sleepGameStep);
