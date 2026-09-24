@@ -112,6 +112,9 @@
   let multiplayerWorldPersistTimer = 0;
   let multiplayerWorldPersistBusy = false;
   let multiplayerWorldPersistVersion = 0;
+  let multiplayerWorldDirty = false;
+  let multiplayerWorldPersistDebounceTimer = null;
+  let multiplayerWorldPersistQueued = false;
 
   // ---------- Day 16 multiplayer QoL: social state + player list ----------
   let multiplayerPlayerListOpen = false;
@@ -133,7 +136,11 @@
   // register with the same API without creating a new network path for every object type.
   const MULTIPLAYER_ENTITY_PROTOCOL_VERSION = 1;
   const MULTIPLAYER_ENTITY_SEND_INTERVAL = 0.25;
+  const MULTIPLAYER_ROCKET_SEND_INTERVAL = 0.10;
   const MULTIPLAYER_ENTITY_STALE_MS = 1800;
+  const MULTIPLAYER_ROCKET_STALE_MS = 8000;
+  const MULTIPLAYER_REMOTE_ONLINE_GRACE_MS = 3500;
+  const MULTIPLAYER_REMOTE_PRESENCE_GRACE_MS = 4500;
   // Step 10M-C: render networked transforms slightly behind arrival time so movement can
   // be reconstructed between packets instead of visibly snapping to each new update.
   const MULTIPLAYER_PLAYER_RENDER_DELAY_MS = 110;
@@ -144,6 +151,10 @@
   const multiplayerEntityRegistry = new Map();
   const multiplayerRemoteEntities = new Map();
   let multiplayerEntitySendTimer = 0;
+  let multiplayerRocketSendTimer = 0;
+  let multiplayerRocketSequence = 0;
+  let multiplayerRocketWasFlying = false;
+  const multiplayerRemoteRocketLastPacketTimes = new Map();
   let multiplayerEntitySequence = 0;
   let multiplayerEntityRegistryReady = false;
   let multiplayerLocalRocketEntityId = '';
@@ -6401,7 +6412,7 @@
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
       group.rotateY(yaw);
       ctx.parent.add(group);
-      const pad = { root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id, rocket: null, fuel: 0, engineType: 'standard', warpDrive: false, warpDriveType: null, networkId: networkId || '' };
+      const pad = { root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id, rocket: null, fuel: 0, engineType: 'standard', warpDrive: false, warpDriveType: null, networkId: networkId || '', ownerUserId: '' };
       launchPads.push(pad);
       return pad;
     }
@@ -6411,7 +6422,7 @@
       const root = createMountedRocketVisual(0.92);
       root.position.set(0, 0.18, 0);
       pad.root.add(root);
-      pad.rocket = { root, pad, engineType: pad.engineType || 'standard', warpDrive: !!pad.warpDrive, warpDriveType: pad.warpDriveType || null, networkId: networkId || '' };
+      pad.rocket = { root, pad, engineType: pad.engineType || 'standard', warpDrive: !!pad.warpDrive, warpDriveType: pad.warpDriveType || null, networkId: networkId || '', ownerUserId: pad.ownerUserId || '' };
       ensureRocketEngineVisual(pad.rocket);
       return true;
     }
@@ -6475,7 +6486,11 @@
       const idx = getSelectedHotbarInventoryIndex();
       if (!inventorySlots[idx] || inventorySlots[idx].typeId !== 'rocket') return false;
       if (!placeRocketOnLaunchPad(pad)) return false;
-      if (multiplayerMode) broadcastMultiplayerRocketPlaced(pad, pad.rocket);
+      if (multiplayerMode) {
+        pad.ownerUserId = String(currentAccountUser?.id || '');
+        pad.rocket.ownerUserId = pad.ownerUserId;
+        broadcastMultiplayerRocketPlaced(pad, pad.rocket);
+      }
       inventorySlots[idx] = null;
       refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
       const prompt = document.getElementById('crystalPrompt');
@@ -10441,6 +10456,7 @@
         id: userId,
         username: String(payload.username || 'Explorer').slice(0, 24),
         root,
+        visualRoot,
         nameTag,
         parts,
         basePositions,
@@ -10458,6 +10474,7 @@
         state: { moving: false, sprinting: false, crouching: false, airborne: false, toolActive: false, toolSwing: false, flashlightOn: false, inRocket: false },
         stats: { health: HEALTH_MAX, hunger: HUNGER_MAX, stamina: STAMINA_MAX, exhausted: false },
         cosmetics: payload.cosmetics || null,
+        cosmeticHat: null,
         equippedItemType: null,
         heldHandAnchor: null,
         heldItemRoot: null
@@ -10477,7 +10494,9 @@
       applyMultiplayerRemoteStats(remote, payload);
       updateMultiplayerRemoteHeldItem(remote, payload.equippedItemType || null);
       if (payload.animation) remote.state = { ...remote.state, ...payload.animation };
-      remote.root.visible = !remote.state.inRocket;
+      remote.root.visible = true;
+      if (remote.visualRoot) remote.visualRoot.visible = !remote.state.inRocket;
+      if (remote.nameTag) remote.nameTag.visible = !remote.state.inRocket;
       multiplayerRemotePlayers.set(userId, remote);
       return remote;
     }
@@ -10496,9 +10515,15 @@
           mat.color.setHex(isShirtPart ? shirtHex : skinHex);
         }
       });
-      for (const child of [...remote.root.children]) {
-        if (child.userData?.multiplayerRemoteHat || child.userData?.cosmeticHatVisual) remote.root.remove(child);
-      }
+      // Remove any previous remote hat no matter which hierarchy it was attached to.
+      // Older builds incorrectly parented the hat to the scaled player visual, which made
+      // the hat appear offset on remote screens.
+      const staleHats = [];
+      remote.root.traverse((node) => {
+        if (node.userData?.multiplayerRemoteHat || node.userData?.cosmeticHatVisual) staleHats.push(node);
+      });
+      for (const node of staleHats) if (node.parent) node.parent.remove(node);
+
       const equippedHat = remote.cosmetics.equippedHat;
       if (equippedHat) {
         const [baseId, colorId] = String(equippedHat).split(':');
@@ -10506,14 +10531,18 @@
           const hatDef = cosmeticHatById[baseId];
           const hatColorId = hatDef.fixedColor || colorId || remote.cosmetics.shirtColor || 'red';
           const hat = createHatVisual(baseId, cosmeticColorHex(hatColorId));
+          // Match the local player hierarchy: the hat is a sibling of the scaled player
+          // visual under the player anchor, so its position is not multiplied by the model's
+          // scale/translation. The same +90 degree model yaw also matches the local hat frame.
           hat.position.set(0, playerModelTemplate ? 0.24 : 0.72, 0);
-          hat.rotation.y = 0;
+          hat.rotation.y = PLAYER_MODEL_YAW_OFFSET;
           hat.scale.setScalar(1.05);
           hat.layers.set(0);
-          hat.visible = true;
+          hat.visible = !remote.state?.inRocket;
           hat.userData.multiplayerRemoteHat = true;
           if (hatColorId === 'rainbow') applyRainbowHatColors(hat, rainbowCosmeticTime);
           remote.root.add(hat);
+          remote.cosmeticHat = hat;
         }
       }
     }
@@ -10771,6 +10800,7 @@
       multiplayerChannel.send({ type: 'broadcast', event: 'world_mineable_mined', payload }).catch((error) => {
         console.warn('Multiplayer mineable mining broadcast failed', error);
       });
+      markMultiplayerWorldDirty('mineable-mined');
     }
 
     function applyMultiplayerMineableMined(payload) {
@@ -10878,7 +10908,9 @@
         }
         if (pad.rocket || typeof placeRocketOnLaunchPad !== 'function') return;
         if (!placeRocketOnLaunchPad(pad, networkId)) return;
+        pad.ownerUserId = sourceUserId;
         const rocket = pad.rocket;
+        rocket.ownerUserId = sourceUserId;
         if (payload.engineType) rocket.engineType = String(payload.engineType);
         rocket.warpDrive = !!payload.warpDrive;
         rocket.warpDriveType = payload.warpDriveType || null;
@@ -10887,6 +10919,7 @@
         pad.warpDriveType = rocket.warpDriveType;
         pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(payload.fuel) || 0));
         ensureRocketEngineVisual(rocket);
+        markMultiplayerWorldDirty('rocket-placed');
         return;
       }
 
@@ -10899,10 +10932,12 @@
 
       if (objectType === 'launch_pad') {
         const pad = createLaunchPadObject(direction, yaw, bodyId, networkId);
+        pad.ownerUserId = sourceUserId;
         pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(payload.fuel) || 0));
         pad.engineType = payload.engineType === 'mark3' ? 'mark3' : (payload.engineType === 'upgraded' ? 'upgraded' : 'standard');
         pad.warpDrive = !!payload.warpDrive;
         pad.warpDriveType = payload.warpDriveType || null;
+        markMultiplayerWorldDirty('launch-pad-placed');
         for (let i = multiplayerPendingRocketPlacements.length - 1; i >= 0; i--) {
           const pending = multiplayerPendingRocketPlacements[i];
           if (String(pending.parentPadId || '') !== networkId) continue;
@@ -10913,14 +10948,17 @@
       }
       if (objectType === 'furnace') {
         createFurnaceObject(direction, yaw, bodyId, networkId);
+        markMultiplayerWorldDirty('furnace-placed');
         return;
       }
       if (objectType === 'campfire') {
         createCampfireObject(direction, yaw, bodyId, networkId);
+        markMultiplayerWorldDirty('campfire-placed');
         return;
       }
       if (objectType === 'drill') {
         createDrillObject(direction, yaw, Math.max(0, Math.min(100, Number(payload.durability) || 0)), bodyId, networkId);
+        markMultiplayerWorldDirty('drill-placed');
       }
     }
 
@@ -10935,6 +10973,7 @@
         if (String(multiplayerPendingRocketPlacements[i]?.objectId || '') === objectId) multiplayerPendingRocketPlacements.splice(i, 1);
       }
       removeMultiplayerPlaceableById(objectId);
+      markMultiplayerWorldDirty('placeable-removed-remote');
       if (multiplayerRemovedPlaceableIds.size > 300) {
         const first = multiplayerRemovedPlaceableIds.values().next().value;
         if (first) multiplayerRemovedPlaceableIds.delete(first);
@@ -10984,6 +11023,7 @@
       multiplayerChannel.send({ type: 'broadcast', event: 'world_placeable_interaction', payload }).catch((error) => {
         console.warn('Multiplayer placeable interaction broadcast failed', error);
       });
+      markMultiplayerWorldDirty('placeable-interaction');
       if (multiplayerAppliedPlaceableInteractionIds.size > 400) {
         const first = multiplayerAppliedPlaceableInteractionIds.values().next().value;
         if (first) multiplayerAppliedPlaceableInteractionIds.delete(first);
@@ -11116,6 +11156,7 @@
       multiplayerChannel.send({ type: 'broadcast', event: 'world_placeable_place', payload }).catch((error) => {
         console.warn('Multiplayer placeable placement broadcast failed', error);
       });
+      markMultiplayerWorldDirty('placeable-placed');
     }
 
     function broadcastMultiplayerRocketPlaced(pad, rocket) {
@@ -11137,6 +11178,7 @@
       multiplayerChannel.send({ type: 'broadcast', event: 'world_placeable_place', payload }).catch((error) => {
         console.warn('Multiplayer rocket placement broadcast failed', error);
       });
+      markMultiplayerWorldDirty('rocket-placed');
     }
 
     function broadcastMultiplayerPlaceableRemoved(objectType, objectId) {
@@ -11153,6 +11195,7 @@
       multiplayerChannel.send({ type: 'broadcast', event: 'world_placeable_remove', payload }).catch((error) => {
         console.warn('Multiplayer placeable removal broadcast failed', error);
       });
+      markMultiplayerWorldDirty('placeable-removed');
     }
 
     function applyMultiplayerRemotePacket(payload) {
@@ -11173,11 +11216,55 @@
       }
       if (payload.animation) remote.state = { ...remote.state, ...payload.animation };
       if (payload.currentPlanetId) remote.currentPlanetId = String(payload.currentPlanetId);
+      // Player-state Broadcast is a proven multiplayer path, so a player who is visibly in a
+      // rocket can always bootstrap a stable remote rocket entity from the player's transform.
+      // The dedicated rocket packet, when present, then upgrades that fallback with the exact
+      // authoritative rocket transform/fuel/orientation. This prevents the ship from vanishing
+      // when the entity stream races with the player stream.
+      if (payload.animation?.inRocket) {
+        const stableRocketId = `rocket:${userId}:active`;
+        const fallbackRocket = {
+          id: stableRocketId,
+          ownerId: userId,
+          sourceUserId: userId,
+          worldId: String(MULTIPLAYER_WORLD_ID),
+          sentAt: Number(payload.sentAt) || Date.now(),
+          visible: true,
+          transformSpace: payload.rocket?.transformSpace || (payload.rocket?.anchorBodyId ? 'body-local' : 'world'),
+          anchorBodyId: payload.rocket?.anchorBodyId ? String(payload.rocket.anchorBodyId) : null,
+          position: Array.isArray(payload.rocket?.position) && payload.rocket.position.length >= 3
+            ? payload.rocket.position : payload.position,
+          quaternion: Array.isArray(payload.rocket?.quaternion) && payload.rocket.quaternion.length >= 4
+            ? payload.rocket.quaternion : payload.quaternion,
+          physicalRocketId: payload.rocket?.physicalRocketId || '',
+          state: { ...(payload.rocket?.state || {}), inFlight: payload.rocket?.state?.inFlight === false ? false : true }
+        };
+        applyMultiplayerRemoteRocketState(fallbackRocket);
+      } else if (payload.rocket && payload.rocket.state) {
+        const stableRocketId = `rocket:${userId}:active`;
+        applyMultiplayerRemoteRocketState({
+          ...payload.rocket,
+          id: stableRocketId,
+          ownerId: userId,
+          sourceUserId: userId,
+          worldId: String(MULTIPLAYER_WORLD_ID),
+          sentAt: Number(payload.sentAt) || Date.now()
+        });
+      }
+
       if (payload.cosmetics) updateMultiplayerRemoteCosmetics(remote, payload.cosmetics);
       applyMultiplayerRemoteStats(remote, payload);
       updateMultiplayerRemoteHeldItem(remote, payload.equippedItemType || null);
-      remote.root.visible = !remote.state.inRocket;
-      remote.nameTag.visible = !remote.state.inRocket;
+      // The remote player root is a persistent network anchor. Never use its visibility as the
+      // online-state flag: the rocket renderer needs this object to remain alive while the
+      // astronaut model itself is hidden. Using root.visible here was also making the HUD flip
+      // between 1 and 2 players every time a pilot entered the rocket.
+      remote.root.visible = true;
+      remote.root.userData.multiplayerOnline = true;
+      remote.root.userData.inRocket = !!remote.state.inRocket;
+      if (remote.visualRoot) remote.visualRoot.visible = !remote.state.inRocket;
+      if (remote.cosmeticHat) remote.cosmeticHat.visible = !remote.state.inRocket;
+      if (remote.nameTag) remote.nameTag.visible = !remote.state.inRocket;
       remote.lastPacketAt = performance.now();
     }
 
@@ -11290,6 +11377,10 @@
       multiplayerEntityRegistryReady = false;
       multiplayerLocalRocketEntityId = '';
       multiplayerEntitySendTimer = 0;
+      multiplayerRocketSendTimer = 0;
+      multiplayerRocketSequence = 0;
+      multiplayerRocketWasFlying = false;
+      multiplayerRemoteRocketLastPacketTimes.clear();
       multiplayerLastEntityBatchAt = 0;
       for (const entry of multiplayerRemoteEntities.values()) {
         if (entry.root?.parent) entry.root.parent.remove(entry.root);
@@ -11308,9 +11399,21 @@
     }
 
     function getMultiplayerLocalRocketEntityId() {
+      // A player's active rocket gets one stable multiplayer entity id for the whole world.
+      // The physical placeable/networkId remains separate; this prevents the remote flight
+      // ghost from changing identity between pad placement, takeoff, and landing.
       if (!flightRocket || !currentAccountUser?.id) return '';
-      if (!flightRocket.networkId) flightRocket.networkId = `rocket:${currentAccountUser.id}:active`;
-      return String(flightRocket.networkId);
+      return `rocket:${currentAccountUser.id}:active`;
+    }
+
+    function findLocalRocketByOwnerId(userId) {
+      const id = String(userId || '');
+      if (!id) return null;
+      for (const pad of launchPads) {
+        if (!pad?.rocket) continue;
+        if (String(pad.ownerUserId || pad.rocket.ownerUserId || '') === id) return pad.rocket;
+      }
+      return null;
     }
 
     function serializeMultiplayerWildlifeEntity(root, extra = {}) {
@@ -11328,11 +11431,120 @@
       };
     }
 
+    function getMultiplayerRocketAnchorObject(bodyId) {
+      const id = String(bodyId || '');
+      if (!id) return null;
+      if (id === 'ivis') return planetSystem;
+      if (id === 'moon') return moonMesh;
+      if (id === 'cordelia') return cordeliaMesh;
+      if (id === 'aurora' || id === 'mileria') return getOmegaMesh(id);
+      if (id === 'syspo') return syspoSystem;
+      return null;
+    }
+
+    function getMultiplayerRocketAnchorDescriptor(position) {
+      try {
+        return getFlightFrameDescriptor(position);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function getMultiplayerRocketLocalTransform(worldPosition, worldQuaternion) {
+      const descriptor = getMultiplayerRocketAnchorDescriptor(worldPosition);
+      if (!descriptor?.object) {
+        return {
+          anchorBodyId: null,
+          position: worldPosition.clone(),
+          quaternion: worldQuaternion.clone().normalize()
+        };
+      }
+
+      const anchorObject = descriptor.object;
+      const localPosition = anchorObject.worldToLocal(worldPosition.clone());
+      const anchorWorldQuat = anchorObject.getWorldQuaternion(new THREE.Quaternion());
+      const localQuaternion = anchorWorldQuat.clone().invert().multiply(worldQuaternion.clone()).normalize();
+      return {
+        anchorBodyId: descriptor.id,
+        position: localPosition,
+        quaternion: localQuaternion
+      };
+    }
+
+    function multiplayerRocketSurfaceRadius(bodyId, localDir) {
+      const dir = localDir?.clone ? localDir.clone().normalize() : new THREE.Vector3(0, 1, 0);
+      if (bodyId === 'ivis') return PLANET_RADIUS + heightAt(dir);
+      if (bodyId === 'moon') return MOON_RADIUS;
+      if (bodyId === 'cordelia') return CORDELIA_RADIUS + cordeliaHeightAt(dir);
+      if (bodyId === 'aurora' || bodyId === 'mileria') return getOmegaSurfaceRadius(bodyId, dir);
+      return 0;
+    }
+
+    function clampRemoteRocketToAnchorSurface(bodyId, localPosition) {
+      const anchorObject = getMultiplayerRocketAnchorObject(bodyId);
+      if (!anchorObject || !localPosition) return localPosition;
+      if (bodyId === 'syspo') return localPosition;
+      const radius = localPosition.length();
+      if (!Number.isFinite(radius) || radius < 0.001) return localPosition;
+      const surface = multiplayerRocketSurfaceRadius(bodyId, localPosition.clone().normalize());
+      const safeRadius = surface + FLIGHT_TERRAIN_CLEARANCE + FLIGHT_PROP_COLLISION_RADIUS;
+      if (radius < safeRadius) localPosition.setLength(safeRadius);
+      return localPosition;
+    }
+
+    function setRemoteRocketTransform(remote, payloadPosition, payloadQuaternion, anchorBodyId) {
+      const desiredAnchorId = anchorBodyId ? String(anchorBodyId) : '';
+      const nextParent = getMultiplayerRocketAnchorObject(desiredAnchorId) || scene;
+      const anchorChanged = String(remote.anchorBodyId || '') !== desiredAnchorId || remote.root.parent !== nextParent;
+
+      if (anchorChanged) {
+        if (nextParent === scene) {
+          if (remote.root.parent !== scene) scene.attach(remote.root);
+        } else if (remote.root.parent !== nextParent) {
+          nextParent.attach(remote.root);
+        }
+        remote.anchorBodyId = desiredAnchorId || null;
+        remote.networkSamples.length = 0;
+        remote.networkInitialized = false;
+      }
+
+      if (desiredAnchorId) {
+        remote.targetPosition.copy(clampRemoteRocketToAnchorSurface(desiredAnchorId, payloadPosition.clone()));
+        remote.targetQuaternion.copy(payloadQuaternion).normalize();
+      } else {
+        remote.targetPosition.copy(payloadPosition);
+        remote.targetQuaternion.copy(payloadQuaternion).normalize();
+      }
+
+      const now = performance.now();
+      pushMultiplayerNetworkSample(remote.networkSamples, remote.targetPosition, remote.targetQuaternion, now);
+      if (!remote.networkInitialized) {
+        remote.currentPosition.copy(remote.targetPosition);
+        remote.currentQuaternion.copy(remote.targetQuaternion);
+        remote.networkInitialized = true;
+      }
+      remote.root.position.copy(remote.currentPosition);
+      remote.root.quaternion.copy(remote.currentQuaternion);
+    }
+
     function createRemoteRocketEntity(id, payload) {
       const existing = multiplayerRemoteEntities.get(id);
       if (existing) return existing;
       const root = createMountedRocketVisual(1);
       root.name = 'MultiplayerRemoteRocket';
+      root.visible = true;
+      root.layers.set(0);
+      root.traverse((node) => {
+        node.visible = true;
+        node.layers.set(0);
+        if (node.isMesh) {
+          node.frustumCulled = false;
+          if (node.material) {
+            const mats = Array.isArray(node.material) ? node.material : [node.material];
+            for (const mat of mats) if (mat) mat.transparent = !!mat.transparent;
+          }
+        }
+      });
       root.userData.multiplayerRemoteEntity = true;
       root.userData.multiplayerRemoteRocket = true;
       scene.add(root);
@@ -11341,6 +11553,7 @@
         type: 'rocket',
         ownerId: String(payload?.ownerId || payload?.sourceUserId || ''),
         root,
+        anchorBodyId: null,
         targetPosition: new THREE.Vector3(),
         currentPosition: new THREE.Vector3(),
         targetQuaternion: new THREE.Quaternion(),
@@ -11348,6 +11561,7 @@
         networkSamples: [],
         networkInitialized: false,
         lastPacketAt: 0,
+        lastRocketSentAt: 0,
         parkedRoot: null,
         engineType: 'standard',
         warpDrive: false,
@@ -11359,12 +11573,20 @@
     }
 
     function applyMultiplayerRemoteRocketState(payload) {
-      const id = String(payload?.id || '');
       const sourceUserId = String(payload?.sourceUserId || '');
-      if (!id || !sourceUserId || !currentAccountUser || sourceUserId === String(currentAccountUser.id)) return;
+      if (!sourceUserId || !currentAccountUser || sourceUserId === String(currentAccountUser.id)) return;
       if (String(payload.ownerId || '') !== sourceUserId) return;
+      const id = `rocket:${sourceUserId}:active`;
+      const packetTime = Number(payload.sentAt) || Date.now();
+      const lastPacketTime = Number(multiplayerRemoteRocketLastPacketTimes.get(id) || 0);
+      const packetSequence = Number(payload.sequence || 0);
+      const existing = multiplayerRemoteEntities.get(id);
+      if (packetTime < lastPacketTime) return;
+      if (packetTime === lastPacketTime && packetSequence && packetSequence <= Number(existing?.lastSequence || 0)) return;
+      multiplayerRemoteRocketLastPacketTimes.set(id, packetTime);
       const inFlight = !!payload?.state?.inFlight;
-      const parked = findLocalRocketByNetworkId(id);
+      const physicalParked = findLocalRocketByNetworkId(payload?.physicalRocketId || '');
+      const parked = physicalParked || findLocalRocketByOwnerId(sourceUserId);
 
       if (!inFlight) {
         const remote = multiplayerRemoteEntities.get(id);
@@ -11374,32 +11596,25 @@
           multiplayerRemoteEntities.delete(id);
         }
         if (parked?.root) parked.root.visible = payload.visible !== false;
+        multiplayerRemoteRocketLastPacketTimes.delete(id);
         return;
       }
 
       const remote = createRemoteRocketEntity(id, payload);
+      remote.ownerId = sourceUserId;
+      remote.lastRocketSentAt = packetTime;
+      remote.lastSequence = packetSequence;
       if (parked?.root) {
         parked.root.visible = false;
         remote.parkedRoot = parked;
       }
+
       const position = Array.isArray(payload.position) && payload.position.length >= 3
-        ? new THREE.Vector3().fromArray(payload.position) : remote.currentPosition;
+        ? new THREE.Vector3().fromArray(payload.position) : remote.currentPosition.clone();
       const quaternion = Array.isArray(payload.quaternion) && payload.quaternion.length >= 4
-        ? new THREE.Quaternion().fromArray(payload.quaternion).normalize() : remote.currentQuaternion;
-      if (remote.lastPacketAt === 0) {
-        remote.currentPosition.copy(position);
-        remote.currentQuaternion.copy(quaternion);
-      }
-      remote.targetPosition.copy(position);
-      remote.targetQuaternion.copy(quaternion);
-      pushMultiplayerNetworkSample(remote.networkSamples, position, quaternion, performance.now());
-      if (!remote.networkInitialized) {
-        remote.currentPosition.copy(position);
-        remote.currentQuaternion.copy(quaternion);
-        remote.networkInitialized = true;
-      }
-      remote.root.position.copy(remote.currentPosition);
-      remote.root.quaternion.copy(remote.currentQuaternion);
+        ? new THREE.Quaternion().fromArray(payload.quaternion).normalize() : remote.currentQuaternion.clone();
+      const anchorBodyId = payload.anchorBodyId ? String(payload.anchorBodyId) : '';
+      setRemoteRocketTransform(remote, position, quaternion, anchorBodyId);
       remote.root.visible = payload.visible !== false;
       remote.lastPacketAt = performance.now();
       remote.state = { ...(payload.state || {}) };
@@ -11441,17 +11656,26 @@
     function serializeMultiplayerRocketEntity() {
       const id = getMultiplayerLocalRocketEntityId();
       if (!id || !flightRocket?.root || !currentAccountUser?.id) return null;
-      const worldPosition = flightRocket.root.getWorldPosition(new THREE.Vector3());
-      const worldQuaternion = flightRocket.root.getWorldQuaternion(new THREE.Quaternion());
       const inFlight = !!(playerState.inRocket && !playerState.rocketLanded);
+      const worldPosition = inFlight
+        ? flightPosition.clone()
+        : flightRocket.root.getWorldPosition(new THREE.Vector3());
+      const worldQuaternion = inFlight
+        ? flightRocketQuat.clone().normalize()
+        : flightRocket.root.getWorldQuaternion(new THREE.Quaternion());
+      const anchored = inFlight
+        ? getMultiplayerRocketLocalTransform(worldPosition, worldQuaternion)
+        : { anchorBodyId: null, position: worldPosition.clone(), quaternion: worldQuaternion.clone() };
       return {
         id,
+        physicalRocketId: String(flightRocket.networkId || ''),
         type: 'rocket',
         authority: 'owner',
         ownerId: String(currentAccountUser.id),
-        transformSpace: 'world',
-        position: multiplayerEntityVectorArray(worldPosition),
-        quaternion: multiplayerEntityQuaternionArray(worldQuaternion),
+        transformSpace: anchored.anchorBodyId ? 'body-local' : 'world',
+        anchorBodyId: anchored.anchorBodyId,
+        position: multiplayerEntityVectorArray(anchored.position),
+        quaternion: multiplayerEntityQuaternionArray(anchored.quaternion),
         visible: !!flightRocket.root.visible,
         state: {
           inFlight,
@@ -11642,6 +11866,11 @@
       ensureMultiplayerEntityRegistry();
       const entities = [];
       for (const entry of multiplayerEntityRegistry.values()) {
+        // Rockets have their own lightweight high-frequency flight stream and are also
+        // carried in player_state as a fallback. Do not duplicate them inside the larger
+        // wildlife/environment snapshot; this keeps Realtime traffic low enough that Presence
+        // remains stable during flight.
+        if (String(entry?.type || '') === 'rocket') continue;
         if (!shouldBroadcastMultiplayerEntity(entry)) continue;
         let payload = null;
         try { payload = entry.serialize(); } catch (error) { console.warn('Entity serialization failed', entry.id, error); }
@@ -11820,25 +12049,78 @@
       }
       for (const [id, remote] of multiplayerRemoteEntities) {
         if (!remote) continue;
-        if (now - remote.lastPacketAt > MULTIPLAYER_ENTITY_STALE_MS) {
+        const staleLimit = remote.type === 'rocket' ? MULTIPLAYER_ROCKET_STALE_MS : MULTIPLAYER_ENTITY_STALE_MS;
+        if (now - remote.lastPacketAt > staleLimit) {
+          if (remote.type === 'rocket') {
+            // Keep a last-known flying rocket visible through temporary Realtime packet loss.
+            // Presence leave/disconnect cleanup still removes it authoritatively.
+            if (remote.root) remote.root.visible = true;
+            continue;
+          }
           if (remote.root?.parent) remote.root.parent.remove(remote.root);
           if (remote.parkedRoot) remote.parkedRoot.visible = true;
           multiplayerRemoteEntities.delete(id);
           continue;
         }
         sampleMultiplayerNetworkTransform(remote.networkSamples, remote.currentPosition, remote.currentQuaternion, now, MULTIPLAYER_ENTITY_RENDER_DELAY_MS);
-        remote.root.position.copy(remote.currentPosition);
-        remote.root.quaternion.copy(remote.currentQuaternion);
+        if (remote.type === 'rocket') {
+          const anchorObject = getMultiplayerRocketAnchorObject(remote.anchorBodyId);
+          const expectedParent = anchorObject || scene;
+          if (remote.root.parent !== expectedParent) {
+            if (expectedParent === scene) scene.attach(remote.root);
+            else expectedParent.attach(remote.root);
+          }
+          if (remote.anchorBodyId) clampRemoteRocketToAnchorSurface(remote.anchorBodyId, remote.currentPosition);
+          remote.root.position.copy(remote.currentPosition);
+          remote.root.quaternion.copy(remote.currentQuaternion);
+          remote.root.visible = true;
+          remote.root.layers.set(0);
+        } else {
+          remote.root.position.copy(remote.currentPosition);
+          remote.root.quaternion.copy(remote.currentQuaternion);
+        }
       }
+    }
+
+    function broadcastMultiplayerRocketFlightState(force = false) {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser || !flightRocket) return false;
+      const payload = serializeMultiplayerRocketEntity();
+      if (!payload) return false;
+      payload.protocol = 2;
+      payload.kind = 'rocket_flight_state_v2';
+      payload.sourceUserId = String(currentAccountUser.id);
+      payload.worldId = String(MULTIPLAYER_WORLD_ID);
+      payload.sequence = ++multiplayerRocketSequence;
+      payload.sentAt = Date.now();
+      payload.state = { ...(payload.state || {}), inFlight: !!(playerState.inRocket && !playerState.rocketLanded) };
+      multiplayerChannel.send({ type: 'broadcast', event: 'rocket_flight_state_v2', payload }).catch((error) => {
+        multiplayerDebugStats.lastSendError = error?.message || String(error);
+        console.warn('Multiplayer rocket flight state send failed:', error);
+      });
+      return true;
     }
 
     function updateMultiplayerEntitySync(delta) {
       if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser) return;
       ensureMultiplayerEntityRegistry();
+      multiplayerRocketSendTimer += delta;
+      const rocketFlying = !!(playerState.inRocket && flightRocket && !playerState.rocketLanded);
+      if (rocketFlying || multiplayerRocketWasFlying) {
+        if (rocketFlying && (!multiplayerRocketWasFlying || multiplayerRocketSendTimer >= MULTIPLAYER_ROCKET_SEND_INTERVAL)) {
+          multiplayerRocketSendTimer = 0;
+          broadcastMultiplayerRocketFlightState(false);
+        } else if (!rocketFlying && multiplayerRocketWasFlying) {
+          // Send one final non-flight packet so every client immediately restores the parked rocket.
+          multiplayerRocketSendTimer = 0;
+          broadcastMultiplayerRocketFlightState(true);
+        }
+      }
+      multiplayerRocketWasFlying = rocketFlying;
       multiplayerEntitySendTimer += delta;
-      if (multiplayerEntitySendTimer < MULTIPLAYER_ENTITY_SEND_INTERVAL) return;
-      multiplayerEntitySendTimer = 0;
-      broadcastMultiplayerEntitySnapshot(false);
+      if (multiplayerEntitySendTimer >= MULTIPLAYER_ENTITY_SEND_INTERVAL) {
+        multiplayerEntitySendTimer = 0;
+        broadcastMultiplayerEntitySnapshot(false);
+      }
     }
 
     function serializeMultiplayerEnvironmentSnapshot() {
@@ -11861,6 +12143,25 @@
         oreType: String(ore.oreType || 'iron_ore')
       }));
       return { trees, rocks, ironOres };
+    }
+
+    function applyMultiplayerTreeChopped(payload) {
+      if (!payload || payload.kind !== 'tree_chopped_v2') return;
+      if (String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return;
+      if (String(payload.sourceUserId || '') === String(currentAccountUser?.id || '')) return;
+      const bodyId = String(payload.bodyId || 'ivis');
+      const index = Math.max(0, Math.floor(Number(payload.treeIndex) || 0));
+      const trees = bodyId === 'aurora' ? auroraTreeSpawns : treeSpawns;
+      const tree = trees[index];
+      if (!tree) return;
+      const receivedGeneration = Math.max(0, Math.floor(Number(payload.generation) || 0));
+      const localGeneration = Math.max(0, Math.floor(Number(tree.resourceGeneration) || 0));
+      if (receivedGeneration < localGeneration) return;
+      tree.chopped = true;
+      tree.resourceGeneration = receivedGeneration;
+      if (tree.root) tree.root.visible = false;
+      if (bodyId === 'ivis' && tree.root) createTreeSapling(tree, index);
+      markMultiplayerWorldDirty('remote-tree-chopped');
     }
 
     function applyMultiplayerEnvironmentSnapshot(payload) {
@@ -11966,6 +12267,36 @@
     }
 
     // ---------- Day 15 Step 10F/10G: persistent multiplayer world ----------
+    function markMultiplayerWorldDirty(reason = 'world-change', requestAuthority = true) {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser) return;
+      multiplayerWorldDirty = true;
+      if (multiplayerWorldPersistDebounceTimer) clearTimeout(multiplayerWorldPersistDebounceTimer);
+      multiplayerWorldPersistDebounceTimer = setTimeout(() => {
+        multiplayerWorldPersistDebounceTimer = null;
+        const authorityId = getMultiplayerEnvironmentAuthorityId();
+        if (authorityId === String(currentAccountUser.id)) {
+          persistMultiplayerWorld(false);
+          return;
+        }
+        if (!requestAuthority) return;
+        const payload = {
+          kind: 'world_save_request_v2',
+          sourceUserId: String(currentAccountUser.id),
+          worldId: String(MULTIPLAYER_WORLD_ID),
+          reason: String(reason || 'world-change'),
+          sentAt: Date.now()
+        };
+        multiplayerChannel.send({ type: 'broadcast', event: 'world_save_requested', payload }).catch((error) => {
+          console.warn('Multiplayer world-save hint failed:', error);
+        });
+      }, 350);
+    }
+
+    function clearMultiplayerWorldDirty() {
+      multiplayerWorldDirty = false;
+      multiplayerWorldPersistQueued = false;
+    }
+
     function serializePersistentMultiplayerWorld() {
       const vectorArray = (v, fallback = [0, 1, 0]) => v?.toArray?.() || fallback;
       return {
@@ -11984,7 +12315,8 @@
             warpDrive: !!pad.warpDrive,
             warpDriveType: pad.warpDriveType || null,
             hasRocket: !!pad.rocket,
-            rocketObjectId: pad.rocket ? String(pad.rocket.networkId || '') : ''
+            rocketObjectId: pad.rocket ? String(pad.rocket.networkId || '') : '',
+            ownerUserId: String(pad.ownerUserId || pad.rocket?.ownerUserId || '')
           })).filter(p => p.objectId),
           furnaces: furnaces.map((furnace) => ({
             objectId: String(furnace.networkId || ''),
@@ -12053,12 +12385,14 @@
         const dir = safeDir(rec.direction);
         if (!dir || !rec.objectId) continue;
         const pad = createLaunchPadObject(dir, Number(rec.yaw) || 0, safeBodyId(rec.surfaceBodyId), String(rec.objectId));
+        pad.ownerUserId = String(rec.ownerUserId || '');
         pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(rec.fuel) || 0));
         pad.engineType = rec.engineType === 'mark3' ? 'mark3' : (rec.engineType === 'upgraded' ? 'upgraded' : 'standard');
         pad.warpDrive = !!rec.warpDrive;
         pad.warpDriveType = rec.warpDriveType || null;
         if (rec.hasRocket && rec.rocketObjectId && !pad.rocket && typeof placeRocketOnLaunchPad === 'function') {
           if (placeRocketOnLaunchPad(pad, String(rec.rocketObjectId))) {
+            pad.rocket.ownerUserId = pad.ownerUserId;
             pad.rocket.networkId = String(rec.rocketObjectId);
             pad.rocket.engineType = pad.engineType;
             pad.rocket.warpDrive = pad.warpDrive;
@@ -12115,6 +12449,7 @@
         multiplayerWorldMeta = { ...(multiplayerWorldMeta || {}), ...data };
         multiplayerWorldPersistVersion = Math.max(0, Math.floor(Number(data.version) || multiplayerWorldPersistVersion || 0));
         if (data.snapshot && typeof data.snapshot === 'object') applyPersistentMultiplayerWorld(data.snapshot);
+        clearMultiplayerWorldDirty();
         return true;
       } catch (error) {
         console.warn('Could not load persistent multiplayer world:', error);
@@ -12123,7 +12458,11 @@
     }
 
     async function persistMultiplayerWorld(force = false) {
-      if (!multiplayerMode || !multiplayerConnected || !pocketSupabase || !currentAccountUser || multiplayerWorldPersistBusy) return false;
+      if (!multiplayerMode || !multiplayerConnected || !pocketSupabase || !currentAccountUser) return false;
+      if (multiplayerWorldPersistBusy) {
+        multiplayerWorldPersistQueued = true;
+        return false;
+      }
       const authorityId = getMultiplayerEnvironmentAuthorityId();
       if (!force && authorityId !== String(currentAccountUser.id)) return false;
       multiplayerWorldPersistBusy = true;
@@ -12139,38 +12478,75 @@
           multiplayerWorldPersistVersion = Math.max(0, Math.floor(Number(data.version) || multiplayerWorldPersistVersion));
           multiplayerWorldMeta = { ...(multiplayerWorldMeta || {}), ...data };
         }
+        clearMultiplayerWorldDirty();
         return true;
       } catch (error) {
         // If an old authority writes after ownership has moved, refresh once and let the
         // current authority retry on its next interval rather than overwriting newer state.
         if (/version conflict|stale world/i.test(String(error?.message || ''))) {
-          await loadPersistentMultiplayerWorld();
+          // Do not blindly replace live objects with an older durable snapshot after an authority
+          // handoff. Refresh metadata, ask the current authority for a bootstrap snapshot, and
+          // let live remove/placement events reconcile the scene without deleting fresh work.
+          await ensurePersistentMultiplayerWorld();
+          requestMultiplayerBootstrapSnapshot();
         } else {
           console.warn('Could not persist multiplayer world:', error);
         }
         return false;
       } finally {
         multiplayerWorldPersistBusy = false;
+        if (multiplayerWorldPersistQueued) {
+          multiplayerWorldPersistQueued = false;
+          if (multiplayerWorldDirty) {
+            setTimeout(() => { if (multiplayerMode && multiplayerConnected) persistMultiplayerWorld(false); }, 120);
+          }
+        }
       }
+    }
+
+    function multiplayerRemoteIsRecentlyOnline(remote, now = performance.now()) {
+      if (!remote) return false;
+      const packetAge = now - Number(remote.lastPacketAt || 0);
+      const presenceAge = now - Number(remote.lastPresenceSeenAt || 0);
+      return packetAge <= MULTIPLAYER_REMOTE_ONLINE_GRACE_MS || presenceAge <= MULTIPLAYER_REMOTE_PRESENCE_GRACE_MS;
+    }
+
+    function multiplayerOnlinePlayerCount() {
+      const now = performance.now();
+      let count = multiplayerMode && currentAccountUser ? 1 : 0;
+      for (const remote of multiplayerRemotePlayers.values()) {
+        if (multiplayerRemoteIsRecentlyOnline(remote, now)) count += 1;
+      }
+      return count;
     }
 
     function syncMultiplayerPresence() {
       if (!multiplayerChannel || typeof multiplayerChannel.presenceState !== 'function') return;
       const presence = multiplayerChannel.presenceState() || {};
       const seen = new Set();
+      const now = performance.now();
       for (const [key, entries] of Object.entries(presence)) {
         for (const entry of (Array.isArray(entries) ? entries : [entries])) {
           const userId = String(entry?.userId || key || '');
           if (!userId || userId === currentAccountUser?.id) continue;
           seen.add(userId);
+          const remote = makeMultiplayerRemotePlayer(userId, entry);
+          if (remote) remote.lastPresenceSeenAt = now;
           applyMultiplayerRemotePacket(entry);
         }
       }
       for (const [userId, remote] of multiplayerRemotePlayers) {
-        if (!seen.has(userId)) {
-          remote.root.visible = false;
-          remote.nameTag.visible = false;
+        if (seen.has(userId)) {
+          remote.lastPresenceSeenAt = now;
+          remote.root.visible = true;
+          continue;
         }
+        // A transient Presence resync must not immediately destroy a live network player or
+        // their flying rocket. Player-state packets are authoritative enough to keep the remote
+        // alive during this short Presence gap.
+        if (multiplayerRemoteIsRecentlyOnline(remote, now)) continue;
+        remote.root.visible = false;
+        remote.nameTag.visible = false;
       }
       updateMultiplayerHud();
     }
@@ -12248,16 +12624,7 @@
     }
 
     function multiplayerDebugPresencePlayerCount() {
-      if (!multiplayerChannel || typeof multiplayerChannel.presenceState !== 'function') return multiplayerMode ? 1 : 0;
-      const presence = multiplayerChannel.presenceState() || {};
-      const ids = new Set();
-      for (const [key, entries] of Object.entries(presence)) {
-        for (const entry of (Array.isArray(entries) ? entries : [entries])) {
-          const id = String(entry?.userId || key || '');
-          if (id) ids.add(id);
-        }
-      }
-      return ids.size || (multiplayerMode ? 1 : 0);
+      return multiplayerOnlinePlayerCount();
     }
 
     function multiplayerDebugAuthorityLabel() {
@@ -12356,7 +12723,6 @@
       if (!multiplayerMode) return;
       const stateName = stateOverride || (multiplayerConnected ? 'connected' : 'connecting');
       hud.dataset.state = stateName;
-      const online = 1 + [...multiplayerRemotePlayers.values()].filter(remote => remote.root.visible).length;
       if (stateName === 'error') {
         text.textContent = 'MULTIPLAYER · CONNECTION ERROR';
         const detail = multiplayerLastError || 'Check Supabase Realtime authorization.';
@@ -12365,7 +12731,8 @@
         text.textContent = 'MULTIPLAYER · CONNECTING…';
         hud.title = '';
       } else {
-        text.textContent = 'MULTIPLAYER · ' + online + (online === 1 ? ' PLAYER ONLINE' : ' PLAYERS ONLINE');
+        const stableOnline = multiplayerOnlinePlayerCount();
+        text.textContent = 'MULTIPLAYER · ' + stableOnline + (stableOnline === 1 ? ' PLAYER ONLINE' : ' PLAYERS ONLINE');
         const worldLabel = multiplayerWorldMeta?.world_name ? String(multiplayerWorldMeta.world_name) : 'Ivis Freeplay';
         const worldCode = multiplayerWorldMeta?.join_code ? String(multiplayerWorldMeta.join_code) : MULTIPLAYER_WORLD_DEFAULT_CODE;
         hud.title = worldLabel + ' · ' + worldCode;
@@ -12437,6 +12804,9 @@
       secureHotbarPersistBusy = false;
       secureHotbarPersistQueued = false;
       if (multiplayerEnvironmentSnapshotTimer) { clearTimeout(multiplayerEnvironmentSnapshotTimer); multiplayerEnvironmentSnapshotTimer = null; }
+      if (multiplayerWorldPersistDebounceTimer) { clearTimeout(multiplayerWorldPersistDebounceTimer); multiplayerWorldPersistDebounceTimer = null; }
+      multiplayerWorldPersistQueued = false;
+      multiplayerWorldDirty = false;
       multiplayerLastEnvironmentSnapshotKey = '';
       multiplayerAppliedPlaceableInteractionIds.clear();
       clearMultiplayerRemotePlayers();
@@ -12513,6 +12883,7 @@
         players: multiplayerBootstrapPlayers().filter((player) => String(player?.userId || '') === selfId),
         entities: ownEntities,
         environment: includeWorldState ? serializeMultiplayerEnvironmentSnapshot() : null,
+        placeables: includeWorldState ? serializePersistentMultiplayerWorld().placeables : null,
         worldMeta: includeWorldState && multiplayerWorldMeta ? {
           world_id: multiplayerWorldMeta.world_id || MULTIPLAYER_WORLD_ID,
           world_name: multiplayerWorldMeta.world_name || '',
@@ -12551,6 +12922,64 @@
       return true;
     }
 
+    function applyMultiplayerBootstrapPlaceablesSnapshot(placeables) {
+      if (!placeables || typeof placeables !== 'object') return;
+      const safeBodyId = (id) => ['ivis', 'aurora', 'cordelia', 'moon', 'mileria'].includes(String(id || '')) ? String(id) : 'ivis';
+      const safeDir = (raw) => {
+        if (!Array.isArray(raw) || raw.length < 3) return null;
+        const dir = new THREE.Vector3().fromArray(raw).normalize();
+        return dir.lengthSq() > 0.5 ? dir : null;
+      };
+      const ensurePad = (rec) => {
+        const id = String(rec?.objectId || '');
+        const dir = safeDir(rec?.direction);
+        if (!id || !dir) return null;
+        let pad = launchPads.find(p => String(p?.networkId || '') === id) || null;
+        if (!pad) pad = createLaunchPadObject(dir, Number(rec.yaw) || 0, safeBodyId(rec.surfaceBodyId), id);
+        pad.ownerUserId = String(rec.ownerUserId || pad.ownerUserId || '');
+        pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(rec.fuel) || 0));
+        pad.engineType = rec.engineType === 'mark3' ? 'mark3' : (rec.engineType === 'upgraded' ? 'upgraded' : 'standard');
+        pad.warpDrive = !!rec.warpDrive;
+        pad.warpDriveType = rec.warpDriveType || null;
+        if (rec.hasRocket && rec.rocketObjectId && !pad.rocket) {
+          if (placeRocketOnLaunchPad(pad, String(rec.rocketObjectId))) {
+            pad.rocket.ownerUserId = pad.ownerUserId;
+            pad.rocket.networkId = String(rec.rocketObjectId);
+            pad.rocket.engineType = pad.engineType;
+            pad.rocket.warpDrive = pad.warpDrive;
+            pad.rocket.warpDriveType = pad.warpDriveType;
+            ensureRocketEngineVisual(pad.rocket);
+          }
+        }
+        return pad;
+      };
+      for (const rec of (Array.isArray(placeables.launchPads) ? placeables.launchPads : [])) ensurePad(rec);
+      for (const rec of (Array.isArray(placeables.furnaces) ? placeables.furnaces : [])) {
+        const id = String(rec?.objectId || ''), dir = safeDir(rec?.direction);
+        if (!id || !dir) continue;
+        let furnace = furnaces.find(o => String(o?.networkId || '') === id);
+        if (!furnace) furnace = createFurnaceObject(dir, Number(rec.yaw) || 0, safeBodyId(rec.surfaceBodyId), id);
+        furnace.inventory = cloneFurnaceInventory(rec.inventory);
+        furnace.interactionOwnerId = String(rec.ownerUserId || furnace.interactionOwnerId || '');
+        if (typeof updateFurnaceVisualState === 'function') updateFurnaceVisualState(furnace);
+      }
+      for (const rec of (Array.isArray(placeables.campfires) ? placeables.campfires : [])) {
+        const id = String(rec?.objectId || ''), dir = safeDir(rec?.direction);
+        if (!id || !dir) continue;
+        if (!campfires.some(o => String(o?.networkId || '') === id)) createCampfireObject(dir, Number(rec.yaw) || 0, safeBodyId(rec.surfaceBodyId), id);
+      }
+      for (const rec of (Array.isArray(placeables.drills) ? placeables.drills : [])) {
+        const id = String(rec?.objectId || ''), dir = safeDir(rec?.direction);
+        if (!id || !dir) continue;
+        let drill = placedDrills.find(o => String(o?.networkId || '') === id);
+        if (!drill) drill = createDrillObject(dir, Number(rec.yaw) || 0, Math.max(0, Math.min(100, Number(rec.durability) || 0)), safeBodyId(rec.surfaceBodyId), id);
+        else drill.durability = Math.max(0, Math.min(100, Number(rec.durability) || 0));
+      }
+      // A bootstrap snapshot is additive by design. Live remove events remain the authoritative
+      // deletion path, so a slightly older durable snapshot can never erase a freshly placed object.
+      updateCrystalPrompt();
+    }
+
     function applyMultiplayerBootstrapSnapshot(payload) {
       if (!payload || payload.kind !== 'multiplayer_bootstrap_v1') return;
       if (Number(payload.protocol || 0) !== 1) return;
@@ -12587,6 +13016,9 @@
           rocks: environment.rocks || [],
           ironOres: environment.ironOres || []
         });
+      }
+      if (payload.worldStateSource && payload.placeables && typeof payload.placeables === 'object') {
+        applyMultiplayerBootstrapPlaceablesSnapshot(payload.placeables);
       }
 
       if (payload.worldMeta && typeof payload.worldMeta === 'object') {
@@ -12673,6 +13105,7 @@
         .on('broadcast', { event: 'world_placeable_remove' }, ({ payload }) => applyMultiplayerPlaceableRemoved(payload))
         .on('broadcast', { event: 'world_placeable_interaction' }, ({ payload }) => applyMultiplayerPlaceableInteraction(payload))
         .on('broadcast', { event: 'world_mineable_mined' }, ({ payload }) => applyMultiplayerMineableMined(payload))
+        .on('broadcast', { event: 'world_tree_chopped' }, ({ payload }) => applyMultiplayerTreeChopped(payload))
         .on('broadcast', { event: 'world_environment_snapshot' }, ({ payload }) => {
           multiplayerDebugRecordReceived('world_environment_snapshot', payload);
           multiplayerDebugStats.lastEnvironmentReceivedAt = performance.now();
@@ -12683,6 +13116,12 @@
           multiplayerDebugStats.entityBatchesReceived += 1;
           multiplayerDebugStats.lastEntityReceivedAt = performance.now();
           applyMultiplayerEntitySnapshot(payload);
+        })
+        .on('broadcast', { event: 'rocket_flight_state_v2' }, ({ payload }) => {
+          if (!payload || payload.kind !== 'rocket_flight_state_v2') return;
+          if (String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return;
+          multiplayerDebugRecordReceived('rocket_flight_state_v2', payload);
+          applyMultiplayerRemoteRocketState(payload);
         })
         .on('broadcast', { event: 'entity_event_v1' }, ({ payload }) => {
           multiplayerDebugRecordReceived('entity_event_v1', payload);
@@ -12726,9 +13165,15 @@
           applyMultiplayerBootstrapSnapshot(payload);
         })
         .on('broadcast', { event: 'world_save_requested' }, ({ payload }) => {
-          if (!payload || payload.kind !== 'world_save_request_v1' || String(payload.sourceUserId || '') === String(currentAccountUser?.id || '')) return;
-          const ownerId = String(multiplayerWorldMeta?.owner_user_id || '');
-          if (ownerId === String(currentAccountUser?.id || '')) persistMultiplayerWorld(true);
+          if (!payload || !['world_save_request_v1', 'world_save_request_v2'].includes(String(payload.kind || '')) || String(payload.sourceUserId || '') === String(currentAccountUser?.id || '')) return;
+          if (String(payload.worldId || MULTIPLAYER_WORLD_ID) !== String(MULTIPLAYER_WORLD_ID || '')) return;
+          if (String(getMultiplayerEnvironmentAuthorityId()) !== String(currentAccountUser?.id || '')) return;
+          multiplayerWorldPersistTimer = 0;
+          if (multiplayerWorldPersistDebounceTimer) clearTimeout(multiplayerWorldPersistDebounceTimer);
+          multiplayerWorldPersistDebounceTimer = setTimeout(() => {
+            multiplayerWorldPersistDebounceTimer = null;
+            if (multiplayerMode && multiplayerConnected && multiplayerWorldDirty) persistMultiplayerWorld(true);
+          }, 180);
         })
         .on('presence', { event: 'sync' }, () => { syncMultiplayerPresence(); scheduleMultiplayerEnvironmentSnapshot(); })
         .on('presence', { event: 'join' }, () => {
@@ -12739,12 +13184,20 @@
         .on('presence', { event: 'leave' }, ({ leftPresences }) => {
           for (const presence of leftPresences || []) {
             const id = String(presence?.userId || '');
-            if (id) {
+            if (!id) continue;
+            const leaveCheckStartedAt = performance.now();
+            setTimeout(() => {
+              if (!multiplayerMode || multiplayerPresenceHasUser(id)) return;
+              const remote = multiplayerRemotePlayers.get(id);
+              if (!remote) return;
+              const packetAge = performance.now() - Number(remote.lastPacketAt || leaveCheckStartedAt);
+              if (packetAge <= MULTIPLAYER_REMOTE_ONLINE_GRACE_MS) return;
               destroyMultiplayerRemotePlayer(id);
               clearMultiplayerRemoteEntitiesForUser(id);
               for (const furnace of furnaces) if (String(furnace?.interactionOwnerId || '') === id) furnace.interactionOwnerId = '';
               for (const campfire of campfires) if (String(campfire?.interactionOwnerId || '') === id) campfire.interactionOwnerId = '';
-            }
+              updateMultiplayerHud();
+            }, MULTIPLAYER_REMOTE_PRESENCE_GRACE_MS);
           }
           updateMultiplayerHud();
         })
@@ -12765,6 +13218,8 @@
               await loadSecureWorldDropsFromServer();
               await loadSecureConciergeOrders();
               broadcastMultiplayerEntitySnapshot(true);
+              multiplayerRocketWasFlying = false;
+              multiplayerRocketSendTimer = MULTIPLAYER_ROCKET_SEND_INTERVAL;
               // 10M-C: a newly joined client requests an authoritative one-shot snapshot
               // so it does not wait for the next periodic entity/environment broadcasts.
               setTimeout(() => requestMultiplayerBootstrapSnapshot(), 120);
@@ -12870,6 +13325,10 @@
         position: [player.position.x, player.position.y, player.position.z],
         quaternion: [player.quaternion.x, player.quaternion.y, player.quaternion.z, player.quaternion.w],
         animation: anim,
+        rocket: playerState.inRocket && flightRocket ? (() => {
+          const rocket = serializeMultiplayerRocketEntity();
+          return rocket ? { ...rocket, protocol: 2, kind: 'rocket_player_state_v2', worldId: String(MULTIPLAYER_WORLD_ID) } : null;
+        })() : null,
         equippedItemType: uiState.equippedItemType || null,
         health: Math.max(0, Math.min(HEALTH_MAX, Number(playerState.health) || 0)),
         hunger: Math.max(0, Math.min(HUNGER_MAX, Number(playerState.hunger) || 0)),
@@ -12883,13 +13342,25 @@
 
     function updateMultiplayerRemoteAnimations(delta) {
       for (const remote of multiplayerRemotePlayers.values()) {
-        if (!remote.root.visible) continue;
-        sampleMultiplayerNetworkTransform(remote.networkSamples, remote.currentPosition, remote.currentQuaternion, performance.now(), MULTIPLAYER_PLAYER_RENDER_DELAY_MS);
-        remote.root.position.copy(remote.currentPosition);
-        remote.root.quaternion.copy(remote.currentQuaternion);
+        if (!remote) continue;
+        const now = performance.now();
+        sampleMultiplayerNetworkTransform(remote.networkSamples, remote.currentPosition, remote.currentQuaternion, now, MULTIPLAYER_PLAYER_RENDER_DELAY_MS);
 
         const anim = remote.state;
-        remote.root.visible = !anim.inRocket;
+        // The player root is always alive for networking/rocket association. While flying, the
+        // player's transform is world-space because the local player is detached from
+        // planetSystem; the dedicated rocket entity owns that world transform, so do not copy
+        // it into the ground-player root here.
+        remote.root.visible = true;
+        if (!anim.inRocket) {
+          remote.root.position.copy(remote.currentPosition);
+          remote.root.quaternion.copy(remote.currentQuaternion);
+        }
+        if (remote.visualRoot) {
+          remote.visualRoot.visible = !anim.inRocket;
+          remote.visualRoot.traverse((node) => { if (node.userData?.multiplayerRemoteHat) node.visible = !anim.inRocket; });
+        }
+        if (remote.cosmeticHat) remote.cosmeticHat.visible = !anim.inRocket;
         if (remote.nameTag) remote.nameTag.visible = !anim.inRocket;
         const rate = anim.crouching ? 5.8 : (anim.sprinting ? 11.0 : 7.4);
         if (anim.moving) remote.animationClock += delta * rate;
@@ -12968,7 +13439,7 @@
       multiplayerWorldPersistTimer += delta;
       if (multiplayerWorldPersistTimer >= 4.0) {
         multiplayerWorldPersistTimer = 0;
-        persistMultiplayerWorld(false);
+        if (multiplayerWorldDirty) persistMultiplayerWorld(false);
         if (multiplayerWorldMeta && pocketSupabase) {
           pocketSupabase.rpc('pu_heartbeat_multiplayer_world', { p_world_id: MULTIPLAYER_WORLD_ID })
             .then(({ data }) => { if (data) multiplayerWorldMeta = { ...multiplayerWorldMeta, ...data }; })
@@ -17377,6 +17848,14 @@
           players.push({ ...entry, userId, username: String(entry?.username || 'Explorer').slice(0, 24) });
         }
       }
+      const now = performance.now();
+      for (const remote of multiplayerRemotePlayers.values()) {
+        const userId = String(remote?.id || '');
+        if (!userId || userId === String(currentAccountUser?.id || '') || seen.has(userId)) continue;
+        if (!multiplayerRemoteIsRecentlyOnline(remote, now)) continue;
+        seen.add(userId);
+        players.push({ userId, username: String(remote.username || 'Explorer').slice(0, 24), transientPresence: true });
+      }
       if (currentAccountUser?.id && !seen.has(String(currentAccountUser.id))) {
         players.push({ userId: String(currentAccountUser.id), username: String(multiplayerUsername()).slice(0, 24) });
       }
@@ -18051,6 +18530,45 @@
       const bodyId = ['ivis', 'aurora', 'cordelia', 'moon', 'mileria'].includes(String(surfaceBodyId || ''))
         ? String(surfaceBodyId) : 'ivis';
       return `resource:${kind}:${bodyId}:${String(indexOrKey)}:g${Math.max(0, Math.floor(Number(generation) || 0))}`;
+    }
+
+    async function claimSecureTreeReward(treeKey, quantity = 1) {
+      if (!secureAccountAuthorityEnabled || !multiplayerMode || !pocketSupabase || !currentAccountUser) {
+        return { granted: false, skipped: true };
+      }
+      const key = String(treeKey || '');
+      if (!key || secureResourceClaimsInFlight.has('tree-v4:' + key)) return { granted: false, skipped: true };
+      const lockKey = 'tree-v4:' + key;
+      secureResourceClaimsInFlight.add(lockKey);
+      try {
+        const { data, error } = await pocketSupabase.rpc('pu_chop_tree_v4', {
+          p_world_id: getSecureWorldSessionId(),
+          p_tree_key: key,
+          p_quantity: Math.max(1, Math.floor(Number(quantity) || 1))
+        });
+        if (error) throw error;
+        const profile = data?.profile || data;
+        if (profile?.user_id) applySecureProfileSnapshot(profile, { mergeLocalInventoryChanges: true });
+        return data || { granted: false };
+      } finally {
+        secureResourceClaimsInFlight.delete(lockKey);
+      }
+    }
+
+    function broadcastMultiplayerTreeChopped(tree, treeIndex, bodyId, generation) {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser || !tree) return;
+      const payload = {
+        kind: 'tree_chopped_v2',
+        sourceUserId: String(currentAccountUser.id),
+        worldId: String(MULTIPLAYER_WORLD_ID),
+        bodyId: String(bodyId || 'ivis'),
+        treeIndex: Math.max(0, Math.floor(Number(treeIndex) || 0)),
+        generation: Math.max(0, Math.floor(Number(generation) || 0)),
+        sentAt: Date.now()
+      };
+      multiplayerChannel.send({ type: 'broadcast', event: 'world_tree_chopped', payload }).catch((error) => {
+        console.warn('Multiplayer tree-chopped broadcast failed', error);
+      });
     }
 
     async function claimSecureResourceReward(resourceKey, rewardType, quantity = 1) {
@@ -21621,6 +22139,12 @@
         flightRocket.root.position.set(0, 0.18, 0);
         flightRocket.root.quaternion.identity();
         flightRocket.root.visible = true;
+        // Tell other clients about the final parked state before the local flight references
+        // are cleared. Without this, a remote client has to wait for stale-entity cleanup.
+        if (multiplayerMode && multiplayerConnected) {
+          playerState.inRocket = false;
+          broadcastMultiplayerRocketFlightState(true);
+        }
       }
 
       flightPad = null;
@@ -23468,7 +23992,14 @@
       const grassIndex = grassSpawns.indexOf(grass);
       const grassKey = makeSecureResourceKey('grass', 'ivis', grassIndex >= 0 ? grassIndex : grass.direction.toArray().map(v => Math.round(v * 10000)).join('_'), grass.generation || 0);
       if (secureAccountAuthorityEnabled && multiplayerMode) {
-        const result = await claimSecureResourceReward(grassKey, 'grass_fiber', 3);
+        let result;
+        try {
+          result = await claimSecureResourceReward(grassKey, 'grass_fiber', 3);
+        } catch (error) {
+          const prompt = document.getElementById('crystalPrompt');
+          if (prompt) { prompt.classList.remove('hidden'); prompt.textContent = error?.message || 'Grass resource claim failed'; }
+          return;
+        }
         if (!result?.granted) return;
       } else if (!addItemToInventory('grass_fiber', 3, null, true)) return;
       useToolOnce();
@@ -23541,7 +24072,7 @@
       choppingTreeTarget = null;
       const valid = state.gameState === 'playing' && !state.paused && !uiState.inventoryOpen && !uiState.craftingOpen &&
         settingsModal.classList.contains('hidden') && tree && !tree.chopped && tree.root.visible &&
-        findNearbyTree() === tree && isToolUseHeld();
+        findNearbyTree() === tree;
       const prompt = document.getElementById('crystalPrompt');
 
       if (!valid) {
@@ -23561,13 +24092,25 @@
       }
 
       const treeIndex = treeSpawns.indexOf(tree);
-      const treeKey = makeSecureResourceKey('tree', 'ivis', treeIndex >= 0 ? treeIndex : tree.direction.toArray().map(v => Math.round(v * 10000)).join('_'), tree.resourceGeneration || 0);
+      const auroraIndex = auroraTreeSpawns.indexOf(tree);
+      const treeBodyId = treeIndex >= 0 ? 'ivis' : 'aurora';
+      const stableTreeIndex = treeIndex >= 0 ? treeIndex : Math.max(0, auroraIndex);
+      const generation = Math.max(0, Math.floor(Number(tree.resourceGeneration) || 0));
+      const treeKey = `tree:${treeBodyId}:${stableTreeIndex}:g${generation}`;
       if (secureAccountAuthorityEnabled && multiplayerMode) {
-        const result = await claimSecureResourceReward(treeKey, 'planks', plankYield);
+        let result;
+        try {
+          result = await claimSecureTreeReward(treeKey, plankYield);
+        } catch (error) {
+          prompt.classList.remove('hidden');
+          prompt.textContent = error?.message || 'Tree resource claim failed';
+          setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 1200);
+          return;
+        }
         if (!result?.granted) {
-          tree.chopped = true;
-          tree.root.visible = false;
-          if (nearbyTree === tree) nearbyTree = null;
+          prompt.classList.remove('hidden');
+          prompt.textContent = result?.already_claimed ? 'Tree already claimed by another player' : 'Tree reward was not granted';
+          setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 900);
           return;
         }
       } else {
@@ -23580,6 +24123,9 @@
       if (treeIndex >= 0) createTreeSapling(tree, treeIndex);
       awardAchievement('first_tree');
       nearbyTree = null;
+      if (multiplayerMode) broadcastMultiplayerTreeChopped(tree, stableTreeIndex, treeBodyId, generation);
+      markMultiplayerWorldDirty('tree-chopped');
+      scheduleMultiplayerEnvironmentSnapshot();
 
       prompt.classList.remove('hidden');
       prompt.innerHTML = '<span class="promptKey">+' + plankYield + '</span> Planks collected';
@@ -25125,11 +25671,7 @@
         isDragging = false;
         mouseButtonDown = false;
         keyboardToolUseDown = false;
-        if (choppingTree || miningStone || scytheCutting) {
-          choppingTree = false;
-          choppingTreeStartedAt = 0;
-          choppingTreeTarget = null;
-          nextChopSoundAt = 0;
+        if (miningStone || scytheCutting) {
           miningStone = false;
           miningStoneStartedAt = 0;
           miningRock = null;
@@ -25137,6 +25679,12 @@
           scytheCutting = false;
           scytheCuttingStartedAt = 0;
           scytheCuttingTarget = null;
+        }
+        if (choppingTree) {
+          // Tree chopping is click-to-start. Releasing the mouse should not cancel the
+          // 1.2s chopping action after the swing has already begun.
+        }
+        if (miningStone || scytheCutting || choppingTree) {
           systemState.breakingFurnace = false;
           systemState.breakingFurnaceStartedAt = 0;
           systemState.breakingFurnaceTarget = null;
