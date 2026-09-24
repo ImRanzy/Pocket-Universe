@@ -442,6 +442,40 @@
   </div>
 </div>
 <div id="saveToast" class="hidden" aria-live="polite">✓ GAME SAVED</div>
+<div id="multiplayerHud" class="hidden" aria-live="polite" aria-atomic="true">
+  <span class="multiplayerHudDot"></span>
+  <span id="multiplayerHudText">MULTIPLAYER · CONNECTING…</span>
+</div>
+<div id="multiplayerDebugPanel" class="hidden" aria-live="polite" aria-label="Multiplayer network diagnostics">
+  <div class="multiplayerDebugHeader">
+    <div>
+      <div class="multiplayerDebugEyebrow">DAY 15 · 10M-D</div>
+      <div class="multiplayerDebugTitle">NETWORK DIAGNOSTICS</div>
+    </div>
+    <div id="multiplayerDebugStatus" class="multiplayerDebugStatus">CONNECTING</div>
+  </div>
+  <div class="multiplayerDebugGrid">
+    <div class="multiplayerDebugMetric"><span>PLAYERS</span><strong id="multiplayerDebugPlayers">—</strong></div>
+    <div class="multiplayerDebugMetric"><span>ENTITIES</span><strong id="multiplayerDebugEntities">—</strong></div>
+    <div class="multiplayerDebugMetric"><span>PING</span><strong id="multiplayerDebugPing">—</strong></div>
+    <div class="multiplayerDebugMetric"><span>WORLD REV.</span><strong id="multiplayerDebugWorldRevision">—</strong></div>
+    <div class="multiplayerDebugMetric"><span>PLAYER SYNC</span><strong id="multiplayerDebugPlayerSync">—</strong></div>
+    <div class="multiplayerDebugMetric"><span>ENTITY SYNC</span><strong id="multiplayerDebugEntitySync">—</strong></div>
+    <div class="multiplayerDebugMetric"><span>BOOTSTRAP</span><strong id="multiplayerDebugBootstrap">—</strong></div>
+    <div class="multiplayerDebugMetric"><span>JOIN TIME</span><strong id="multiplayerDebugJoinTime">—</strong></div>
+  </div>
+  <div class="multiplayerDebugDivider"></div>
+  <div class="multiplayerDebugDetails">
+    <div><span>TX / RX</span><strong id="multiplayerDebugTxRx">0 / 0</strong></div>
+    <div><span>DATA TX / RX</span><strong id="multiplayerDebugBytes">0 B / 0 B</strong></div>
+    <div><span>ENTITY BATCHES</span><strong id="multiplayerDebugEntityBatches">0 / 0</strong></div>
+    <div><span>BOOTSTRAPS</span><strong id="multiplayerDebugBootstrapCount">0 req · 0 sent · 0 recv</strong></div>
+    <div><span>AUTHORITY</span><strong id="multiplayerDebugAuthority">—</strong></div>
+    <div><span>WORLD ID</span><strong id="multiplayerDebugWorldId">—</strong></div>
+  </div>
+  <div class="multiplayerDebugError"><span>LAST ERROR</span><strong id="multiplayerDebugLastError">none</strong></div>
+  <div class="multiplayerDebugFooter">ALT / OPTION · CLOSE DEBUG</div>
+</div>
 <div id="sunWarningOverlay" aria-live="assertive"><div id="sunWarningText">OUTER HULL MELTING<br><span>GET AWAY FROM THE SUN</span></div></div>
 <div id="syspoWarningOverlay" aria-live="assertive"><div id="syspoWarningText">Enormously strong gravity, Please Get away from the core</div></div>
 <div id="spaceFuelWarningOverlay" aria-live="assertive"><div id="spaceFuelWarningText">ROCKET OUT OF FUEL<br><span>EMERGENCY RECOVERY</span></div></div>
@@ -455,6 +489,7 @@
   <div id="homeLoading">Loading planet…</div>
   <div id="homeButtons" class="hidden">
     <button id="playButton">SINGLEPLAYER</button>
+    <button id="multiplayerButton">MULTIPLAYER</button>
     <button id="loadGameButton">LOAD GAME</button>
     <button id="homeSettingsButton">Settings</button>
     <button id="accountButton">ACCOUNT</button>
@@ -493,6 +528,16 @@
   <div class="achievementToastText">
     <div class="achievementToastLabel">ACHIEVEMENT UNLOCKED</div>
     <div id="achievementToastName" class="achievementToastName"></div>
+  </div>
+</div>
+
+<!-- Multiplayer friend-request toast. Acceptance is deliberately handled from the pause menu. -->
+<div id="friendRequestToast" class="friendRequestToast" aria-live="polite" aria-atomic="true">
+  <div class="friendRequestToastIcon">✉</div>
+  <div class="friendRequestToastText">
+    <div id="friendRequestToastLabel" class="friendRequestToastLabel">FRIEND REQUEST</div>
+    <div id="friendRequestToastName" class="friendRequestToastName"></div>
+    <div id="friendRequestToastHint" class="friendRequestToastHint">Pause the game to accept.</div>
   </div>
 </div>
 
@@ -562,6 +607,102 @@
   </div>
 </div>
 
+<!-- Day 15 Step 10M-A — multiplayer world browser -->
+<div id="multiplayerWorldModal" class="hidden" aria-hidden="true">
+  <div id="multiplayerWorldPanel" role="dialog" aria-modal="true" aria-labelledby="multiplayerWorldTitle">
+    <button id="multiplayerWorldClose" class="multiplayerModalClose" type="button" title="Close">×</button>
+    <div id="multiplayerWorldBrowserView">
+      <div class="multiplayerWorldHeader">
+        <div>
+          <div class="multiplayerWorldEyebrow">DAY 15 · MULTIPLAYER</div>
+          <h1 id="multiplayerWorldTitle">Worlds</h1>
+          <p id="multiplayerWorldSubtitle">Choose a world to play with friends.</p>
+        </div>
+      </div>
+      <div class="multiplayerWorldToolbar">
+        <div class="multiplayerWorldTabs">
+          <button id="multiplayerMyWorldsTab" class="multiplayerWorldTab active" type="button">YOUR WORLDS</button>
+          <button id="multiplayerPublicWorldsTab" class="multiplayerWorldTab" type="button">PUBLIC WORLDS</button>
+        </div>
+        <button id="multiplayerCreateWorldButton" class="multiplayerPrimaryButton" type="button">＋ CREATE WORLD</button>
+      </div>
+
+      <div class="multiplayerSocialSection">
+        <div class="multiplayerSocialHeader">
+          <div>
+            <div class="multiplayerSocialTitle">FRIENDS <span id="multiplayerFriendsCount">0</span></div>
+            <div class="multiplayerSocialSubtitle">Online status updates automatically while Pocket Universe is open.</div>
+          </div>
+          <button id="multiplayerFriendsRefresh" class="multiplayerWorldAction" type="button">REFRESH</button>
+        </div>
+        <div id="multiplayerFriendList" class="multiplayerFriendList"></div>
+        <div id="multiplayerFriendsEmpty" class="multiplayerFriendsEmpty hidden"></div>
+        <div id="multiplayerFriendsStatus" class="multiplayerFriendsStatus"></div>
+      </div>
+
+      <div id="multiplayerWorldList" class="multiplayerWorldList"></div>
+      <div id="multiplayerWorldEmpty" class="multiplayerWorldEmpty hidden">No worlds here yet.</div>
+      <div class="multiplayerJoinCodeRow">
+        <div>
+          <div class="multiplayerJoinCodeLabel">JOIN BY WORLD CODE</div>
+          <div class="multiplayerJoinCodeHint">Private worlds stay hidden. Friends can join with the code shared by the owner.</div>
+        </div>
+        <div class="multiplayerJoinCodeControls">
+          <input id="multiplayerJoinCodeInput" type="text" maxlength="12" placeholder="PU-XXXXXXXX" autocomplete="off" spellcheck="false" aria-label="World code">
+          <button id="multiplayerJoinCodeButton" type="button">JOIN</button>
+        </div>
+      </div>
+      <div id="multiplayerWorldStatus" class="multiplayerWorldStatus" aria-live="polite"></div>
+    </div>
+
+    <div id="multiplayerCreateWorldView" class="hidden">
+      <div class="multiplayerWorldHeader">
+        <div>
+          <div class="multiplayerWorldEyebrow">CREATE MULTIPLAYER WORLD</div>
+          <h1>Create a World</h1>
+          <p>Choose the rules your whole group will play with.</p>
+        </div>
+      </div>
+      <label class="multiplayerCreateFieldLabel" for="multiplayerWorldNameInput">WORLD NAME</label>
+      <input id="multiplayerWorldNameInput" class="multiplayerCreateInput" type="text" maxlength="32" placeholder="My Pocket Universe" autocomplete="off">
+
+      <div class="multiplayerCreateSectionTitle">GAME MODE</div>
+      <div id="multiplayerCreateModeButtons" class="multiplayerChoiceGrid">
+        <button type="button" class="multiplayerChoiceCard selected" data-multiplayer-mode="survival">
+          <span class="multiplayerChoiceIcon">♡</span>
+          <strong>SURVIVAL</strong>
+          <small>Normal progression, hunger, crafting costs, and survival rules.</small>
+        </button>
+        <button type="button" class="multiplayerChoiceCard" data-multiplayer-mode="freeplay">
+          <span class="multiplayerChoiceIcon">✦</span>
+          <strong>FREEPLAY</strong>
+          <small>Sandbox rules with free crafting and fast movement for testing.</small>
+        </button>
+      </div>
+
+      <div class="multiplayerCreateSectionTitle">VISIBILITY</div>
+      <div id="multiplayerCreatePrivacyButtons" class="multiplayerChoiceGrid compact">
+        <button type="button" class="multiplayerChoiceCard selected" data-multiplayer-privacy="private">
+          <span class="multiplayerChoiceIcon">⌕</span>
+          <strong>PRIVATE</strong>
+          <small>Hidden from the public list. Friends join using your world code.</small>
+        </button>
+        <button type="button" class="multiplayerChoiceCard" data-multiplayer-privacy="public">
+          <span class="multiplayerChoiceIcon">◎</span>
+          <strong>PUBLIC</strong>
+          <small>Shown in Public Worlds so other players can discover and join it.</small>
+        </button>
+      </div>
+
+      <div class="multiplayerCreateActions">
+        <button id="multiplayerCreateBackButton" class="multiplayerSecondaryButton" type="button">BACK</button>
+        <button id="multiplayerCreateConfirmButton" class="multiplayerPrimaryButton" type="button">CREATE WORLD</button>
+      </div>
+      <div id="multiplayerCreateStatus" class="multiplayerWorldStatus" aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+
 <div id="modeChooser" class="hidden">
   <div id="modeChooserPanel">
     <h1>Choose Game Mode</h1>
@@ -574,6 +715,36 @@
   </div>
 </div>
 
+<div id="multiplayerDeleteWorldModal" class="hidden" aria-hidden="true">
+  <div id="multiplayerDeleteWorldPanel" role="dialog" aria-modal="true" aria-labelledby="multiplayerDeleteWorldTitle">
+    <div class="multiplayerDeleteWorldIcon">!</div>
+    <div class="multiplayerDeleteWorldEyebrow">PERMANENT ACTION</div>
+    <h2 id="multiplayerDeleteWorldTitle">Delete this world?</h2>
+    <div id="multiplayerDeleteWorldName" class="multiplayerDeleteWorldName">Unnamed World</div>
+    <p>This permanently deletes the world, its saved world state, and its multiplayer membership list. This cannot be undone.</p>
+    <div class="multiplayerDeleteWorldActions">
+      <button id="multiplayerDeleteWorldCancel" class="multiplayerSecondaryButton" type="button">CANCEL</button>
+      <button id="multiplayerDeleteWorldConfirm" class="multiplayerWorldAction danger confirm" type="button">DELETE WORLD</button>
+    </div>
+    <div id="multiplayerDeleteWorldStatus" class="multiplayerDeleteWorldStatus" aria-live="polite"></div>
+  </div>
+</div>
+
+<!-- Multiplayer player list toggled with Tab while inside a multiplayer world. -->
+<div id="multiplayerPlayerListOverlay" class="hidden" aria-hidden="true">
+  <div id="multiplayerPlayerListPanel">
+    <div class="multiplayerPlayerListHeader">
+      <div>
+        <div class="multiplayerPlayerListEyebrow">MULTIPLAYER</div>
+        <h2>Players</h2>
+      </div>
+      <div id="multiplayerPlayerListCount" class="multiplayerPlayerListCount">0 PLAYERS</div>
+    </div>
+    <div id="multiplayerPlayerList" class="multiplayerPlayerList"></div>
+    <div class="multiplayerPlayerListHint">Press Tab again to close.</div>
+  </div>
+</div>
+
 <div id="pauseOverlay" class="hidden">
   <div id="pausePanel">
     <h1>Paused</h1>
@@ -583,6 +754,13 @@
       <button id="pauseAchievementsButton">Achievements</button>
       <button id="pauseSettingsButton">Settings</button>
       <button id="pauseMenuButton">Go back to Menu</button>
+    </div>
+    <div id="pauseFriendRequests" class="hidden">
+      <div class="pauseFriendRequestsHeader">
+        <span>FRIEND REQUESTS</span>
+        <span id="pauseFriendRequestCount"></span>
+      </div>
+      <div id="pauseFriendRequestList"></div>
     </div>
   </div>
 </div>
@@ -720,6 +898,39 @@
       <div id="settingsUpdateLogContent">
         <section class="updateLogDay updateLogLatest">
           <div class="updateLogBadge">LATEST</div>
+          <h2>Version 2.1B</h2>
+          <p class="updateLogIntro">Day 16: multiplayer connection fixes and quality-of-life features for managing worlds, seeing players, and building your friends list.</p>
+          <ul class="updateLogBullets">
+            <li>Fixed a <strong>multiplayer connection authorization issue</strong> that could cause the generic "MULTIPLAYER · CONNECTION ERROR" message when joining a world.</li>
+            <li>Added a proper <strong>Delete World</strong> button with a confirmation prompt, with deletion restricted to world owners.</li>
+            <li>Added a <strong>Tab player list</strong> inside multiplayer worlds, showing all current players and their usernames.</li>
+            <li>Added a <strong>Send Friend Request</strong> action beside other players in the multiplayer player list.</li>
+            <li>Added <strong>friend-request notifications</strong> styled like achievements, with an Accept action available from the pause menu.</li>
+            <li>Added a persistent <strong>Friends list</strong> to the Multiplayer tab, including ONLINE/OFFLINE presence status.</li>
+            <li>Added server-side handling for <strong>friend requests, friendships, and world deletion</strong> to keep these multiplayer actions protected.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
+          <h2>Version 2.0B</h2>
+          <p class="updateLogIntro">Day 15: the Multiplayer Update — persistent multiplayer worlds, shared entities, smooth networking, and the end of the Alpha era.</p>
+          <ul class="updateLogBullets">
+            <li>Added <strong>multiplayer world management</strong>, including Your Worlds, Public Worlds, private worlds, world codes, and world membership.</li>
+            <li>Added <strong>Survival and Freeplay world modes</strong>, selectable when creating a multiplayer world.</li>
+            <li>Added <strong>per-world persistent player state</strong>, keeping inventory, credits, position, planet, health, hunger, stamina, and other state separated between worlds.</li>
+            <li>Added <strong>server-authoritative multiplayer persistence</strong> and world-specific Realtime channels.</li>
+            <li>Added <strong>shared entity synchronization</strong> for wildlife, including Beobaka, Ivis birds, butterflies, Cordelia silverfish, Aurora glowfish, and Mileria rock crawlers.</li>
+            <li>Added <strong>rocket movement synchronization</strong>, including shared position, rotation, flight state, and ownership/authority.</li>
+            <li>Added a reusable <strong>network entity synchronization system</strong> designed to support future moving multiplayer objects.</li>
+            <li>Added <strong>join-in-progress</strong> with an initial world snapshot so players can enter an already-active world with its current networked state.</li>
+            <li>Added <strong>network interpolation</strong> for players, wildlife, and rockets to reduce visible snapping and teleporting between updates.</li>
+            <li>Added <strong>authority handoff and startup race protection</strong> for more reliable multiplayer world initialization.</li>
+            <li>Added <strong>Multiplayer Diagnostics</strong>, opened with the <strong>Alt/Option</strong> key, showing player/entity counts, sync status, ping, world revision, traffic, bootstrap information, and network diagnostics.</li>
+            <li>Marked the completion of the <strong>Alpha era</strong> and moved Pocket Universe into the <strong>Beta</strong> phase.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
           <h2>Version 1.4A</h2>
           <p class="updateLogIntro">Day 14: survival systems, Beobaka, a new player model, character customization, clothing, animation polish, and screenshot-friendly UI controls.</p>
           <ul class="updateLogBullets">

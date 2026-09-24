@@ -2,6 +2,7 @@
 // Keep this data-only: gameplay systems still own their existing logic.
 window.PocketUniversePlayerState = Object.seal({
   flashlightOn: false,
+  currentPlanetId: 'ivis',
   pitch: 0,
   thirdPerson: false,
   thirdPersonOrbitYaw: 0,

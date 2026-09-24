@@ -6028,3 +6028,468 @@ body.screenshot-ui-hidden #crystalPrompt,
 body.screenshot-ui-hidden #sleepOverlay {
   display: none !important;
 }
+
+
+/* ---------- Day 15 multiplayer UI ---------- */
+#homeButtons {
+  grid-template-areas:
+    "play play"
+    "multiplayer multiplayer"
+    "load settings"
+    "account achievements";
+}
+
+#multiplayerButton {
+  grid-area: multiplayer;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  color: #ffffff;
+  background: linear-gradient(180deg, rgba(55, 115, 190, 0.92), rgba(28, 67, 120, 0.94));
+  border: 1px solid rgba(143, 205, 255, 0.55);
+  border-radius: 13px;
+  padding: 12px 46px;
+  min-width: 210px;
+  cursor: pointer;
+  box-shadow: 0 7px 0 rgba(0,0,0,0.28), 0 10px 26px rgba(30,90,150,0.22);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+#multiplayerButton:hover {
+  transform: translateY(3px);
+  filter: brightness(1.08);
+  box-shadow: 0 4px 0 rgba(0,0,0,0.28), 0 9px 24px rgba(30,90,150,0.28);
+}
+#multiplayerButton:active {
+  transform: translateY(5px);
+  box-shadow: 0 2px 0 rgba(0,0,0,0.25), 0 5px 14px rgba(30,90,150,0.22);
+}
+
+#multiplayerHud {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(146, 205, 255, 0.45);
+  background: rgba(11, 28, 49, 0.72);
+  color: rgba(240, 248, 255, 0.95);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.22);
+  backdrop-filter: blur(8px);
+  z-index: 80;
+  pointer-events: none;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.45);
+}
+#multiplayerHud.hidden { display: none !important; }
+.multiplayerHudDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #77ff9d;
+  box-shadow: 0 0 10px rgba(119,255,157,0.75);
+}
+#multiplayerHud[data-state="error"] .multiplayerHudDot {
+  background: #ff8a8a;
+  box-shadow: 0 0 10px rgba(255,138,138,0.7);
+}
+#multiplayerHud[data-state="connecting"] .multiplayerHudDot {
+  background: #ffd86b;
+  box-shadow: 0 0 10px rgba(255,216,107,0.7);
+}
+
+#multiplayerDebugPanel {
+  position: fixed;
+  top: 58px;
+  left: 18px;
+  width: min(360px, calc(100vw - 36px));
+  box-sizing: border-box;
+  padding: 14px 15px 12px;
+  border: 1px solid rgba(146, 205, 255, 0.42);
+  border-radius: 14px;
+  background: rgba(7, 18, 32, 0.88);
+  color: rgba(239, 248, 255, 0.96);
+  box-shadow: 0 12px 34px rgba(0,0,0,0.34);
+  backdrop-filter: blur(12px);
+  z-index: 120;
+  font-family: Segoe UI, Arial, sans-serif;
+  pointer-events: none;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.45);
+}
+#multiplayerDebugPanel.hidden { display: none !important; }
+.multiplayerDebugHeader { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; margin-bottom:10px; }
+.multiplayerDebugEyebrow { font-size:9px; font-weight:800; letter-spacing:1.5px; opacity:.6; }
+.multiplayerDebugTitle { margin-top:3px; font-size:14px; font-weight:900; letter-spacing:1.05px; }
+.multiplayerDebugStatus { padding:4px 7px; border:1px solid rgba(119,255,157,.28); border-radius:999px; font-size:9px; font-weight:900; letter-spacing:1px; color:#86ffab; }
+#multiplayerDebugPanel[data-connection="connecting"] .multiplayerDebugStatus { border-color:rgba(255,216,107,.28); color:#ffd86b; }
+#multiplayerDebugPanel[data-connection="offline"] .multiplayerDebugStatus { border-color:rgba(255,138,138,.28); color:#ff9b9b; }
+.multiplayerDebugGrid { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+.multiplayerDebugMetric, .multiplayerDebugDetails > div { min-width:0; padding:7px 8px; border:1px solid rgba(255,255,255,.08); border-radius:9px; background:rgba(255,255,255,.035); }
+.multiplayerDebugMetric span, .multiplayerDebugDetails span, .multiplayerDebugError span { display:block; font-size:8px; font-weight:800; letter-spacing:1px; opacity:.52; }
+.multiplayerDebugMetric strong, .multiplayerDebugDetails strong { display:block; margin-top:3px; font-size:10px; font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.multiplayerDebugDivider { height:1px; margin:9px 0; background:rgba(255,255,255,.09); }
+.multiplayerDebugDetails { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+.multiplayerDebugError { margin-top:8px; padding:7px 8px; border:1px solid rgba(255,138,138,.12); border-radius:9px; background:rgba(255,70,70,.035); }
+.multiplayerDebugError strong { display:block; margin-top:3px; font-size:9px; line-height:1.35; font-weight:700; white-space:normal; word-break:break-word; max-height:34px; overflow:hidden; }
+.multiplayerDebugFooter { margin-top:9px; text-align:right; font-size:8px; font-weight:800; letter-spacing:1px; opacity:.42; }
+
+@media (max-width: 560px) {
+  #multiplayerButton { min-width: 186px; padding-left: 28px; padding-right: 28px; }
+  #multiplayerHud { top: 10px; font-size: 10px; }
+}
+
+
+/* ---------- Day 15 menu layout repair ---------- */
+#homeScreen {
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 5.5vh;
+}
+
+#homeButtons {
+  position: relative;
+  z-index: 24;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-areas:
+    "play play"
+    "multiplayer multiplayer"
+    "load settings"
+    "account achievements";
+  gap: 10px 12px;
+  width: min(390px, calc(100vw - 28px));
+  margin: 0;
+  justify-content: stretch;
+  align-items: center;
+}
+
+#homeButtons > button {
+  min-width: 0;
+}
+
+#playButton {
+  width: 100%;
+  min-width: 0;
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+#multiplayerButton {
+  grid-area: multiplayer;
+  width: 100%;
+  min-width: 0;
+  padding: 12px 24px;
+}
+
+#loadGameButton,
+#homeSettingsButton,
+#accountButton,
+#homeAchievementsButton {
+  width: 100%;
+}
+
+#planetHint {
+  bottom: calc(5.5vh + 214px);
+  z-index: 23;
+  white-space: nowrap;
+}
+
+@media (max-height: 700px) {
+  #homeScreen { padding-bottom: 4vh; }
+  #homeButtons { gap: 8px 10px; }
+  #planetHint { bottom: calc(4vh + 196px); font-size: 12px; }
+}
+
+@media (max-width: 560px) {
+  #homeButtons { width: min(360px, calc(100vw - 24px)); }
+  #planetHint { max-width: calc(100vw - 24px); white-space: normal; text-align: center; }
+}
+
+
+/* ---------- Day 15 Step 10M-A — Multiplayer World Browser ---------- */
+#multiplayerWorldModal {
+  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(4,7,13,0.78); z-index: 36; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  color: #eef4fa; padding: 18px;
+}
+#multiplayerWorldPanel {
+  position: relative; width: min(860px, 94vw); max-height: min(820px, 92vh); overflow: auto;
+  padding: 28px; border: 1px solid rgba(157,211,255,0.22); border-radius: 18px;
+  background: linear-gradient(180deg, rgba(14,22,34,0.97), rgba(8,13,22,0.97));
+  box-shadow: 0 28px 100px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.05);
+  backdrop-filter: blur(14px);
+}
+.multiplayerModalClose {
+  position: absolute; top: 12px; right: 13px; width: 36px; height: 36px; border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.06); color: #eaf2f9;
+  font-size: 25px; line-height: 1; cursor: pointer;
+}
+.multiplayerModalClose:hover { background: rgba(255,255,255,0.13); }
+.multiplayerWorldHeader { padding-right: 42px; }
+.multiplayerWorldEyebrow { font-size: 10px; font-weight: 800; letter-spacing: 1.7px; color: rgba(151,213,255,0.7); margin-bottom: 6px; }
+.multiplayerWorldHeader h1 { margin: 0; font-size: 30px; color: #fff; letter-spacing: 0.2px; }
+.multiplayerWorldHeader p { margin: 7px 0 0; color: rgba(220,229,240,0.62); font-size: 12px; line-height: 1.45; }
+.multiplayerWorldToolbar { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin: 24px 0 14px; }
+.multiplayerWorldTabs { display: flex; gap: 7px; }
+.multiplayerWorldTab, .multiplayerPrimaryButton, .multiplayerSecondaryButton, .multiplayerJoinCodeControls button {
+  font: inherit; font-weight: 800; letter-spacing: .45px; cursor: pointer;
+}
+.multiplayerWorldTab {
+  border: 1px solid rgba(255,255,255,.10); border-radius: 10px; padding: 10px 14px;
+  background: rgba(255,255,255,.045); color: rgba(232,240,248,.64); font-size: 10px;
+}
+.multiplayerWorldTab.active { color: #fff; background: rgba(73,143,211,.2); border-color: rgba(133,201,255,.35); }
+.multiplayerPrimaryButton {
+  border: 1px solid rgba(130,203,255,.5); border-radius: 10px; padding: 10px 15px;
+  background: linear-gradient(180deg, rgba(55,124,201,.95), rgba(30,76,137,.96)); color: #fff; font-size: 10px;
+  box-shadow: 0 5px 16px rgba(25,82,135,.22);
+}
+.multiplayerPrimaryButton:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.multiplayerSecondaryButton {
+  border: 1px solid rgba(255,255,255,.12); border-radius: 10px; padding: 10px 15px;
+  background: rgba(255,255,255,.055); color: rgba(239,245,250,.82); font-size: 10px;
+}
+.multiplayerWorldList { display: grid; gap: 9px; min-height: 120px; }
+.multiplayerWorldCard {
+  display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 14px; align-items: center;
+  padding: 15px 16px; border: 1px solid rgba(255,255,255,.10); border-radius: 13px; background: rgba(255,255,255,.035);
+}
+.multiplayerWorldCard:hover { border-color: rgba(141,209,255,.26); background: rgba(255,255,255,.055); }
+.multiplayerWorldCardTitle { display:flex; align-items:center; gap:8px; min-width:0; }
+.multiplayerWorldCardTitle strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#fff; font-size:15px; }
+.multiplayerWorldBadge { font-size:8px; font-weight:800; letter-spacing:.6px; border-radius:999px; padding:4px 7px; border:1px solid rgba(255,255,255,.12); color:rgba(231,239,247,.78); background:rgba(255,255,255,.06); }
+.multiplayerWorldBadge.survival { color:#a9f0be; border-color:rgba(93,220,131,.22); background:rgba(93,220,131,.08); }
+.multiplayerWorldBadge.freeplay { color:#9fe6ff; border-color:rgba(99,197,218,.25); background:rgba(99,197,218,.09); }
+.multiplayerWorldBadge.private { color:#d2c4ff; border-color:rgba(168,141,255,.23); background:rgba(168,141,255,.09); }
+.multiplayerWorldBadge.public { color:#ffe1a6; border-color:rgba(255,209,115,.23); background:rgba(255,209,115,.08); }
+.multiplayerWorldCardMeta { margin-top:5px; font-size:10px; color:rgba(213,224,236,.52); }
+.multiplayerWorldCardActions { display:flex; gap:7px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+.multiplayerWorldAction {
+  border:1px solid rgba(255,255,255,.11); border-radius:9px; padding:8px 10px; background:rgba(255,255,255,.055);
+  color:#e9f2f8; font: inherit; font-size:9px; font-weight:800; letter-spacing:.35px; cursor:pointer;
+}
+.multiplayerWorldAction.join { background:rgba(70,148,216,.17); border-color:rgba(123,201,255,.28); }
+.multiplayerWorldAction:hover { background:rgba(255,255,255,.12); }
+.multiplayerWorldEmpty { min-height: 120px; display:flex; align-items:center; justify-content:center; color:rgba(220,230,240,.42); font-size:12px; border:1px dashed rgba(255,255,255,.10); border-radius:13px; }
+.multiplayerJoinCodeRow { margin-top:14px; padding:14px; border:1px solid rgba(255,255,255,.08); border-radius:13px; background:rgba(255,255,255,.025); display:flex; gap:16px; align-items:center; justify-content:space-between; }
+.multiplayerJoinCodeLabel, .multiplayerCreateSectionTitle, .multiplayerCreateFieldLabel { font-size:9px; font-weight:900; letter-spacing:1px; color:rgba(222,233,244,.68); }
+.multiplayerJoinCodeHint { margin-top:5px; color:rgba(210,222,235,.42); font-size:10px; }
+.multiplayerJoinCodeControls { display:flex; gap:7px; flex:0 0 auto; }
+#multiplayerJoinCodeInput, .multiplayerCreateInput {
+  box-sizing:border-box; border:1px solid rgba(255,255,255,.12); border-radius:9px; outline:none;
+  background:rgba(0,0,0,.18); color:#fff; font:inherit; font-size:11px; padding:10px 11px;
+}
+#multiplayerJoinCodeInput { width:148px; text-transform:uppercase; letter-spacing:1px; }
+.multiplayerJoinCodeControls button { border:1px solid rgba(123,201,255,.29); border-radius:9px; padding:10px 13px; background:rgba(70,148,216,.18); color:#fff; font-size:9px; }
+.multiplayerCreateFieldLabel { display:block; margin:22px 0 7px; }
+.multiplayerCreateInput { width:100%; font-size:13px; padding:12px 13px; }
+.multiplayerCreateSectionTitle { margin:20px 0 9px; }
+.multiplayerChoiceGrid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.multiplayerChoiceGrid.compact { grid-template-columns:1fr 1fr; }
+.multiplayerChoiceCard { text-align:left; min-height:104px; border:1px solid rgba(255,255,255,.10); border-radius:13px; padding:14px; background:rgba(255,255,255,.035); color:#fff; cursor:pointer; }
+.multiplayerChoiceCard:hover { background:rgba(255,255,255,.06); }
+.multiplayerChoiceCard.selected { border-color:rgba(125,205,255,.48); background:rgba(71,145,211,.13); box-shadow:inset 0 0 0 1px rgba(116,196,255,.08); }
+.multiplayerChoiceIcon { display:block; font-size:18px; margin-bottom:7px; color:rgba(151,214,255,.86); }
+.multiplayerChoiceCard strong { display:block; font-size:11px; letter-spacing:.7px; }
+.multiplayerChoiceCard small { display:block; margin-top:6px; color:rgba(215,227,239,.47); font-size:10px; line-height:1.4; font-weight:500; }
+.multiplayerCreateActions { display:flex; justify-content:flex-end; gap:8px; margin-top:20px; }
+.multiplayerWorldStatus { min-height:18px; margin-top:11px; color:rgba(230,239,247,.58); font-size:10px; }
+.multiplayerWorldStatus.error { color:#ffaaaa; }
+.multiplayerWorldStatus.success { color:#a9f0be; }
+@media (max-width: 680px) {
+  #multiplayerWorldPanel { padding:21px; }
+  .multiplayerWorldToolbar, .multiplayerJoinCodeRow { align-items:stretch; flex-direction:column; }
+  .multiplayerWorldTabs { width:100%; }
+  .multiplayerWorldTab { flex:1; }
+  .multiplayerPrimaryButton { width:100%; }
+  .multiplayerWorldCard { grid-template-columns:1fr; }
+  .multiplayerWorldCardActions { justify-content:flex-start; }
+  .multiplayerJoinCodeControls { width:100%; }
+  #multiplayerJoinCodeInput { width:auto; flex:1; }
+}
+@media (max-width: 500px) {
+  .multiplayerChoiceGrid, .multiplayerChoiceGrid.compact { grid-template-columns:1fr; }
+}
+
+/* ---------- Day 16 multiplayer QoL ---------- */
+#pausePanel {
+  max-height: min(820px, 92vh);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.friendRequestToast {
+  position: fixed;
+  top: 76px;
+  right: 24px;
+  z-index: 141;
+  width: min(370px, calc(100vw - 48px));
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  box-sizing: border-box;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(10,14,22,0.96);
+  border: 1px solid rgba(128,204,255,0.34);
+  box-shadow: 0 14px 40px rgba(0,0,0,0.42), 0 0 24px rgba(94,190,255,0.08);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+  transform: translateX(130%);
+  opacity: 0;
+}
+.friendRequestToast.show { animation: friendRequestToastIn 0.45s cubic-bezier(.2,.8,.2,1) forwards; }
+.friendRequestToast.hide { animation: friendRequestToastOut 0.42s cubic-bezier(.7,0,.8,.2) forwards; }
+.friendRequestToastIcon {
+  width: 42px; height: 42px; flex: 0 0 42px; display: grid; place-items: center;
+  border-radius: 10px; background: rgba(89,184,255,0.12);
+  border: 1px solid rgba(89,184,255,0.28); font-size: 20px;
+}
+.friendRequestToastText { min-width: 0; }
+.friendRequestToastLabel {
+  font-size: 10px; font-weight: 800; letter-spacing: 1.1px; color: #9fddff; margin-bottom: 4px;
+}
+.friendRequestToastName {
+  font-size: 16px; font-weight: 750; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.friendRequestToastHint { margin-top: 4px; font-size: 10px; color: rgba(222,233,244,.5); }
+@keyframes friendRequestToastIn {
+  from { transform: translateX(130%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes friendRequestToastOut {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(-130%); opacity: 0; }
+}
+
+.multiplayerSocialSection {
+  margin: 0 0 14px;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 13px;
+  background: rgba(255,255,255,.025);
+}
+.multiplayerSocialHeader { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.multiplayerSocialTitle { font-size:10px; font-weight:900; letter-spacing:1.15px; color:#e9f1f8; }
+.multiplayerSocialTitle span { opacity:.55; margin-left:4px; }
+.multiplayerSocialSubtitle { margin-top:5px; color:rgba(210,222,235,.42); font-size:10px; }
+.multiplayerFriendList { display:grid; gap:7px; margin-top:11px; }
+.multiplayerFriendRow {
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:9px 10px; border-radius:10px; background:rgba(255,255,255,.035);
+  border:1px solid rgba(255,255,255,.06);
+}
+.multiplayerFriendIdentity, .multiplayerPlayerIdentity { display:flex; align-items:center; gap:8px; min-width:0; }
+.multiplayerFriendIdentity strong { color:#fff; font-size:11px; font-weight:750; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.multiplayerFriendStatusDot, .multiplayerPlayerListDot {
+  width:8px; height:8px; flex:0 0 8px; border-radius:999px;
+  background:rgba(255,255,255,.22); box-shadow:0 0 0 3px rgba(255,255,255,.03);
+}
+.multiplayerFriendStatusDot.online, .multiplayerPlayerListDot.online { background:#79e59a; box-shadow:0 0 10px rgba(121,229,154,.32); }
+.multiplayerFriendOnlineText { font-size:8px; font-weight:900; letter-spacing:.8px; color:rgba(225,235,242,.34); }
+.multiplayerFriendOnlineText.online { color:#8deaa8; }
+.multiplayerFriendsEmpty { padding:10px 2px 0; color:rgba(219,228,237,.38); font-size:10px; line-height:1.45; }
+.multiplayerFriendsStatus { min-height:14px; margin-top:6px; font-size:9px; color:#9fdcff; }
+
+.multiplayerWorldAction.danger {
+  color:#ffb9b9;
+  background:rgba(235,87,87,.10);
+  border-color:rgba(235,87,87,.25);
+}
+.multiplayerWorldAction.danger:hover { background:rgba(235,87,87,.18); }
+.multiplayerWorldAction.danger.confirm { padding:10px 15px; }
+
+#multiplayerDeleteWorldModal {
+  position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+  background:rgba(4,7,13,.78); z-index:38; padding:18px;
+  font-family:'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+#multiplayerDeleteWorldPanel {
+  width:min(470px, 94vw); box-sizing:border-box; padding:28px;
+  border:1px solid rgba(255,132,132,.24); border-radius:18px;
+  background:linear-gradient(180deg, rgba(24,16,22,.98), rgba(12,11,17,.98));
+  box-shadow:0 28px 100px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.04);
+  animation:uiPanelIn .18s ease-out both;
+}
+.multiplayerDeleteWorldIcon {
+  width:40px; height:40px; display:grid; place-items:center; border-radius:11px;
+  background:rgba(235,87,87,.12); border:1px solid rgba(235,87,87,.28);
+  color:#ffb9b9; font-size:18px; font-weight:900; margin-bottom:13px;
+}
+.multiplayerDeleteWorldEyebrow { font-size:9px; font-weight:900; letter-spacing:1.6px; color:#ff9f9f; }
+#multiplayerDeleteWorldTitle { margin:6px 0 3px; font-size:24px; color:#fff; }
+.multiplayerDeleteWorldName { font-size:13px; color:#ffdddd; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#multiplayerDeleteWorldPanel p { margin:14px 0 0; color:rgba(225,231,238,.6); font-size:11px; line-height:1.55; }
+.multiplayerDeleteWorldActions { display:flex; justify-content:flex-end; gap:8px; margin-top:20px; }
+.multiplayerDeleteWorldStatus { min-height:16px; margin-top:10px; font-size:10px; color:rgba(227,235,243,.46); }
+.multiplayerDeleteWorldStatus.error { color:#ffabab; }
+
+#multiplayerPlayerListOverlay {
+  position:fixed; inset:0; display:flex; align-items:flex-start; justify-content:center;
+  padding:74px 18px 18px; box-sizing:border-box; z-index:29;
+  pointer-events:none; font-family:'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+#multiplayerPlayerListPanel {
+  width:min(620px, calc(100vw - 36px)); box-sizing:border-box; padding:18px;
+  border:1px solid rgba(157,211,255,.20); border-radius:16px;
+  background:rgba(9,15,24,.93); backdrop-filter:blur(14px);
+  box-shadow:0 22px 70px rgba(0,0,0,.52), inset 0 1px 0 rgba(255,255,255,.04);
+  pointer-events:auto; animation:uiPanelIn .16s ease-out both;
+}
+.multiplayerPlayerListHeader { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+.multiplayerPlayerListEyebrow { font-size:9px; font-weight:900; letter-spacing:1.4px; color:rgba(151,213,255,.7); }
+.multiplayerPlayerListHeader h2 { margin:4px 0 0; font-size:22px; color:#fff; }
+.multiplayerPlayerListCount { padding-top:3px; font-size:9px; font-weight:900; letter-spacing:1px; color:rgba(225,235,244,.44); white-space:nowrap; }
+.multiplayerPlayerList { display:grid; gap:7px; margin-top:13px; }
+.multiplayerPlayerListRow {
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:10px 11px; border:1px solid rgba(255,255,255,.07); border-radius:10px; background:rgba(255,255,255,.035);
+}
+.multiplayerPlayerIdentity { flex:1 1 auto; }
+.multiplayerPlayerIdentity strong { color:#fff; font-size:12px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.multiplayerPlayerListYou { font-size:8px; font-weight:900; letter-spacing:.7px; color:#99dfff; }
+.multiplayerPlayerFriendButton {
+  border:1px solid rgba(123,201,255,.27); border-radius:8px; padding:8px 10px;
+  background:rgba(70,148,216,.14); color:#eaf5fc; font:inherit; font-size:8px; font-weight:900; letter-spacing:.55px; cursor:pointer;
+}
+.multiplayerPlayerFriendButton:hover { background:rgba(70,148,216,.23); }
+.multiplayerPlayerFriendButton:disabled { opacity:.5; cursor:default; }
+.multiplayerPlayerListEmpty { color:rgba(220,230,240,.42); font-size:10px; padding:8px 2px; }
+.multiplayerPlayerListHint { margin-top:10px; font-size:9px; color:rgba(216,227,237,.34); text-align:center; }
+
+#pauseFriendRequests {
+  width:min(320px, 86vw); margin:17px auto 0; padding-top:14px;
+  border-top:1px solid rgba(255,255,255,.10); text-align:left;
+}
+.pauseFriendRequestsHeader {
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  margin-bottom:8px; font-size:9px; font-weight:900; letter-spacing:1px; color:#9fdcff;
+}
+.pauseFriendRequestRow {
+  display:flex; align-items:center; justify-content:space-between; gap:9px;
+  padding:9px; margin-top:7px; border:1px solid rgba(123,201,255,.13); border-radius:9px; background:rgba(255,255,255,.035);
+}
+.pauseFriendRequestCopy { display:flex; flex-direction:column; min-width:0; }
+.pauseFriendRequestCopy strong { color:#fff; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pauseFriendRequestCopy span { margin-top:3px; color:rgba(216,227,237,.38); font-size:8px; }
+.pauseFriendRequestAccept {
+  flex:0 0 auto; border:1px solid rgba(121,229,154,.25); border-radius:8px; padding:8px 9px;
+  background:rgba(121,229,154,.10); color:#9ff0b9; font:inherit; font-size:8px; font-weight:900; letter-spacing:.45px; cursor:pointer;
+}
+.pauseFriendRequestAccept:hover { background:rgba(121,229,154,.17); }
+.pauseFriendRequestAccept:disabled { opacity:.55; cursor:default; }
+
+@media (max-width: 680px) {
+  .multiplayerSocialHeader { align-items:flex-start; }
+  .multiplayerPlayerListRow { align-items:flex-start; }
+  .multiplayerPlayerFriendButton { max-width:150px; }
+  .multiplayerDeleteWorldActions { flex-direction:column; }
+  .multiplayerDeleteWorldActions button { width:100%; }
+}
