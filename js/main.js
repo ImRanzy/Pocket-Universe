@@ -39,6 +39,8 @@
   let furnaceModelTemplate = null;
   let jerrycanModelTemplate = null;
   let scytheModelTemplate = null;
+  let hoeModelTemplate = null;
+  let wateringCanModelTemplate = null;
   let wrenchModelTemplate = null;
   let blueprintModelTemplate = null;
   let containerModelTemplate = null;
@@ -47,6 +49,8 @@
   let sleepingBagModelTemplate = null;
   let playerModelTemplate = null;
   let shirtModelTemplate = null;
+  let treeEvergreenModelTemplate = null;
+  let treeFruitModelTemplate = null;
   let playerModelParts = null;
   let playerShirtParts = null;
 
@@ -126,6 +130,26 @@
   let socialOutgoingFriendIds = new Set();
   let socialIncomingFriendIds = new Set();
   let socialSeenIncomingRequestIds = new Set();
+  let multiplayerChatOpen = false;
+  let multiplayerChatMessages = [];
+  const multiplayerChatSeenIds = new Set();
+  let multiplayerChatLastSentAt = 0;
+  const MULTIPLAYER_CHAT_MAX_MESSAGES = 80;
+  const MULTIPLAYER_CHAT_MESSAGE_MAX_LENGTH = 180;
+  const MULTIPLAYER_CHAT_SEND_COOLDOWN_MS = 300;
+
+  // ---------- Day 18H: emotes (singleplayer + multiplayer) ----------
+  const EMOTE_DEFINITIONS = Object.freeze({
+    wave:   { label: 'Wave',   icon: '👋', duration: 1.35 },
+    cheer:  { label: 'Cheer',  icon: '🎉', duration: 1.25 },
+    point:  { label: 'Point',  icon: '👉', duration: 1.35 },
+    shrug:  { label: 'Shrug',  icon: '🤷', duration: 1.20 },
+    dance:  { label: 'Dance',  icon: '💃', duration: 3.20 }
+  });
+  let activeEmoteId = null;
+  let activeEmoteStartedAt = 0;
+  let activeEmoteSequence = 0;
+  let emoteWheelOpen = false;
   let socialPresenceHeartbeatTimer = null;
   let socialRequestPollTimer = null;
   let socialStateRefreshBusy = false;
@@ -183,12 +207,44 @@
     lastSendError: '', lastReceiveAt: 0
   };
 
-  function loadScript(src) {
+  function setBootLoadingMessage(message) {
+    const el = document.getElementById("homeLoading");
+    if (el && !el.classList.contains("hidden")) el.textContent = message;
+  }
+
+  function withTimeout(promise, ms, label) {
+    let timer = null;
+    return new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(label + " timed out after " + Math.round(ms / 1000) + "s")), ms);
+      promise.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+    });
+  }
+
+  // Never leave the game on the splash screen forever when a CDN request stalls.
+  // A failed dependency now falls through to the existing procedural fallbacks where possible.
+  function loadScript(src, timeoutMs = 12000) {
     return new Promise((resolve, reject) => {
       const el = document.createElement("script");
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        el.remove();
+        reject(new Error("timed out loading " + src));
+      }, timeoutMs);
       el.src = src;
-      el.onload = () => resolve();
-      el.onerror = () => reject(new Error("failed to load " + src));
+      el.onload = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      el.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error("failed to load " + src));
+      };
       document.head.appendChild(el);
     });
   }
@@ -988,6 +1044,93 @@
     return bytes.buffer;
   }
 
+  async function buildEmbeddedHoeModel() {
+    const source = window.PocketUniverseHoeModelGLB;
+    if (typeof source !== 'string' || !source.trim() || !window.THREE?.GLTFLoader) return null;
+    const arrayBuffer = decodeBase64ArrayBuffer(source);
+    return await new Promise((resolve, reject) => {
+      try {
+        const loader = new THREE.GLTFLoader();
+        loader.parse(arrayBuffer, '', (gltf) => {
+          const root = gltf?.scene || gltf?.scenes?.[0];
+          if (!root) { reject(new Error('hoe.glb contained no scene')); return; }
+          root.name = 'HoeModel';
+          root.traverse((node) => {
+            if (!node.isMesh) return;
+            const lowerName = String(node.name || '').toLowerCase();
+            node.userData.hoePart = (lowerName === 'mesh_1' || lowerName.includes('head')) ? 'head' : 'handle';
+            node.castShadow = true;
+            node.receiveShadow = true;
+            node.frustumCulled = false;
+            if (Array.isArray(node.material)) node.material = node.material.map(m => m && m.clone ? m.clone() : m);
+            else if (node.material && node.material.clone) node.material = node.material.clone();
+            const mats = Array.isArray(node.material) ? node.material : [node.material];
+            for (const mat of mats) {
+              if (!mat) continue;
+              mat.roughness = 0.82;
+              mat.metalness = 0.04;
+              mat.side = THREE.DoubleSide;
+            }
+          });
+          root.updateMatrixWorld(true);
+          const box = new THREE.Box3().setFromObject(root);
+          if (box.isEmpty()) { reject(new Error('hoe.glb has empty bounds')); return; }
+          const center = box.getCenter(new THREE.Vector3());
+          root.position.x -= center.x;
+          root.position.z -= center.z;
+          root.position.y -= box.min.y;
+          root.updateMatrixWorld(true);
+          resolve(root);
+        }, (error) => reject(error instanceof Error ? error : new Error('hoe.glb parse failed')));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  async function buildEmbeddedWateringCanModel() {
+    const source = window.PocketUniverseWateringCanModelGLB;
+    if (typeof source !== 'string' || !source.trim() || !window.THREE?.GLTFLoader) return null;
+    const arrayBuffer = decodeBase64ArrayBuffer(source);
+    return await new Promise((resolve, reject) => {
+      try {
+        const loader = new THREE.GLTFLoader();
+        loader.parse(arrayBuffer, '', (gltf) => {
+          const root = gltf?.scene || gltf?.scenes?.[0];
+          if (!root) { reject(new Error('watering can.glb contained no scene')); return; }
+          root.name = 'WateringCanModel';
+          root.traverse((node) => {
+            if (!node.isMesh) return;
+            node.castShadow = true;
+            node.receiveShadow = true;
+            node.frustumCulled = false;
+            if (Array.isArray(node.material)) node.material = node.material.map(m => m && m.clone ? m.clone() : m);
+            else if (node.material && node.material.clone) node.material = node.material.clone();
+            const mats = Array.isArray(node.material) ? node.material : [node.material];
+            for (const mat of mats) {
+              if (!mat) continue;
+              mat.color?.set(node.name === 'tube' ? 0x4b5960 : 0x8ec7ae);
+              mat.roughness = 0.68;
+              mat.metalness = node.name === 'tube' ? 0.22 : 0.05;
+              mat.side = THREE.DoubleSide;
+            }
+          });
+          root.updateMatrixWorld(true);
+          const box = new THREE.Box3().setFromObject(root);
+          if (box.isEmpty()) { reject(new Error('watering can.glb has empty bounds')); return; }
+          const center = box.getCenter(new THREE.Vector3());
+          root.position.x -= center.x;
+          root.position.z -= center.z;
+          root.position.y -= box.min.y;
+          root.updateMatrixWorld(true);
+          resolve(root);
+        }, (error) => reject(error instanceof Error ? error : new Error('watering can.glb parse failed')));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
   async function buildEmbeddedPlayerModel() {
     const source = window.PocketUniversePlayerModelGLB;
     if (typeof source !== 'string' || !source.trim() || !window.THREE?.GLTFLoader) return null;
@@ -1051,12 +1194,56 @@
     });
   }
 
+  async function buildEmbeddedTreeModel(source, label) {
+    if (typeof source !== 'string' || !source.trim() || !window.THREE?.GLTFLoader) return null;
+    const arrayBuffer = decodeBase64ArrayBuffer(source);
+    return await new Promise((resolve, reject) => {
+      try {
+        const loader = new THREE.GLTFLoader();
+        loader.parse(arrayBuffer, '', (gltf) => {
+          const root = gltf?.scene || gltf?.scenes?.[0];
+          if (!root) { reject(new Error(label + '.glb contained no scene')); return; }
+          root.name = label;
+          root.traverse((node) => {
+            if (!node.isMesh) return;
+            node.castShadow = true;
+            node.receiveShadow = true;
+            node.frustumCulled = false;
+            if (Array.isArray(node.material)) {
+              node.material = node.material.map((mat) => mat && mat.clone ? mat.clone() : mat);
+            } else if (node.material && node.material.clone) {
+              node.material = node.material.clone();
+            }
+            if (node.material) {
+              const materials = Array.isArray(node.material) ? node.material : [node.material];
+              for (const mat of materials) {
+                if (!mat) continue;
+                mat.roughness = 0.9;
+                mat.metalness = 0;
+                mat.side = THREE.DoubleSide;
+              }
+            }
+          });
+          // Keep GLB parsing independent from the planet-generation helpers below.
+          // styleTreeModel() is defined in the vegetation scope and is applied when the
+          // template is cloned into an actual tree. Calling it here during boot leaves the
+          // template-loading promise unresolved because that helper is not in this scope.
+          resolve(root);
+        }, (error) => reject(error instanceof Error ? error : new Error(label + '.glb parse failed')));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
   async function loadToolModels() {
     // The supplied OBJ files are now embedded as geometry data and become the
     // authoritative tool meshes. This avoids the unreliable external OBJ/MTL
     // loader path that was silently falling back to the old procedural models.
     axeModelTemplate = buildEmbeddedToolModel('axe');
     pickaxeModelTemplate = buildEmbeddedToolModel('pickaxe');
+    hoeModelTemplate = await buildEmbeddedHoeModel();
+    wateringCanModelTemplate = await buildEmbeddedWateringCanModel();
     wrenchModelTemplate = buildEmbeddedWrenchModel();
     blueprintModelTemplate = buildEmbeddedBlueprintModel();
     containerModelTemplate = await buildEmbeddedContainerFromObj();
@@ -1064,6 +1251,8 @@
     sleepingBagModelTemplate = await buildEmbeddedSleepingBagFromObj();
     if (!axeModelTemplate) console.warn('Embedded axe model unavailable; using procedural fallback.');
     if (!pickaxeModelTemplate) console.warn('Embedded pickaxe model unavailable; using procedural fallback.');
+    if (!hoeModelTemplate) console.warn('Embedded hoe model unavailable; using procedural fallback.');
+    if (!wateringCanModelTemplate) console.warn('Embedded watering can model unavailable; using procedural fallback.');
     if (!wrenchModelTemplate) console.warn('Embedded wrench model unavailable; using procedural fallback.');
     if (!blueprintModelTemplate) console.warn('Embedded blueprint model unavailable; using procedural fallback.');
     if (!containerModelTemplate) console.warn('Embedded container model unavailable; using procedural fallback.');
@@ -1079,11 +1268,13 @@
 
   async function boot() {
     let loaded = false;
+    setBootLoadingMessage("Loading 3D engine…");
     for (const url of CDN_URLS) {
       try {
-        await loadScript(url);
+        await loadScript(url, 10000);
         if (window.THREE) { loaded = true; break; }
       } catch (e) {
+        console.warn("Three.js CDN unavailable:", url, e);
         // try the next CDN
       }
     }
@@ -1095,25 +1286,32 @@
       return;
     }
     try {
+      setBootLoadingMessage("Loading model support…");
       let gltfLoaded = false;
       for (const url of GLTF_LOADER_URLS) {
         try {
-          await loadScript(url);
+          await loadScript(url, 10000);
           if (window.THREE?.GLTFLoader) { gltfLoaded = true; break; }
         } catch (e) {
+          console.warn("GLTFLoader CDN unavailable:", url, e);
           // try the next loader CDN
         }
       }
       if (gltfLoaded) {
-        try { playerModelTemplate = await buildEmbeddedPlayerModel(); }
+        try { playerModelTemplate = await withTimeout(buildEmbeddedPlayerModel(), 8000, "Player model"); }
         catch (playerModelError) { console.warn('Player.glb unavailable; procedural player fallback will be used.', playerModelError); playerModelTemplate = null; }
-        try { shirtModelTemplate = await buildEmbeddedShirtModel(); }
+        try { shirtModelTemplate = await withTimeout(buildEmbeddedShirtModel(), 8000, "Shirt model"); }
         catch (shirtModelError) { console.warn('Shirt model unavailable; the player will render without a shirt.', shirtModelError); shirtModelTemplate = null; }
+        try { treeEvergreenModelTemplate = await withTimeout(buildEmbeddedTreeModel(window.PocketUniverseTreeEvergreenGLB, 'TreeEvergreen'), 8000, "Evergreen tree model"); }
+        catch (treeModelError) { console.warn('Tree 1 model unavailable; the procedural tree fallback will be used.', treeModelError); treeEvergreenModelTemplate = null; }
+        try { treeFruitModelTemplate = await withTimeout(buildEmbeddedTreeModel(window.PocketUniverseTreeFruitGLB, 'TreeFruit'), 8000, "Fruit tree model"); }
+        catch (treeFruitModelError) { console.warn('Tree 2 model unavailable; the procedural tree fallback will be used.', treeFruitModelError); treeFruitModelTemplate = null; }
       } else {
         console.warn('GLTFLoader unavailable; procedural player fallback will be used.');
       }
+      setBootLoadingMessage("Connecting account services…");
       try {
-        if (!window.supabase) await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2");
+        if (!window.supabase) await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2", 10000);
         if (window.supabase && typeof window.supabase.createClient === "function") {
           pocketSupabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
             auth: {
@@ -1126,24 +1324,26 @@
       } catch (supabaseError) {
         console.warn("Supabase unavailable; account features are disabled.", supabaseError);
       }
-      try { await loadToolModels(); } catch (toolError) {
+      setBootLoadingMessage("Loading world assets…");
+      try { await withTimeout(loadToolModels(), 12000, "World assets"); } catch (toolError) {
         console.warn("Tool models unavailable; procedural fallback will be used.", toolError);
       }
-      try { rocketModelTemplate = await buildEmbeddedRocketFromObj(); } catch (rocketError) {
+      try { rocketModelTemplate = await withTimeout(buildEmbeddedRocketFromObj(), 8000, "Rocket model"); } catch (rocketError) {
         console.warn("Rocket model unavailable; procedural fallback will be used.", rocketError);
       }
-      try { furnaceModelTemplate = await buildEmbeddedFurnaceFromObj(); } catch (furnaceError) {
+      try { furnaceModelTemplate = await withTimeout(buildEmbeddedFurnaceFromObj(), 8000, "Furnace model"); } catch (furnaceError) {
         console.warn("Furnace model unavailable; procedural fallback will be used.", furnaceError);
       }
-      try { jerrycanModelTemplate = await buildEmbeddedJerrycanFromObj(); } catch (jerrycanError) {
+      try { jerrycanModelTemplate = await withTimeout(buildEmbeddedJerrycanFromObj(), 8000, "Jerrycan model"); } catch (jerrycanError) {
         console.warn("Jerrycan model unavailable; procedural fallback will be used.", jerrycanError);
       }
       try { scytheModelTemplate = buildEmbeddedScytheModel(); } catch (scytheError) {
         console.warn("Scythe model unavailable; procedural fallback will be used.", scytheError);
       }
-      try { deliveryRocketModelTemplate = await buildEmbeddedDeliveryRocketFromObj(); } catch (deliveryError) {
+      try { deliveryRocketModelTemplate = await withTimeout(buildEmbeddedDeliveryRocketFromObj(), 8000, "Delivery rocket model"); } catch (deliveryError) {
         console.warn("Delivery rocket model unavailable; procedural fallback will be used.", deliveryError);
       }
+      setBootLoadingMessage("Building planet…");
       runGame();
     } catch (e) {
       showFatalError("Something went wrong starting the game: " + (e && e.message ? e.message : e));
@@ -3571,7 +3771,11 @@
       return h;
     }
 
-    function createCactus(size = 1) {
+    function createCactus(size = 1, hasFlower = null) {
+      // Preserve the old cactus random sequence: every cactus still rolls once for flower presence
+      // before its arm geometry is randomized. Multiplayer can override that roll with a deterministic value.
+      const legacyFlowerRoll = Math.random();
+      if (hasFlower == null) hasFlower = legacyFlowerRoll < 0.30;
       const group = new THREE.Group();
       const cactusMat = new THREE.MeshStandardMaterial({ color: 0x4f7f49, roughness: 1.0, metalness: 0.0 });
       const armGeo = new THREE.CylinderGeometry(0.16, 0.20, 0.85, 8);
@@ -3595,12 +3799,14 @@
         group.add(arm);
       }
       // Small pink flower, present on only some cacti as requested.
-      if (Math.random() < 0.30) {
+      if (hasFlower) {
         const flower = new THREE.Mesh(
           new THREE.SphereGeometry(0.13, 8, 6),
           new THREE.MeshStandardMaterial({ color: 0xff82b3, emissive: 0x4b1029, emissiveIntensity: 0.25, roughness: 0.65 })
         );
         flower.position.set((Math.random() - 0.5) * 0.15, 1.68 + Math.random() * 0.34, 0.14);
+        flower.userData.isCordeliaFlower = true;
+        group.userData.cordeliaFlowerMesh = flower;
         group.add(flower);
       }
       group.scale.setScalar(size);
@@ -3611,6 +3817,13 @@
     const cordeliaTungstenSpawns = [];
     const cordeliaCrystalSpawns = [];
     const cordeliaCactusSpawns = [];
+    const cordeliaFlowers = [];
+    const CORDELIA_FLOWER_REGROW_MS = 180000;
+
+    function getDeterministicCordeliaFlowerPresence(index) {
+      const hash = Math.imul(index + 17, 2654435761) >>> 0;
+      return (hash % 10) < 3;
+    }
     function scatterCordeliaCacti(count = 140) {
       for (let i = 0; i < count; i++) {
         let dir;
@@ -3619,11 +3832,17 @@
           const h = cordeliaHeightAt(dir);
           if (h < CORDELIA_DUNE_HEIGHT * 0.78) break;
         }
-        const cactus = createCactus(0.75 + Math.random() * 0.95);
+        const cactus = createCactus(0.75 + Math.random() * 0.95, getDeterministicCordeliaFlowerPresence(i));
         placeCordeliaProp(cactus, dir, 0.05);
         cactus.rotateY(Math.random() * Math.PI * 2);
         cordeliaMesh.add(cactus);
         cordeliaCactusSpawns.push({ root: cactus, direction: dir.clone().normalize() });
+        const flowerMesh = cactus.userData.cordeliaFlowerMesh || null;
+        if (flowerMesh) {
+          const flowerState = { cactusIndex: i, flowerMesh, picked: false, regrowAtMs: 0, generation: 0 };
+          flowerMesh.visible = true;
+          cordeliaFlowers.push(flowerState);
+        }
       }
     }
 
@@ -4000,12 +4219,263 @@
     }
 
     // ---------- vegetation and rocks ----------
-    // Trees now have separate trunks and canopies. Each tree gets a random size from
-    // 1.5x to 4x the old canopy size, so the forest feels varied instead of stamped.
+    // Day 18A: the authored Blockbench tree models are now the Ivis tree visuals.
+    // Procedural geometry remains available as a tiny fallback so the world can still boot
+    // if the embedded GLBs cannot be parsed.
     const treeTrunkGeo = new THREE.CylinderGeometry(0.22, 0.30, 1.4, 7);
     const treeTrunkMat = new THREE.MeshStandardMaterial({ color: 0x6f4a2f, roughness: 1 });
     const treeLeafGeo = new THREE.ConeGeometry(0.6, 2.2, 6);
     const treeLeafMat = new THREE.MeshStandardMaterial({ color: 0x2c7a3d, roughness: 1 });
+    const treeFruitMat = new THREE.MeshStandardMaterial({ color: 0xc0ffcc, roughness: 0.84, metalness: 0 });
+    const treeFruitStemMat = new THREE.MeshStandardMaterial({ color: 0x6f4a2f, roughness: 1, metalness: 0 });
+
+    const TREE_VARIANT_EVERGREEN = 'evergreen';
+    const TREE_VARIANT_FRUIT = 'fruit';
+    const TREE_VARIANT_FRUIT_CHANCE = 0.30;
+
+    function replaceTreeMaterial(node, materialTemplate) {
+      if (!node || !node.isMesh || !materialTemplate) return;
+      const sourceColor = materialTemplate.color?.getHex ? materialTemplate.color.getHex() : 0xffffff;
+      const sourceRoughness = Number.isFinite(materialTemplate.roughness) ? materialTemplate.roughness : 0.9;
+      const sourceMetalness = Number.isFinite(materialTemplate.metalness) ? materialTemplate.metalness : 0;
+      const makeMaterial = () => new THREE.MeshStandardMaterial({
+        color: sourceColor,
+        roughness: sourceRoughness,
+        metalness: sourceMetalness,
+        side: THREE.DoubleSide
+      });
+      // Do not clone the imported GLB material here. Some GLTFLoader/Blockbench
+      // combinations can leave default white materials or vertex-colour flags on the
+      // cloned material. A fresh gameplay material makes the tree part colour explicit.
+      if (Array.isArray(node.material)) node.material = node.material.map(() => makeMaterial());
+      else node.material = makeMaterial();
+    }
+
+    function styleTreeModel(root, variant) {
+      if (!root) return root;
+      root.userData.treeVariant = variant;
+      root.userData.treeMaterialVersion = 'day18b-v2';
+
+      // Always start from deterministic gameplay materials. The uploaded Blockbench GLBs
+      // may have missing/default material data depending on how they were exported, so the
+      // gameplay classification below is authoritative rather than relying on GLB colours.
+      const meshNodes = [];
+      root.traverse((node) => {
+        if (!node.isMesh) return;
+        meshNodes.push(node);
+        node.frustumCulled = false;
+        replaceTreeMaterial(node, treeLeafMat);
+        node.userData.treePart = 'canopy';
+      });
+
+      const byName = new Map();
+      root.traverse((node) => {
+        if (node.name && !byName.has(node.name)) byName.set(node.name, node);
+      });
+
+      const paintNode = (node, material, part, extra = {}) => {
+        if (!node) return false;
+        node.userData.treePart = part;
+        Object.assign(node.userData, extra);
+        if (node.isMesh) replaceTreeMaterial(node, material);
+        return true;
+      };
+
+      const paint = (name, material, part, extra = {}) => paintNode(byName.get(name), material, part, extra);
+
+      if (variant === TREE_VARIANT_EVERGREEN) {
+        // Tree 1's authored mesh order is: trunk, leaf, leaf, leaf. Use both the
+        // authored names and the stable export order so material assignment survives
+        // duplicate-name handling inside GLTFLoader.
+        paintNode(meshNodes[0], treeTrunkMat, 'trunk');
+        paintNode(meshNodes[1], treeLeafMat, 'canopy');
+        paintNode(meshNodes[2], treeLeafMat, 'canopy');
+        paintNode(meshNodes[3], treeLeafMat, 'canopy');
+        paint('cylinder', treeTrunkMat, 'trunk');
+        paint('cone', treeLeafMat, 'canopy');
+        paint('cone_1', treeLeafMat, 'canopy');
+        paint('cone_2', treeLeafMat, 'canopy');
+        return root;
+      }
+
+      // Tree 2's authored mesh order is intentionally stable:
+      //   0 = trunk
+      //   1..3 = canopy
+      //   4 = chunky fruit A
+      //   5 = skinny stem A
+      //   6 = chunky fruit B
+      //   7 = skinny stem B
+      // We also tag the two parent groups containing each fruit+stem assembly. Their pivots
+      // are authored at the top of the fruit attachment points, so rotating these groups
+      // creates the requested natural hanging/swinging motion without breaking the stem link.
+      paintNode(meshNodes[0], treeTrunkMat, 'trunk');
+      paintNode(meshNodes[1], treeLeafMat, 'canopy');
+      paintNode(meshNodes[2], treeLeafMat, 'canopy');
+      paintNode(meshNodes[3], treeLeafMat, 'canopy');
+      paintNode(meshNodes[4], treeFruitMat, 'fruit', { harvestableFruit: true, fruitRole: 'hanging-fruit', fruitSlot: 0 });
+      paintNode(meshNodes[5], treeFruitStemMat, 'fruit-stem', { fruitStem: true, fruitSlot: 0 });
+      paintNode(meshNodes[6], treeFruitMat, 'fruit', { harvestableFruit: true, fruitRole: 'hanging-fruit', fruitSlot: 1 });
+      paintNode(meshNodes[7], treeFruitStemMat, 'fruit-stem', { fruitStem: true, fruitSlot: 1 });
+
+      // Apply the same classification by authored names as an extra safety net.
+      paint('mesh', treeTrunkMat, 'trunk');
+      paint('mesh_1', treeLeafMat, 'canopy');
+      paint('mesh_2', treeLeafMat, 'canopy');
+      paint('mesh_3', treeLeafMat, 'canopy');
+      paint('mesh_4', treeFruitMat, 'fruit', { harvestableFruit: true, fruitRole: 'hanging-fruit', fruitSlot: 0 });
+      paint('mesh_5', treeFruitStemMat, 'fruit-stem', { fruitStem: true, fruitSlot: 0 });
+      paint('mesh_6', treeFruitMat, 'fruit', { harvestableFruit: true, fruitRole: 'hanging-fruit', fruitSlot: 1 });
+      paint('mesh_7', treeFruitStemMat, 'fruit-stem', { fruitStem: true, fruitSlot: 1 });
+
+      const hangingGroups = [];
+      const groupCandidates = [];
+      root.traverse((node) => {
+        if (!node.isMesh && (node.name === 'group' || node.name === 'group2')) groupCandidates.push(node);
+      });
+      // The first group contains fruit/stem A; the second group contains fruit/stem B.
+      // Fall back to any non-mesh parent directly above a tagged fruit when names differ.
+      const byGroupName = new Map(groupCandidates.map(node => [node.name, node]));
+      const groupA = byGroupName.get('group');
+      const groupB = byGroupName.get('group2');
+      if (groupA) hangingGroups[0] = groupA;
+      if (groupB) hangingGroups[1] = groupB;
+      for (let i = 0; i < 2; i++) {
+        if (hangingGroups[i]) {
+          hangingGroups[i].userData.hangingFruitAssemblyIndex = i;
+          hangingGroups[i].userData.isHangingFruitAssembly = true;
+          hangingGroups[i].visible = true;
+        }
+      }
+      root.userData.hasHangingVeyraFruit = hangingGroups.length === 2 && !!hangingGroups[0] && !!hangingGroups[1];
+      return root;
+    }
+
+    function cloneTreeModel(variant) {
+      const template = variant === TREE_VARIANT_FRUIT ? treeFruitModelTemplate : treeEvergreenModelTemplate;
+      if (!template) return null;
+      return styleTreeModel(template.clone(true), variant);
+    }
+
+    function createProceduralTreeRoot(size = 1, variant = TREE_VARIANT_EVERGREEN) {
+      const root = new THREE.Group();
+      const trunk = new THREE.Mesh(treeTrunkGeo, treeTrunkMat);
+      const leaves = new THREE.Mesh(treeLeafGeo, treeLeafMat);
+      trunk.position.y = 0.7 * size;
+      leaves.position.y = 2.0 * size;
+      trunk.scale.setScalar(size);
+      leaves.scale.setScalar(size);
+      root.add(trunk, leaves);
+      root.frustumCulled = false;
+      root.userData.treeVariant = variant;
+      trunk.userData.treePart = 'trunk';
+      leaves.userData.treePart = 'canopy';
+      return root;
+    }
+
+    const TREE_MIN_SCALE = 1.5;
+    const TREE_MAX_SCALE = 4.0;
+
+    function clampTreeScale(value, fallback = TREE_MIN_SCALE) {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? THREE.MathUtils.clamp(numeric, TREE_MIN_SCALE, TREE_MAX_SCALE) : fallback;
+    }
+
+    function getTreeVisualScale(tree) {
+      if (!tree) return TREE_MIN_SCALE;
+      // Tree size is the gameplay size and directly determines plank yield:
+      // 1.5x = 6 planks, 4x = 16 planks. Keep visualScale as a compatibility field only.
+      if (Number.isFinite(Number(tree.size)) && Number(tree.size) > 0) return clampTreeScale(tree.size);
+      if (Number.isFinite(Number(tree.visualScale))) return clampTreeScale(tree.visualScale);
+      return TREE_MIN_SCALE;
+    }
+
+    const VEYRA_FRUIT_COUNT = 2;
+    const VEYRA_FRUIT_COLOR = '#C0FFCC';
+    const VEYRA_FRUIT_SWING_ANGLE = 0.075;
+    const VEYRA_FRUIT_SWING_SPEED = 1.65;
+    let treeFruitAnimationTime = 0;
+
+    function normalizeTreeFruitState(tree, resetIfMissing = false) {
+      if (!tree || tree.variant !== TREE_VARIANT_FRUIT) return;
+      if (resetIfMissing || !Array.isArray(tree.fruits) || tree.fruits.length !== VEYRA_FRUIT_COUNT) {
+        tree.fruits = [true, true];
+      } else {
+        tree.fruits = tree.fruits.map(Boolean).slice(0, VEYRA_FRUIT_COUNT);
+        while (tree.fruits.length < VEYRA_FRUIT_COUNT) tree.fruits.push(true);
+      }
+    }
+
+    function cacheTreeFruitAssemblies(tree) {
+      if (!tree || !tree.root) return [];
+      const found = [null, null];
+      tree.root.traverse((node) => {
+        const raw = node.userData?.hangingFruitAssemblyIndex;
+        if (Number.isInteger(raw) && raw >= 0 && raw < VEYRA_FRUIT_COUNT) found[raw] = node;
+      });
+      tree.fruitAssemblies = found;
+      if (!Number.isFinite(Number(tree.fruitSwayPhase))) tree.fruitSwayPhase = Math.random() * Math.PI * 2;
+      if (!Array.isArray(tree.fruitSwayBaseRotation)) tree.fruitSwayBaseRotation = found.map((node) => node ? [node.rotation.x, node.rotation.y, node.rotation.z] : [0, 0, 0]);
+      normalizeTreeFruitState(tree);
+      updateTreeFruitVisual(tree);
+      return found;
+    }
+
+    function updateTreeFruitVisual(tree) {
+      if (!tree || tree.variant !== TREE_VARIANT_FRUIT) return;
+      normalizeTreeFruitState(tree);
+      const assemblies = Array.isArray(tree.fruitAssemblies) ? tree.fruitAssemblies : cacheTreeFruitAssemblies(tree);
+      for (let i = 0; i < VEYRA_FRUIT_COUNT; i++) {
+        const assembly = assemblies[i];
+        if (assembly) assembly.visible = !!tree.fruits[i];
+      }
+    }
+
+    function resetTreeFruits(tree) {
+      if (!tree || tree.variant !== TREE_VARIANT_FRUIT) return;
+      tree.fruits = [true, true];
+      updateTreeFruitVisual(tree);
+    }
+
+    function playVeyraFruitHarvestEffect(tree, fruitIndex) {
+      if (!tree || tree.variant !== TREE_VARIANT_FRUIT) return;
+      const assemblies = Array.isArray(tree.fruitAssemblies) ? tree.fruitAssemblies : cacheTreeFruitAssemblies(tree);
+      const assembly = assemblies?.[fruitIndex];
+      if (!assembly) return;
+      const fruitWorld = assembly.getWorldPosition(new THREE.Vector3());
+      // A tiny mint/brown burst makes fruit collection visible to both the collector and
+      // nearby players, without turning harvesting into a large particle effect.
+      spawnWorldParticles(fruitWorld, 0xC0FFCC, { count: 7, life: 0.46, speed: 0.42, size: 0.055, gravity: 0.18, spread: 0.9, upward: 0.9 });
+      spawnWorldParticles(fruitWorld.clone().add(new THREE.Vector3(0, -0.08, 0)), 0x6f4a2f, { count: 3, life: 0.34, speed: 0.28, size: 0.045, gravity: 0.25, spread: 0.65, upward: 0.7 });
+    }
+
+    function updateTreeFruitSway(delta) {
+      if (!Array.isArray(treeSpawns) || !treeSpawns.length) return;
+      treeFruitAnimationTime += Math.max(0, Number(delta) || 0);
+      for (const tree of treeSpawns) {
+        if (!tree || tree.variant !== TREE_VARIANT_FRUIT || tree.chopped || !tree.root?.visible) continue;
+        const assemblies = Array.isArray(tree.fruitAssemblies) ? tree.fruitAssemblies : cacheTreeFruitAssemblies(tree);
+        for (let i = 0; i < VEYRA_FRUIT_COUNT; i++) {
+          const assembly = assemblies[i];
+          if (!assembly || !tree.fruits?.[i]) continue;
+          const base = tree.fruitSwayBaseRotation?.[i] || [assembly.rotation.x, assembly.rotation.y, assembly.rotation.z];
+          const phase = Number(tree.fruitSwayPhase) + i * 1.7;
+          const sway = Math.sin(treeFruitAnimationTime * VEYRA_FRUIT_SWING_SPEED + phase) * VEYRA_FRUIT_SWING_ANGLE;
+          const sway2 = Math.cos(treeFruitAnimationTime * (VEYRA_FRUIT_SWING_SPEED * 0.78) + phase * 1.27) * VEYRA_FRUIT_SWING_ANGLE * 0.48;
+          assembly.rotation.x = base[0] + sway2;
+          assembly.rotation.z = base[2] + sway;
+          assembly.rotation.y = base[1] + Math.sin(treeFruitAnimationTime * 0.82 + phase) * 0.022;
+        }
+      }
+    }
+
+    function getTreeBounds(tree, scaled = true) {
+      const scale = scaled ? getTreeVisualScale(tree) : 1;
+      if (tree?.variant === TREE_VARIANT_FRUIT) {
+        return { height: 2.1875 * scale, trunkRadius: 0.26 * scale, canopyRadius: 0.56 * scale };
+      }
+      return { height: 2.5 * scale, trunkRadius: 0.30 * scale, canopyRadius: 0.68 * scale };
+    }
+
     const propGeoRock = new THREE.DodecahedronGeometry(0.5, 0);
     const propMatRock = new THREE.MeshStandardMaterial({ color: 0x8a8a86, roughness: 1 });
 
@@ -4022,6 +4492,7 @@
     const flowerBloomGeo = new THREE.SphereGeometry(0.12, 6, 6);
     const flowerStemMat = new THREE.MeshStandardMaterial({ color: 0x3f8f43, roughness: 1 });
     const grassSpawns = [];
+    const tilledPlots = [];
 
     const flowerMats = [
       new THREE.MeshStandardMaterial({ color: 0xffd166, roughness: 0.9 }),
@@ -5086,8 +5557,9 @@
         if (!tree || tree.chopped || !tree.root || !tree.root.visible) continue;
         const treeDir = tree.direction.clone().normalize();
         const angle = direction.angleTo(treeDir);
-        // Approximate the tree's ground footprint using trunk + lower canopy radius.
-        const footprint = IVIS_BUNNY_TREE_CLEARANCE + Math.max(0.75, 0.56 * (tree.size || 1));
+        // Approximate the tree's ground footprint using the authored model's canopy radius.
+        const bounds = getTreeBounds(tree);
+        const footprint = IVIS_BUNNY_TREE_CLEARANCE + Math.max(0.75, bounds.canopyRadius + 0.35);
         const surfaceDistance = angle * PLANET_RADIUS;
         nearest = Math.min(nearest, surfaceDistance - footprint);
       }
@@ -5725,6 +6197,8 @@
       const slotIndex = getSelectedHotbarInventoryIndex();
       const slot = inventorySlots[slotIndex];
       if (!slot || slot.typeId !== typeId || slot.count < 1) return false;
+      const isEdibleCrop = !!cropById[typeId];
+      if (isEdibleCrop) recordEatingOwnGrownCrop(typeId);
       slot.count -= 1;
       if (slot.count <= 0) inventorySlots[slotIndex] = null;
       playerState.hunger = Math.min(HUNGER_MAX, playerState.hunger + hungerGain);
@@ -5750,6 +6224,28 @@
 
     function eatCookedBeobaka() {
       return consumeFoodFromSelectedSlot('cooked_beobaka', 30, 35, 'Ate Cooked Beobaka');
+    }
+
+    // Plant harvests are now edible food as well as crafting/farming outputs.
+    // Hunger values are intentionally modest so a player can sustain themselves from a
+    // farm without making the survival loop depend entirely on cooked Beobaka.
+    const EDIBLE_PLANT_HARVESTS = {
+      veyra_fruit: { hunger: 15, stamina: 0, label: 'Ate Veyra Fruit' },
+      sunroot:    { hunger: 12, stamina: 0, label: 'Ate Sunroot' },
+      ivisleaf:   { hunger: 8,  stamina: 0, label: 'Ate Ivisleaf' },
+      glowberry:  { hunger: 6,  stamina: 0, label: 'Ate Glowberry' },
+      starcorn:   { hunger: 14, stamina: 0, label: 'Ate Starcorn' },
+      glowmelon:  { hunger: 30, stamina: 0, label: 'Ate Glowmelon' }
+    };
+
+    function eatEdiblePlantHarvest(typeId) {
+      const food = EDIBLE_PLANT_HARVESTS[typeId];
+      if (!food) return false;
+      return consumeFoodFromSelectedSlot(typeId, food.hunger, food.stamina, food.label);
+    }
+
+    function eatCordeliaFlower() {
+      return consumeFoodFromSelectedSlot('cordelia_flower', 8, 0, 'Ate Cordelia Flower');
     }
 
     function updateBeobakaCooking() {
@@ -5839,6 +6335,162 @@
       const distance = 2.7;
       const dir = playerLocal.clone().add(tangent.multiplyScalar(distance / Math.max(1, ctx.radius))).normalize();
       return { ctx, dir };
+    }
+
+    function getHoeTillingPlacement() {
+      const ctx = getPlaceableSurfaceContext();
+      if (!ctx || !['ivis', 'aurora', 'cordelia'].includes(ctx.id)) return null;
+      const bodyWorldQuat = ctx.parent.getWorldQuaternion(new THREE.Quaternion());
+      const invBodyQuat = bodyWorldQuat.clone().invert();
+      const playerLocal = player.position.clone().normalize();
+      const lookWorld = new THREE.Vector3();
+      camera.getWorldDirection(lookWorld).normalize();
+      const lookLocal = lookWorld.applyQuaternion(invBodyQuat);
+      const tangent = lookLocal.sub(playerLocal.clone().multiplyScalar(lookLocal.dot(playerLocal)));
+      if (tangent.lengthSq() < 0.0001) return null;
+      tangent.normalize();
+      const distance = 2.45;
+      const dir = playerLocal.clone().add(tangent.multiplyScalar(distance / Math.max(1, ctx.radius))).normalize();
+      if (ctx.id === 'ivis' && isWater(dir)) return null;
+      if (ctx.id === 'aurora' && typeof auroraLakeDirs !== 'undefined' && auroraLakeDirs.some(ld => dir.angleTo(ld) < 0.055)) return null;
+      return { ctx, dir, forward: tangent.clone() };
+    }
+
+    const TILLED_PLOT_RADIUS = 1.16;
+    // Plots use their full diameter as the minimum center-to-center distance,
+    // so neighboring circular plots can touch without clipping into each other.
+    const TILLED_PLOT_SPACING = TILLED_PLOT_RADIUS * 2;
+
+    function findNearbyTilledPlot(dir, ctx, threshold = TILLED_PLOT_SPACING) {
+      let nearest = null;
+      let best = Infinity;
+      for (const plot of tilledPlots) {
+        if (!plot.root?.visible || plot.surfaceBodyId !== ctx.id) continue;
+        const d = ctx.radius * dir.angleTo(plot.direction);
+        if (d <= threshold && d < best) { best = d; nearest = plot; }
+      }
+      return nearest;
+    }
+
+    function getTilledPlotKey(surfaceBodyId, direction) {
+      const d = direction?.clone?.().normalize?.() || new THREE.Vector3(0, 1, 0);
+      return 'plot:' + String(surfaceBodyId || 'ivis') + ':' + [d.x, d.y, d.z].map(v => Math.round(Number(v) * 100000)).join('_');
+    }
+
+    function findTilledPlotByKey(plotKey) {
+      const wanted = String(plotKey || '');
+      return tilledPlots.find(plot => String(plot.plotKey || '') === wanted) || null;
+    }
+
+    function createTilledPlot(placement, plotKeyOverride = null) {
+      const { ctx, dir, forward } = placement;
+      const plotKey = String(plotKeyOverride || getTilledPlotKey(ctx.id, dir));
+      if (findTilledPlotByKey(plotKey) || findNearbyTilledPlot(dir, ctx)) return null;
+      const group = new THREE.Group();
+
+      // Circular tilled bed. The old square patch is replaced by a low round soil disk
+      // with a slightly darker inner face so it reads as soft, freshly worked earth.
+      const soil = new THREE.MeshStandardMaterial({ color: 0x6b432b, roughness: 1.0, metalness: 0.0 });
+      const top = new THREE.Mesh(new THREE.CylinderGeometry(TILLED_PLOT_RADIUS, TILLED_PLOT_RADIUS * 0.985, 0.055, 48), soil);
+      top.position.y = 0.0275;
+      group.add(top);
+
+      const innerSoil = new THREE.MeshStandardMaterial({ color: 0x5a3825, roughness: 1.0, metalness: 0.0 });
+      const inner = new THREE.Mesh(new THREE.CylinderGeometry(TILLED_PLOT_RADIUS * 0.90, TILLED_PLOT_RADIUS * 0.90, 0.012, 48), innerSoil);
+      inner.position.y = 0.057;
+      group.add(inner);
+      const wetSheenMaterial = new THREE.MeshStandardMaterial({ color: 0x5f7e79, roughness: 0.72, metalness: 0.0, transparent: true, opacity: 0.0, depthWrite: false });
+      const wetSheen = new THREE.Mesh(new THREE.CylinderGeometry(TILLED_PLOT_RADIUS * 0.88, TILLED_PLOT_RADIUS * 0.88, 0.008, 48), wetSheenMaterial);
+      wetSheen.position.y = 0.066;
+      wetSheen.visible = false;
+      group.add(wetSheen);
+
+      // Small chunks of loose dirt around the outside edge. Keep these deterministic
+      // from the plot key so every multiplayer client generates the same little ring.
+      const dirtMatA = new THREE.MeshStandardMaterial({ color: 0x7b4d30, roughness: 1.0, metalness: 0.0 });
+      const dirtMatB = new THREE.MeshStandardMaterial({ color: 0x51321f, roughness: 1.0, metalness: 0.0 });
+      let dirtSeed = 0;
+      for (let i = 0; i < plotKey.length; i++) dirtSeed = (dirtSeed * 31 + plotKey.charCodeAt(i)) >>> 0;
+      const seeded = () => {
+        dirtSeed = (dirtSeed * 1664525 + 1013904223) >>> 0;
+        return dirtSeed / 4294967296;
+      };
+      const dirtCount = 14;
+      for (let i = 0; i < dirtCount; i++) {
+        const angle = (i / dirtCount) * Math.PI * 2 + (seeded() - 0.5) * 0.13;
+        const edgeRadius = TILLED_PLOT_RADIUS + 0.055 + seeded() * 0.07;
+        const size = 0.07 + seeded() * 0.07;
+        const chunk = new THREE.Mesh(new THREE.DodecahedronGeometry(size, 0), i % 2 ? dirtMatA : dirtMatB);
+        chunk.scale.y = 0.48 + seeded() * 0.28;
+        chunk.position.set(Math.cos(angle) * edgeRadius, 0.072 + size * 0.34, Math.sin(angle) * edgeRadius);
+        chunk.rotation.set(seeded() * Math.PI, seeded() * Math.PI, seeded() * Math.PI);
+        group.add(chunk);
+      }
+
+      // Shallow curved furrows. They stay inside the circular boundary.
+      const grooveMat = new THREE.MeshStandardMaterial({ color: 0x4c2f20, roughness: 1.0, metalness: 0.0 });
+      for (let i = -2; i <= 2; i++) {
+        const groove = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.008, 1.42), grooveMat);
+        groove.position.set(i * 0.22, 0.066, 0);
+        groove.rotation.y = 0;
+        group.add(groove);
+      }
+      const grooveAcross = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.008, 0.03), grooveMat);
+      grooveAcross.position.y = 0.066;
+      grooveAcross.scale.setScalar(0.82);
+      group.add(grooveAcross);
+
+      const h = ctx.getHeight(dir);
+      group.position.copy(dir).multiplyScalar(ctx.radius + h);
+      const z = forward.clone().normalize();
+      const y = dir.clone();
+      const x = new THREE.Vector3().crossVectors(y, z).normalize();
+      z.copy(new THREE.Vector3().crossVectors(x, y).normalize());
+      group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+      ctx.parent.add(group);
+      const plot = { root: group, direction: dir.clone(), forward: forward?.clone?.() || new THREE.Vector3(1, 0, 0), surfaceBodyId: ctx.id, plotKey, crop: null, cropGeneration: 0, cropVisual: null, soilMaterial: soil, innerSoilMaterial: innerSoil, wetSheenMaterial, wetSheen };
+      group.userData.tilledPlot = true;
+      tilledPlots.push(plot);
+      return plot;
+    }
+
+    function tillNearbySoil() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen) return false;
+      if (!isHoe(uiState.equippedItemType)) return false;
+      const current = getCurrentToolSlot();
+      if (!current || current.slot.durability < 1) return false;
+      const placement = getHoeTillingPlacement();
+      const prompt = document.getElementById('crystalPrompt');
+      if (!placement) {
+        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">LOCKED</span> The hoe needs open soil on a habitable world'; }
+        return true;
+      }
+      if (findNearbyTilledPlot(placement.dir, placement.ctx)) {
+        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">TILLED</span> A nearby plot is already prepared'; }
+        return true;
+      }
+      const plot = createTilledPlot(placement);
+      if (!plot) return true;
+      useToolOnce();
+      if (multiplayerMode) broadcastMultiplayerTilledPlot(plot);
+      markMultiplayerWorldDirty('plot-tilled');
+      scheduleMultiplayerEnvironmentSnapshot();
+      triggerToolSwing(0.98, 250);
+      spawnImpactParticles(plot.root.getWorldPosition(new THREE.Vector3()).add(plot.direction.clone().multiplyScalar(0.06)), 0x6b432b, { count: 10, life: 0.42, speed: 1.5, size: 0.06, gravity: 3.0 });
+      if (prompt) {
+        prompt.classList.remove('hidden');
+        const durability = getCurrentToolSlot();
+        prompt.innerHTML = '<span class="promptKey">TILLED</span> Soil prepared · Hoe ' + (durability ? durability.slot.durability : 0) + '/' + getToolMaxDurability(durability ? durability.item : uiState.equippedItemType);
+        setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 700);
+      }
+      return true;
+    }
+
+    function clearTilledPlots() {
+      for (const plot of tilledPlots) {
+        if (plot.root?.parent) plot.root.parent.remove(plot.root);
+      }
+      tilledPlots.length = 0;
     }
 
     function createContainerStorage() {
@@ -6521,10 +7173,15 @@
         } else if (item.kind === 'scythe') {
           const headType = item.ironTool ? 'iron' : item.stoneTool ? 'stone' : 'wood';
           toolVisual = createScytheVisual(0.50, headType);
+        } else if (item.kind === 'hoe') {
+          const headType = item.ironTool ? 'iron' : item.stoneTool ? 'stone' : 'wood';
+          toolVisual = createHoeVisual(0.50, headType);
         } else if (item.kind === 'drill') {
           toolVisual = createDrillVisual(0.50);
         }
         if (toolVisual) { toolVisual.rotation.z = 0.35; group.add(toolVisual); }
+      } else if (typeId === 'watering_can') {
+        group.add(createWateringCanVisual(0.62, 0));
       } else if (typeId === 'furnace') {
         group.add(createFurnaceVisual(0.58));
       } else if (typeId === 'campfire') {
@@ -6543,6 +7200,12 @@
         group.add(createMoonQuartzVisual(0.75));
       } else if (typeId === 'raw_beobaka' || typeId === 'cooked_beobaka') {
         group.add(createBeobakaMeatVisual(0.74, typeId === 'cooked_beobaka'));
+      } else if (typeId === 'veyra_fruit') {
+        group.add(createVeyraFruitVisual(0.78));
+      } else if (typeId === 'starter_seed_pack' || seedById[typeId]) {
+        group.add(createSeedPacketVisual(typeId, 0.72));
+      } else if (item.kind === 'crop') {
+        group.add(createCropHarvestVisual(typeId, 0.66));
       } else if (typeId === 'warp_drive' || typeId === 'warp_drive_mk2') {
         const isMk2 = typeId === 'warp_drive_mk2';
         const core = new THREE.Mesh(new THREE.SphereGeometry(0.24,12,10), new THREE.MeshStandardMaterial({color:isMk2?0xff88e8:0x4fc8ff,emissive:isMk2?0xb437a5:0x1a89bd,emissiveIntensity:1.2,metalness:.35,roughness:.28}));
@@ -6737,32 +7400,44 @@
         const h = heightAt(dir);
         if (h > ROCK_LEVEL) continue;
 
+        const variant = Math.random() < TREE_VARIANT_FRUIT_CHANCE ? TREE_VARIANT_FRUIT : TREE_VARIANT_EVERGREEN;
+        // Scale is now intentionally tied directly to resource yield:
+        // 1.5x -> 6 planks and 4x -> 16 planks.
+        const legacySize = TREE_MIN_SCALE + Math.random() * (TREE_MAX_SCALE - TREE_MIN_SCALE);
+        const visualScale = legacySize;
         const tree = new THREE.Group();
-        const size = 1.5 + Math.random() * 2.5; // 1.5x..4x the original tree size
-        const trunk = new THREE.Mesh(treeTrunkGeo, treeTrunkMat);
-        const leaves = new THREE.Mesh(treeLeafGeo, treeLeafMat);
+        const authoredRoot = cloneTreeModel(variant);
+        if (authoredRoot) {
+          tree.add(authoredRoot);
+        } else {
+          // Keep the game playable even if GLTFLoader/model parsing fails.
+          const fallback = createProceduralTreeRoot(1, variant);
+          tree.add(fallback);
+        }
+        tree.scale.setScalar(visualScale);
+        tree.frustumCulled = false;
 
-        // Keep the whole tree standing on the surface, with the trunk underneath the canopy.
-        trunk.position.y = 0.7 * size;
-        leaves.position.y = 2.0 * size;
-        trunk.scale.setScalar(size);
-        leaves.scale.setScalar(size);
-        tree.add(trunk);
-        tree.add(leaves);
-
+        // Keep the entire authored model standing directly on the terrain.
         tree.position.copy(dir).multiplyScalar(PLANET_RADIUS + h);
         tree.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
         const yaw = Math.random() * Math.PI * 2;
         tree.rotateY(yaw);
         planetSystem.add(tree);
-        treeSpawns.push({
+        const treeRecord = {
           root: tree,
           direction: dir.clone(),
-          size,
+          size: legacySize,
+          visualScale,
           yaw,
+          variant,
           chopped: false,
-          resourceGeneration: 0
-        });
+          resourceGeneration: 0,
+          fruits: variant === TREE_VARIANT_FRUIT ? [true, true] : [],
+          fruitSwayPhase: Math.random() * Math.PI * 2,
+          fruitAssemblies: []
+        };
+        treeSpawns.push(treeRecord);
+        if (variant === TREE_VARIANT_FRUIT) cacheTreeFruitAssemblies(treeRecord);
         placed++;
       }
     }
@@ -6781,12 +7456,20 @@
 
       const root = new THREE.Group();
       root.name = 'TreeSapling';
-      const trunk = new THREE.Mesh(treeTrunkGeo, treeTrunkMat);
-      const leaves = new THREE.Mesh(treeLeafGeo, treeLeafMat);
-      trunk.position.y = 0.7;
-      leaves.position.y = 2.0;
-      root.add(trunk);
-      root.add(leaves);
+      const authoredRoot = cloneTreeModel(tree.variant || TREE_VARIANT_EVERGREEN);
+      if (authoredRoot) {
+        root.add(authoredRoot);
+        // A sapling should not already carry harvestable-looking fruit. Hide the two
+        // authored fruit+stem assemblies together so the hanging pivots remain intact.
+        if ((tree.variant || TREE_VARIANT_EVERGREEN) === TREE_VARIANT_FRUIT) {
+          root.traverse((node) => {
+            if (node.userData?.isHangingFruitAssembly) node.visible = false;
+          });
+        }
+      } else {
+        root.add(createProceduralTreeRoot(1, tree.variant || TREE_VARIANT_EVERGREEN));
+      }
+      root.frustumCulled = false;
 
       const dir = tree.direction.clone().normalize();
       const h = heightAt(dir);
@@ -6800,6 +7483,8 @@
         treeIndex,
         direction: dir.clone(),
         size: tree.size,
+        visualScale: getTreeVisualScale(tree),
+        variant: tree.variant || TREE_VARIANT_EVERGREEN,
         yaw: tree.yaw,
         plantedAtSpin: state.planetSpinAngle,
         active: true
@@ -6812,16 +7497,7 @@
     function updateTreeSaplingVisual(sapling, progress) {
       if (!sapling || !sapling.root) return;
       const growth = 0.24 + 0.76 * THREE.MathUtils.clamp(progress, 0, 1);
-      const trunk = sapling.root.children[0];
-      const leaves = sapling.root.children[1];
-      if (trunk) {
-        trunk.scale.setScalar(sapling.size * growth);
-        trunk.position.y = 0.7 * sapling.size * growth;
-      }
-      if (leaves) {
-        leaves.scale.setScalar(sapling.size * growth);
-        leaves.position.y = 2.0 * sapling.size * growth;
-      }
+      sapling.root.scale.setScalar(Math.max(0.08, Number(sapling.visualScale) || 1) * growth);
       sapling.root.visible = !!sapling.active;
     }
 
@@ -6850,6 +7526,7 @@
           // The sapling becomes the original tree again, preserving its saved size/orientation.
           tree.chopped = false;
           tree.resourceGeneration = Math.max(0, Math.floor(Number(tree.resourceGeneration) || 0)) + 1;
+          if (tree.variant === TREE_VARIANT_FRUIT) resetTreeFruits(tree);
           tree.root.visible = true;
           sapling.active = false;
           sapling.root.visible = false;
@@ -6862,19 +7539,15 @@
 
     function updateTreeRootVisual(tree) {
       if (!tree || !tree.root) return;
-      if (tree.root.children[0]) {
-        tree.root.children[0].scale.setScalar(tree.size);
-        tree.root.children[0].position.y = 0.7 * tree.size;
-      }
-      if (tree.root.children[1]) {
-        tree.root.children[1].scale.setScalar(tree.size);
-        tree.root.children[1].position.y = 2.0 * tree.size;
-      }
+      const scale = getTreeVisualScale(tree);
+      tree.visualScale = scale;
+      tree.root.scale.setScalar(scale);
       const dir = tree.direction.clone().normalize();
       const h = heightAt(dir);
       tree.root.position.copy(dir).multiplyScalar(PLANET_RADIUS + h);
       tree.root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
       tree.root.rotateY(tree.yaw);
+      tree.root.visible = !tree.chopped;
     }
 
     function scatterRocks(count) {
@@ -7114,6 +7787,31 @@
     ];
     const crystalById = Object.fromEntries(CRYSTAL_TYPES.map(t => [t.id, t]));
 
+    // ---------- farming seed catalog foundation (Day 18C-A) ----------
+    const SEED_TYPES = [
+      { id: 'sunroot_seed',   name: 'Sunroot Seeds',   cropId: 'sunroot',   packetColor: '#e9cda4', seedColor: '#d98b2b' },
+      { id: 'glowberry_seed', name: 'Glowberry Seeds', cropId: 'glowberry', packetColor: '#d9c9ec', seedColor: '#7b62d7' },
+      { id: 'ivisleaf_seed',  name: 'Ivisleaf Seeds',  cropId: 'ivisleaf',  packetColor: '#cfe5b3', seedColor: '#5f9c52' },
+      { id: 'starcorn_seed',  name: 'Starcorn Seeds',  cropId: 'starcorn',  packetColor: '#f0d88a', seedColor: '#c99a22' },
+      { id: 'glowmelon_seed', name: 'Glowmelon Seeds', cropId: 'glowmelon', packetColor: '#bfe6d6', seedColor: '#3d8f86' }
+    ];
+    const seedById = Object.fromEntries(SEED_TYPES.map(seed => [seed.id, seed]));
+
+    // ---------- farming crop catalog (Day 18C-E) ----------
+    // Growth times are real-world seconds while the game is running. The plantedAt timestamp
+    // is also saved/synchronized, so a reconnecting player sees the same growth stage.
+    const CROP_TYPES = [
+      { id: 'sunroot',   name: 'Sunroot',   seedId: 'sunroot_seed',   growSeconds: 45,  moistureSeconds: 24, harvestCount: 1, color: '#d98b2b' },
+      { id: 'ivisleaf',  name: 'Ivisleaf',  seedId: 'ivisleaf_seed',  growSeconds: 60,  moistureSeconds: 30, harvestCount: 1, color: '#5f9c52' },
+      { id: 'glowberry', name: 'Glowberry', seedId: 'glowberry_seed', growSeconds: 75,  moistureSeconds: 35, harvestCount: 3, color: '#7b62d7' },
+      { id: 'starcorn',  name: 'Starcorn',  seedId: 'starcorn_seed',  growSeconds: 120, moistureSeconds: 40, harvestCount: 2, color: '#c99a22' },
+      { id: 'glowmelon', name: 'Glowmelon', seedId: 'glowmelon_seed', growSeconds: 180, moistureSeconds: 50, harvestCount: 1, color: '#3d8f86' }
+    ];
+    const cropById = Object.fromEntries(CROP_TYPES.map(crop => [crop.id, crop]));
+    const cropBySeedId = Object.fromEntries(CROP_TYPES.map(crop => [crop.seedId, crop]));
+    const WATERING_CAN_CAPACITY = 5;
+    const WATERING_RIVER_RANGE = 8.2;
+
     // Inventory items share one small data table so the same 12-slot UI can hold crystals,
     // the starter axe, and the wooden planks produced by chopping trees.
     // Most tools use 20 durability; stone tools are sturdier with 40.
@@ -7130,6 +7828,9 @@
       { id: 'iron_axe', name: 'Iron Axe', kind: 'axe', maxStack: 1, tool: true, ironTool: true },
       { id: 'iron_pickaxe', name: 'Iron Pickaxe', kind: 'pickaxe', maxStack: 1, tool: true, ironTool: true },
       { id: 'wooden_scythe', name: 'Wooden Scythe', kind: 'scythe', maxStack: 1, tool: true },
+      { id: 'wooden_hoe', name: 'Wooden Hoe', kind: 'hoe', maxStack: 1, tool: true },
+      { id: 'stone_hoe', name: 'Stone Hoe', kind: 'hoe', maxStack: 1, tool: true, stoneTool: true },
+      { id: 'iron_hoe', name: 'Iron Hoe', kind: 'hoe', maxStack: 1, tool: true, ironTool: true },
       { id: 'stone_scythe', name: 'Stone Scythe', kind: 'scythe', maxStack: 1, tool: true, stoneTool: true },
       { id: 'iron_scythe', name: 'Iron Scythe', kind: 'scythe', maxStack: 1, tool: true, ironTool: true },
       { id: 'copper_wire', name: 'Copper Wire', kind: 'copper_wire', css: '#d47a3d', maxStack: 10 },
@@ -7148,6 +7849,12 @@
       { id: 'iron_wrench', name: 'Iron Wrench', kind: 'wrench', wrenchTier: 'iron', maxStack: 1 },
       { id: 'titanium_wrench', name: 'Titanium Wrench', kind: 'wrench', wrenchTier: 'titanium', maxStack: 1 },
       { id: 'planks', name: 'Planks', kind: 'planks', css: '#c88748', maxStack: 10 },
+      { id: 'veyra_fruit', name: 'Veyra Fruit', kind: 'fruit', css: VEYRA_FRUIT_COLOR, maxStack: 10 },
+      { id: 'watering_can', name: 'Watering Can', kind: 'watering_can', maxStack: 1 },
+      { id: 'cordelia_flower', name: 'Cordelia Flower', kind: 'edible_flower', css: '#ff82b3', maxStack: 10 },
+      { id: 'starter_seed_pack', name: 'Starter Seed Pack', kind: 'seed_pack', maxStack: 1 },
+      ...SEED_TYPES.map(seed => ({ id: seed.id, name: seed.name, kind: 'seed', packetColor: seed.packetColor, seedColor: seed.seedColor, maxStack: 10 })),
+      ...CROP_TYPES.map(crop => ({ id: crop.id, name: crop.name, kind: 'crop', css: crop.color, maxStack: 10 })),
       { id: 'sticks', name: 'Sticks', kind: 'sticks', css: '#b9824c', maxStack: 10 },
       { id: 'grass_fiber', name: 'Grass Fiber', kind: 'grass_fiber', css: '#79a95b', maxStack: 10 },
       { id: 'raw_beobaka', name: 'Raw Beobaka', kind: 'meat', css: '#8d3c62', maxStack: 10 },
@@ -7199,6 +7906,9 @@
       iron_axe: { description: 'A durable axe forged from iron.', how: 'Craft it after obtaining iron ingots from a furnace.', used: 'Chops trees efficiently with high durability.' },
       iron_pickaxe: { description: 'A durable iron mining tool.', how: 'Craft it after obtaining iron ingots.', used: 'Mines stone, iron ore, and copper ore efficiently.' },
       wooden_scythe: { description: 'A curved wooden-handled harvesting tool.', how: 'Craft it from early-game materials.', used: 'Cuts grass and gathers plant resources.' },
+      wooden_hoe: { description: 'A simple wooden-handled farming tool with a broad working head.', how: 'Craft it from sticks and planks.', used: 'Tills a small patch of soil for farming.' },
+      stone_hoe: { description: 'A sturdier hoe with a stone working head.', how: 'Craft it using stone and sticks.', used: 'Tills soil with increased durability.' },
+      iron_hoe: { description: 'A durable iron hoe forged for repeated farm work.', how: 'Craft it after obtaining iron ingots.', used: 'Tills soil with high durability.' },
       stone_scythe: { description: 'A sturdier scythe with a stone head.', how: 'Craft it using stone.', used: 'Cuts grass with increased durability.' },
       iron_scythe: { description: 'A durable iron-bladed scythe.', how: 'Craft it after obtaining iron ingots.', used: 'Cuts grass efficiently and lasts longer.' },
       copper_wire: { description: 'Several thin copper wires bundled together.', how: 'Craft wires from copper ingots.', used: 'A key component of Engine Mark 2.' },
@@ -7214,6 +7924,20 @@
       warp_drive_mk2: { description: 'An advanced warp drive using Rainbow Opal as its probabilistic fuel.', how: 'Craft it from a Warp Drive, Titanium Ingots, Tungsten Ingots, and a Rainbow Opal.', used: 'Cuts warp travel time to distance divided by 4000. Each warp requires a Rainbow Opal available in your inventory and has a 50% chance to consume it.' },
       drill: { description: 'A powered mining drill for tougher resource gathering.', how: 'Find and collect a placed or dropped Drill when available.', used: 'Mines rocks and ore quickly and can be used for resource gathering.' },
       planks: { description: 'Processed wooden boards used throughout early crafting.', how: 'Chop trees with an axe.', used: 'Used for tools, furnaces, fuel, and other crafting.' },
+      veyra_fruit: { description: 'A pale mint-green fruit that grows from hanging fruit trees on Ivis.', how: 'Approach a fruit tree with empty hands and press E.', used: 'Eat it for +15 Hunger.' },
+      watering_can: { description: 'A refillable watering can for caring for farm crops.', how: 'Craft it from 3 Iron Plates and 1 Iron Ingot, then refill it at an Ivis river.', used: 'Each use waters one crop. The can holds 5 servings.' },
+      cordelia_flower: { description: 'A soft pink flower that grows on flowering Cordelia cacti.', how: 'Approach a flowering cactus with empty hands and press E.', used: 'Eat it for +8 Hunger; picked flowers regrow after a few minutes.' },
+      starter_seed_pack: { description: 'A small paper packet prepared for a new explorer. It contains five packets of Sunroot Seeds.', how: 'Equip it and press E to open the starter pack.', used: 'Provides your first five Sunroot Seeds.' },
+      sunroot_seed: { description: 'A small packet containing Sunroot Seeds for the first farming plots.', how: 'Open the Starter Seed Pack or obtain the seeds elsewhere.', used: 'Plant in prepared soil.' },
+      glowberry_seed: { description: 'A packet of seeds for the softly glowing Glowberry crop.', how: 'Obtain them from later seed sources.', used: 'Plant in prepared soil.' },
+      ivisleaf_seed: { description: 'A packet of seeds for the hardy Ivisleaf crop.', how: 'Obtain them from later seed sources.', used: 'Plant in prepared soil.' },
+      starcorn_seed: { description: 'A rare seed packet for the tall Starcorn crop.', how: 'Obtain them from rare seed sources.', used: 'Plant in prepared soil.' },
+      glowmelon_seed: { description: 'A rare seed packet for the large Glowmelon crop.', how: 'Obtain them from very rare seed sources.', used: 'Plant in prepared soil.' },
+      sunroot: { description: 'A warm orange root crop grown in prepared soil.', how: 'Plant Sunroot Seeds and wait for it to mature.', used: 'Harvest once fully grown; eat it for +12 Hunger.' },
+      ivisleaf: { description: 'A hardy leafy crop native to Ivis.', how: 'Plant Ivisleaf Seeds and wait for it to mature.', used: 'Harvest once fully grown; eat it for +8 Hunger.' },
+      glowberry: { description: 'A small cluster of softly glowing berries.', how: 'Plant Glowberry Seeds and wait for it to mature.', used: 'Harvest once fully grown; eat each berry for +6 Hunger.' },
+      starcorn: { description: 'A tall stalk carrying star-shaped golden kernels.', how: 'Plant Starcorn Seeds and wait for it to mature.', used: 'Harvest once fully grown; eat it for +14 Hunger.' },
+      glowmelon: { description: 'A large alien melon with a soft teal glow.', how: 'Plant Glowmelon Seeds and wait for it to mature.', used: 'Harvest once fully grown; eat it for +30 Hunger.' },
       sticks: { description: 'Small wooden sticks prepared for crafting.', how: 'Craft them from Planks.', used: 'Used in many tools and the Rocket Engine.' },
       grass_fiber: { description: 'Plant fibers gathered from the grasslands.', how: 'Harvest grass with a scythe.', used: 'Used in fiber-based crafting recipes.' },
       raw_beobaka: { description: 'Fresh meat from the blue alien Beobaka.', how: 'Harvest a Beobaka with an axe.', used: 'Eat it for 10 Hunger, or hold it near a campfire and press E to cook it.' },
@@ -7256,6 +7980,7 @@
     const JOURNAL_PERSON_INFO = Object.freeze({
       concierge: { name: 'Concierge', role: 'A Galactic Concierge dispatcher who handles remote orders and customer calls across the Ivis sector.', connections: 'Works with the Galactic Concierge Network and can be reached from the telephone booth.' },
       helna: { name: 'Helna', role: 'The hat lady at the orange-striped customization stall. She offers character colors and hats for Gems.', connections: 'Runs her customization shop and can be reached from the telephone booth.' },
+      pippa: { name: 'Pippa', role: "A cheerful seed merchant who runs Pippa's Galactic Seed Co. through the telephone network.", connections: 'Sells farming seeds through the telephone network.' },
     });
     const JOURNAL_SPECIAL_ITEM_INFO = Object.freeze({
       blueprint: {
@@ -7343,7 +8068,7 @@
       const info = JOURNAL_PERSON_INFO[personId];
       if (!info) return null;
       const card = document.createElement('article'); card.className = 'journalEntry';
-      const icon = document.createElement('div'); icon.className = 'journalPersonIcon'; icon.textContent = personId === 'helna' ? 'H' : 'C';
+      const icon = document.createElement('div'); icon.className = 'journalPersonIcon'; icon.textContent = personId === 'helna' ? 'H' : (personId === 'pippa' ? 'P' : 'C');
       const body = document.createElement('div'); body.className = 'journalEntryBody';
       const title = document.createElement('div'); title.className = 'journalEntryTitle'; title.textContent = info.name;
       const role = document.createElement('p'); role.innerHTML = '<strong>WHAT THEY DO:</strong> ' + info.role;
@@ -7372,7 +8097,7 @@
       } else {
         heading.textContent = 'PEOPLE';
         journalList.appendChild(heading);
-        const ids = ['concierge','helna'].filter(id => journalMetPeople.has(id));
+        const ids = ['concierge','helna','pippa'].filter(id => journalMetPeople.has(id));
         if (!ids.length) { empty.textContent = 'No people have been added to your journal yet.'; journalList.appendChild(empty); }
         else ids.forEach(id => { const card = journalPersonCard(id); if (card) journalList.appendChild(card); });
       }
@@ -7410,7 +8135,7 @@
     document.addEventListener('contextmenu', (e) => { if (journalOpen) { e.preventDefault(); e.stopPropagation(); } }, true);
     const SELL_PRICES = Object.freeze({
       ruby: 50, topaz: 40, jasper: 38, emerald: 65, diamond: 150, lapis: 55, amethyst: 85, onyx: 120,
-      axe: 20, wooden_axe: 35, wooden_pickaxe: 35, stone_axe: 55, stone_pickaxe: 55, iron_axe: 100, iron_pickaxe: 115, wooden_scythe: 35, stone_scythe: 55, iron_scythe: 100, copper_wire: 8, moon_quartz: 500, drill: 180,
+      axe: 20, wooden_axe: 35, wooden_pickaxe: 35, stone_axe: 55, stone_pickaxe: 55, iron_axe: 100, iron_pickaxe: 115, wooden_scythe: 35, wooden_hoe: 35, stone_hoe: 55, iron_hoe: 100, stone_scythe: 55, iron_scythe: 100, copper_wire: 8, moon_quartz: 500, drill: 180,
       planks: 3, sticks: 2, stone: 2, iron_ore: 12, copper_ore: 14, tungsten_ore: 85, iron_ingot: 30, copper_ingot: 36, tungsten_ingot: 220, titanium_ore: 135, titanium_ingot: 360, rainbow_opal: 1200, furnace: 75, rocket_engine: 220, rocket: 500, launch_pad: 150, jerrycan: 80, warp_drive: 0
     });
     const BUY_PRICES = Object.freeze({
@@ -8175,6 +8900,100 @@
       return stall;
     }
 
+    function stallDirForSeedShop() {
+      const base = new THREE.Vector3(0.105, 1, 0).normalize();
+      const tangent = new THREE.Vector3(1,0,0).sub(base.clone().multiplyScalar(base.x)).normalize();
+      const angle = 0.34;
+      return base.clone().multiplyScalar(Math.cos(angle)).add(tangent.multiplyScalar(Math.sin(angle))).normalize();
+    }
+
+    function createSeedShopStall() {
+      const stall = new THREE.Group();
+      stall.name = 'PippaSeedShopStall';
+      stall.userData.collision = { halfX: 4.62, halfZ: 1.82, padding: 0.48 };
+
+      const wood = new THREE.MeshStandardMaterial({ color: 0x8a5632, roughness: 0.9 });
+      const woodLight = new THREE.MeshStandardMaterial({ color: 0xb97b45, roughness: 0.88 });
+      const clothLight = new THREE.MeshStandardMaterial({ color: 0xf0dfbd, roughness: 0.95 });
+      const clothGreen = new THREE.MeshStandardMaterial({ color: 0x5f9c52, roughness: 0.90 });
+      const paper = new THREE.MeshStandardMaterial({ color: 0xf2e2b9, roughness: 0.90 });
+      const seedColors = {
+        sunroot_seed: 0xd98b2b,
+        glowberry_seed: 0x7b62d7,
+        ivisleaf_seed: 0x5f9c52,
+        starcorn_seed: 0xc99a22,
+        glowmelon_seed: 0x3d8f86,
+      };
+
+      const postGeo = new THREE.CylinderGeometry(0.11, 0.13, 3.15, 8);
+      for (const [x,y,z] of [[-4.35,1.58,-1.55],[4.35,1.58,-1.55],[-4.35,1.58,1.55],[4.35,1.58,1.55]]) {
+        const post = new THREE.Mesh(postGeo, wood); post.position.set(x,y,z); stall.add(post);
+      }
+      const topBeam = new THREE.Mesh(new THREE.BoxGeometry(9.05,0.22,3.35), wood);
+      topBeam.position.y = 3.03; stall.add(topBeam);
+      const awning = new THREE.Group();
+      for (let i=0;i<7;i++) {
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(9.05/7+0.015,0.12,3.55), i%2===0?clothLight:clothGreen);
+        panel.position.set(-4.525+(i+0.5)*(9.05/7),3.22,0); panel.rotation.x=-0.035; awning.add(panel);
+      }
+      stall.add(awning);
+      const valance = new THREE.Mesh(new THREE.BoxGeometry(9.05,0.48,0.13), clothLight);
+      valance.position.set(0,2.91,-1.69); stall.add(valance);
+      const counterLegGeo = new THREE.BoxGeometry(0.28,1.35,0.28);
+      for (const x of [-3.8,3.8]) for (const z of [-1.15,1.15]) {
+        const leg = new THREE.Mesh(counterLegGeo,wood); leg.position.set(x,0.68,z); stall.add(leg);
+      }
+      const counterBase = new THREE.Mesh(new THREE.BoxGeometry(8.55,0.18,2.55), wood); counterBase.position.y=1.36; stall.add(counterBase);
+      const counterTop = new THREE.Mesh(new THREE.BoxGeometry(8.75,0.18,2.72), woodLight); counterTop.position.y=1.50; stall.add(counterTop);
+
+      // Five little seed display packets across the counter.
+      const displaySeeds = ['sunroot_seed','glowberry_seed','ivisleaf_seed','starcorn_seed','glowmelon_seed'];
+      displaySeeds.forEach((id, idx) => {
+        const packet = new THREE.Group();
+        const mat = new THREE.MeshStandardMaterial({ color: 0xf3e8ca, roughness: 0.90 });
+        const ink = new THREE.MeshStandardMaterial({ color: seedColors[id] || 0x5f9c52, roughness: 0.82 });
+        const body = new THREE.Mesh(new THREE.BoxGeometry(0.42,0.56,0.08), mat);
+        body.position.y=0.30; packet.add(body);
+        const seed = new THREE.Mesh(new THREE.SphereGeometry(0.075,8,6), ink);
+        seed.scale.set(1,0.66,0.22); seed.position.set(0,0.33,0.052); packet.add(seed);
+        const leaf = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.025,0.018), ink);
+        leaf.position.set(0.04,0.43,0.052); leaf.rotation.z=-0.34; packet.add(leaf);
+        packet.position.set(-3.05 + idx*1.52, 1.62, -0.05);
+        packet.rotation.z=(idx-2)*0.025; packet.rotation.y=(idx-2)*0.045;
+        stall.add(packet);
+      });
+
+      addStallSign(stall, 'SEEDS', 0x5f9c52, 0x4b6c2d);
+
+      const npc = new THREE.Group();
+      npc.name = 'PippaSeedMerchantNPC';
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0xf0a45b, roughness: 0.9 });
+      const apronMat = new THREE.MeshStandardMaterial({ color: 0x7bbd74, roughness: 0.86 });
+      const hatMat = new THREE.MeshStandardMaterial({ color: 0xe6d7a9, roughness: 0.82 });
+      const dark = new THREE.MeshStandardMaterial({ color: 0x2a2521, roughness: 0.9 });
+      const npcBodyGeo = typeof THREE.CapsuleGeometry==='function' ? new THREE.CapsuleGeometry(0.45,1.0,4,8) : new THREE.CylinderGeometry(0.45,0.45,1.9,8);
+      const npcBody = new THREE.Mesh(npcBodyGeo, bodyMat); npcBody.position.y=0.95; npc.add(npcBody);
+      const apron = new THREE.Mesh(new THREE.BoxGeometry(0.72,0.80,0.18), apronMat); apron.position.set(0,0.92,-0.38); npc.add(apron);
+      const hatBrim = new THREE.Mesh(new THREE.CylinderGeometry(0.66,0.72,0.10,16), hatMat); hatBrim.position.y=1.95; npc.add(hatBrim);
+      const hatCrown = new THREE.Mesh(new THREE.CylinderGeometry(0.47,0.54,0.46,16), hatMat); hatCrown.position.y=2.19; npc.add(hatCrown);
+      const band = new THREE.Mesh(new THREE.CylinderGeometry(0.49,0.49,0.09,16), apronMat); band.position.y=2.04; npc.add(band);
+      // Small dark eyes make the otherwise simple stylized person read as an NPC.
+      const eyeGeo = new THREE.SphereGeometry(0.045,8,6);
+      for (const x of [-0.12,0.12]) { const eye=new THREE.Mesh(eyeGeo,dark); eye.position.set(x,1.68,-0.43); npc.add(eye); }
+
+      const baseDir = stallDirForSeedShop();
+      const groundRadius = PLANET_RADIUS + heightAt(baseDir);
+      stall.position.copy(baseDir).multiplyScalar(groundRadius+0.02);
+      const spawnTangent = new THREE.Vector3(0,1,0).sub(baseDir.clone().multiplyScalar(baseDir.y)).normalize();
+      const stallRight = new THREE.Vector3().crossVectors(spawnTangent,baseDir).normalize();
+      stall.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(stallRight,baseDir,spawnTangent.clone().negate()));
+      // Pippa is a telephone-only merchant. Keep this helper group off the live world;
+      // its NPC child is used only as the portrait model in the telephone dialogue UI.
+      npc.position.set(5.55,0.02,-0.30); npc.scale.setScalar(0.76); stall.add(npc);
+      stall.userData.merchantNPC=npc;
+      return stall;
+    }
+
     function stallDirForHatStall() {
       const base = new THREE.Vector3(0.105,1,0).normalize();
       const tangent = new THREE.Vector3(1,0,0).sub(base.clone().multiplyScalar(base.x)).normalize();
@@ -8185,10 +9004,12 @@
 
     const crystalStall = createCrystalStall();
     const hatStall = createHatStall();
-    // Physical commerce moved to the telephone network. Keep the old stall/NPC models
-    // instantiated but hidden because they remain useful as telephone dialogue portraits.
+    const seedShopStall = createSeedShopStall();
+    // Pippa is available only through the telephone. This off-scene helper remains only
+    // so the telephone dialogue can reuse her 3D portrait model; it is not rendered or collidable.
     crystalStall.visible = false;
     hatStall.visible = false;
+    seedShopStall.visible = false;
 
     // ---------- merchant UI 3D preview ----------
     // The merchant preview is rendered in its own small scene so the in-world NPC model
@@ -8608,7 +9429,7 @@
         const dir = center.clone().addScaledVector(offset, 0.17).normalize();
         const h = auroraHeightAt(dir);
         if (h < 0 || h > 13) continue;
-        const size = 1.25 + Math.random() * 2.6;
+        const size = TREE_MIN_SCALE + Math.random() * (TREE_MAX_SCALE - TREE_MIN_SCALE);
         const root = createSimpleTree(size);
         const yaw = Math.random() * Math.PI * 2;
         placeAuroraProp(root, dir, 0);
@@ -9399,6 +10220,11 @@
     const telephoneConciergeSellButton = document.getElementById('telephoneConciergeSellButton');
     const telephoneConciergeSellGoodbye = document.getElementById('telephoneConciergeSellGoodbye');
     const telephoneConciergeBuyGoodbye = document.getElementById('telephoneConciergeBuyGoodbye');
+    const telephoneSeedShopPanel = document.getElementById('telephoneSeedShopPanel');
+    const telephoneSeedShopList = document.getElementById('telephoneSeedShopList');
+    const telephoneSeedShopStatus = document.getElementById('telephoneSeedShopStatus');
+    const telephoneSeedShopCredits = document.getElementById('telephoneSeedShopCredits');
+    const telephoneSeedShopGoodbye = document.getElementById('telephoneSeedShopGoodbye');
     let telephoneConciergeSellTypeId = null;
 
     const telephoneDialogueTrees = {
@@ -9440,6 +10266,40 @@
         sell: {
           text: 'Sure. What would you like to sell?',
           sell: true,
+          choices: []
+        },
+      },
+      seed_shop: {
+        displayName: 'PIPPA · SEED MERCHANT',
+        intro: {
+          text: 'Pippa here! Welcome to Pippa\'s Galactic Seed Co. I keep a few special varieties growing for explorers who want to start farming.',
+          choices: [
+            { text: 'Show me your seeds.', next: 'shop' },
+            { text: 'Who are you?', next: 'who' },
+            { text: 'Got anything really rare?', next: 'rare' },
+            { text: 'Goodbye', next: 'end' },
+          ]
+        },
+        who: {
+          text: "I run Pippa's Galactic Seed Co. from the telephone network. Most of my customers are miners, builders, and people who accidentally start farms. It happens more than you would think.",
+          choices: [
+            { text: 'Show me your seeds.', next: 'shop' },
+            { text: 'Got anything really rare?', next: 'rare' },
+            { text: 'Back', next: 'intro' },
+            { text: 'Goodbye', next: 'end' },
+          ]
+        },
+        rare: {
+          text: 'Starcorn and Glowmelon are the ones people travel across the system for. They take patience, but I always keep a few packets in stock.',
+          choices: [
+            { text: 'Show me the catalogue.', next: 'shop' },
+            { text: 'Back', next: 'intro' },
+            { text: 'Goodbye', next: 'end' },
+          ]
+        },
+        shop: {
+          text: 'There you go! Take a look. The prices are all listed in Credits, and every seed packet fits neatly in your backpack.',
+          seedShop: true,
           choices: []
         },
       },
@@ -9493,6 +10353,7 @@
       telephoneDialogueChoices.innerHTML = '';
       if (telephoneConciergeShopPanel) telephoneConciergeShopPanel.classList.add('hidden');
       if (telephoneConciergeSellPanel) telephoneConciergeSellPanel.classList.add('hidden');
+      if (telephoneSeedShopPanel) telephoneSeedShopPanel.classList.add('hidden');
       conciergePendingOrder = null;
       telephoneConciergeOrderConfirm?.classList.add('hidden');
       if (telephoneConciergeShopList) telephoneConciergeShopList.replaceChildren();
@@ -9622,7 +10483,7 @@
       if (!telephoneDialoguePreviewScene) setupTelephoneDialoguePreview();
       if (!telephoneDialoguePreviewScene) return;
       if (telephoneDialoguePreviewModel) { telephoneDialoguePreviewScene.remove(telephoneDialoguePreviewModel); telephoneDialoguePreviewModel = null; }
-      const source = contact === 'helna' ? hatStall?.userData?.merchantNPC : crystalStall?.userData?.merchantNPC;
+      const source = contact === 'helna' ? hatStall?.userData?.merchantNPC : (contact === 'seed_shop' ? seedShopStall?.userData?.merchantNPC : crystalStall?.userData?.merchantNPC);
       telephoneDialoguePreviewModel = source?.clone?.(true) || null;
       telephoneDialoguePortraitLabel.textContent = telephoneDialogueTrees[contact]?.displayName || 'CONTACT';
       if (telephoneDialoguePreviewModel) {
@@ -9823,6 +10684,106 @@
     function queueConciergeOrder(catalogItem,qty){
       // Kept as a compatibility wrapper for older callers; all new purchases use the confirmation step.
       openConciergeOrderConfirmation(catalogItem,qty);
+    }
+
+    const TELEPHONE_SEED_SHOP_CATALOG = Object.freeze([
+      { id:'sunroot_seed',   price:20,  max:10 },
+      { id:'glowberry_seed', price:75,  max:10 },
+      { id:'ivisleaf_seed',  price:60,  max:10 },
+      { id:'starcorn_seed',  price:300, max:10 },
+      { id:'glowmelon_seed', price:750, max:10 },
+    ]);
+
+    async function purchaseTelephoneSeed(catalogItem, row) {
+      const qtyInput = row?.querySelector('.telephoneShopQty');
+      const button = row?.querySelector('.telephoneShopOrder');
+      let qty = Math.floor(Number(qtyInput?.value) || 1);
+      qty = Math.max(1, Math.min(catalogItem.max, qty));
+      if (qtyInput) qtyInput.value = String(qty);
+      const item = itemById[catalogItem.id];
+      if (!item) return;
+
+      if (secureAccountAuthorityEnabled && multiplayerMode) {
+        if (button) button.disabled = true;
+        try {
+          await callSecureAccountMutation('pu_buy_item', { p_item_id: catalogItem.id, p_quantity: qty });
+          const total = catalogItem.price * qty;
+          if (currentAccountUser) {
+            accountStatistics.totalCreditsSpent += total;
+            renderAccountStatistics();
+            persistAchievementState();
+          }
+          awardAchievement('buy_merchant');
+          awardAchievement('farm_seed_shop');
+          markJournalItemDiscovered(catalogItem.id);
+          refreshEquippedItem(); updateHotbarUI(); if (uiState.inventoryOpen) updateInventoryUI();
+          if (telephoneSeedShopStatus) telephoneSeedShopStatus.textContent = 'PURCHASED · ' + qty + ' × ' + item.name + ' for ¢' + total + '.';
+          renderTelephoneSeedShop();
+        } catch (error) {
+          console.warn('Secure seed-shop purchase failed:', error);
+          if (telephoneSeedShopStatus) telephoneSeedShopStatus.textContent = error?.message || 'Purchase failed. Nothing was changed.';
+          if (button) button.disabled = false;
+        }
+        return;
+      }
+
+      const total = catalogItem.price * qty;
+      if (economyState.credits < total) {
+        if (telephoneSeedShopStatus) telephoneSeedShopStatus.textContent = 'Not enough credits.';
+        return;
+      }
+      if (!canAddItemToInventory(catalogItem.id, qty)) {
+        if (telephoneSeedShopStatus) telephoneSeedShopStatus.textContent = 'Not enough inventory space.';
+        return;
+      }
+      if (!addItemToInventory(catalogItem.id, qty)) {
+        if (telephoneSeedShopStatus) telephoneSeedShopStatus.textContent = 'Could not add the seeds to your inventory.';
+        return;
+      }
+      economyState.credits -= total;
+      if (currentAccountUser) {
+        accountStatistics.totalCreditsSpent += total;
+        renderAccountStatistics();
+        persistAchievementState();
+      }
+      awardAchievement('buy_merchant');
+      awardAchievement('farm_seed_shop');
+      markJournalItemDiscovered(catalogItem.id);
+      updateCreditsUI(); refreshEquippedItem(); updateHotbarUI(); if (uiState.inventoryOpen) updateInventoryUI();
+      if (telephoneSeedShopStatus) telephoneSeedShopStatus.textContent = 'PURCHASED · ' + qty + ' × ' + item.name + ' for ¢' + total + '.';
+      renderTelephoneSeedShop();
+    }
+
+    function renderTelephoneSeedShop() {
+      if (!telephoneSeedShopList) return;
+      telephoneSeedShopList.replaceChildren();
+      if (telephoneSeedShopCredits) telephoneSeedShopCredits.textContent = '¢' + Math.max(0, Math.floor(economyState.credits));
+      for (const catalogItem of TELEPHONE_SEED_SHOP_CATALOG) {
+        const item = itemById[catalogItem.id];
+        if (!item) continue;
+        const row = document.createElement('div');
+        row.className = 'telephoneShopRow telephoneSeedShopRow';
+        const icon = document.createElement('div'); icon.className='telephoneShopIcon'; icon.appendChild(makeItemIconElement(catalogItem.id,'telephoneShopItemIcon'));
+        const text = document.createElement('div'); text.className='telephoneShopItemText';
+        const strong=document.createElement('strong'); strong.textContent=item.name;
+        const small=document.createElement('small'); small.textContent='¢'+catalogItem.price+' each · packet max '+catalogItem.max;
+        text.append(strong,small);
+        const qty=document.createElement('input'); qty.className='telephoneShopQty'; qty.type='number'; qty.min='1'; qty.max=String(catalogItem.max); qty.value='1';
+        const button=document.createElement('button'); button.type='button'; button.className='telephoneShopOrder'; button.textContent='BUY';
+        const refresh=()=>{ let q=Math.max(1,Math.min(catalogItem.max,Math.floor(Number(qty.value)||1))); qty.value=String(q); button.disabled=economyState.credits < catalogItem.price*q; };
+        qty.addEventListener('input',refresh);
+        button.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();void purchaseTelephoneSeed(catalogItem,row);});
+        row.append(icon,text,qty,button); telephoneSeedShopList.appendChild(row); refresh();
+      }
+    }
+
+    function openTelephoneSeedShop() {
+      enterTelephoneCommerceMode();
+      if (telephoneConciergeShopPanel) telephoneConciergeShopPanel.classList.add('hidden');
+      if (telephoneConciergeSellPanel) telephoneConciergeSellPanel.classList.add('hidden');
+      telephoneSeedShopPanel?.classList.remove('hidden');
+      if (telephoneSeedShopStatus) telephoneSeedShopStatus.textContent='';
+      renderTelephoneSeedShop();
     }
 
     function updateTelephoneConciergeSellSelection() {
@@ -10030,6 +10991,7 @@
     if (telephoneConciergeOrderCancelButton) telephoneConciergeOrderCancelButton.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();playAudio('telephoneButton',0.52,0.94,1200);cancelConciergeOrderConfirmation();});
     if (telephoneConciergeBuyGoodbye) telephoneConciergeBuyGoodbye.addEventListener('click',e=>{e.stopPropagation();endTelephoneCommerceFromTopButton();});
     if (telephoneConciergeSellGoodbye) telephoneConciergeSellGoodbye.addEventListener('click',e=>{e.stopPropagation();endTelephoneCommerceFromTopButton();});
+    if (telephoneSeedShopGoodbye) telephoneSeedShopGoodbye.addEventListener('click',e=>{e.stopPropagation();endTelephoneCommerceFromTopButton();});
     if (telephoneConciergeSellQuantity) telephoneConciergeSellQuantity.addEventListener('input',updateTelephoneConciergeSellSelection);
     if (telephoneConciergeSellButton) telephoneConciergeSellButton.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();playAudio('telephoneButton',0.62,1.0,1400);sellSelectedConciergeItem();});
 
@@ -10058,6 +11020,7 @@
       }
       if (node.shop) { openConciergeShop(); return; }
       if (node.sell) { openConciergeSell(); return; }
+      if (node.seedShop) { openTelephoneSeedShop(); return; }
       if (node.cosmeticShop) {
         openCosmeticShop(true);
       }
@@ -10097,7 +11060,7 @@
     function connectAfterTelephoneRing(contact, pretty) {
       if (!uiState.telephoneOpen) return;
       telephoneNumberDisplay.textContent = pretty;
-      telephoneConnectionTarget.textContent = contact === 'concierge' ? 'GALACTIC CONCIERGE · 900-0001' : 'HELNA · 482-0193';
+      telephoneConnectionTarget.textContent = contact === 'concierge' ? 'GALACTIC CONCIERGE · 900-0001' : (contact === 'seed_shop' ? "PIPPA'S GALACTIC SEED CO. · 733-0174" : 'HELNA · 482-0193');
       openTelephoneDialogue(contact);
     }
 
@@ -10115,7 +11078,7 @@
       telephoneDialStatus.textContent = 'RINGING…';
       telephoneConnectionPanel.classList.remove('hidden');
       telephoneConnectionTitle.textContent = 'CALLING';
-      telephoneConnectionTarget.textContent = contact === 'concierge' ? 'GALACTIC CONCIERGE · 900-0001' : 'HELNA · 482-0193';
+      telephoneConnectionTarget.textContent = contact === 'concierge' ? 'GALACTIC CONCIERGE · 900-0001' : (contact === 'seed_shop' ? "PIPPA'S GALACTIC SEED CO. · 733-0174" : 'HELNA · 482-0193');
       telephoneCallButton.disabled = true;
       telephoneCallButton.style.opacity = '0.5';
       telephoneKeypad.classList.add('hidden');
@@ -10155,7 +11118,7 @@
         return;
       }
       const pretty = formatTelephoneDigits(telephoneDialDigits);
-      const contact = telephoneDialDigits === '9000001' ? 'concierge' : telephoneDialDigits === '4820193' ? 'helna' : null;
+      const contact = telephoneDialDigits === '9000001' ? 'concierge' : telephoneDialDigits === '4820193' ? 'helna' : telephoneDialDigits === '7330174' ? 'seed_shop' : null;
       if (!contact) {
         telephoneDialStatus.textContent = 'NO CONNECTION';
         telephoneConnectionPanel.classList.add('hidden');
@@ -10317,6 +11280,150 @@
       return String(raw).replace(/[^A-Za-z0-9 _.-]/g, '').trim().slice(0, 24) || 'Explorer';
     }
 
+    function multiplayerChatMessageId(payload) {
+      const source = String(payload?.sourceUserId || '');
+      const sentAt = Number(payload?.sentAt) || 0;
+      const nonce = String(payload?.messageId || '');
+      return source + ':' + sentAt + ':' + nonce;
+    }
+
+    function sanitizeMultiplayerChatMessage(raw) {
+      return String(raw ?? '')
+        .replace(/[\u0000-\u001F\u007F]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, MULTIPLAYER_CHAT_MESSAGE_MAX_LENGTH);
+    }
+
+    function renderMultiplayerChat() {
+      const chat = document.getElementById('multiplayerChat');
+      const log = document.getElementById('multiplayerChatLog');
+      const composer = document.getElementById('multiplayerChatComposer');
+      const hint = document.getElementById('multiplayerChatHint');
+      if (!chat || !log || !composer || !hint) return;
+      chat.classList.toggle('hidden', !multiplayerMode);
+      composer.classList.toggle('hidden', !multiplayerChatOpen);
+      hint.textContent = multiplayerChatOpen ? 'Enter to send · Esc to close' : 'Press T to chat';
+
+      log.replaceChildren();
+      const recent = multiplayerChatMessages.slice(-8);
+      for (const entry of recent) {
+        const row = document.createElement('div');
+        row.className = 'multiplayerChatMessage' + (entry.self ? ' you' : '');
+        const name = document.createElement('span');
+        name.className = 'multiplayerChatName';
+        name.textContent = entry.self ? 'You:' : (String(entry.username || 'Explorer').slice(0, 24) + ':');
+        const text = document.createElement('span');
+        text.className = 'multiplayerChatText';
+        text.textContent = String(entry.message || '');
+        row.append(name, text);
+        log.appendChild(row);
+      }
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function resetMultiplayerChat() {
+      multiplayerChatOpen = false;
+      multiplayerChatMessages = [];
+      multiplayerChatSeenIds.clear();
+      multiplayerChatLastSentAt = 0;
+      renderMultiplayerChat();
+    }
+
+    function addMultiplayerChatMessage(payload, self = false) {
+      if (!payload || String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return false;
+      if (Number(payload.protocol || 0) !== 1 || payload.kind !== 'world_chat_message_v1') return false;
+      const sourceUserId = String(payload.sourceUserId || '');
+      if (!sourceUserId) return false;
+      const message = sanitizeMultiplayerChatMessage(payload.message);
+      if (!message) return false;
+      const messageId = multiplayerChatMessageId(payload);
+      if (!messageId || multiplayerChatSeenIds.has(messageId)) return false;
+      multiplayerChatSeenIds.add(messageId);
+      multiplayerChatMessages.push({
+        self: !!self,
+        userId: sourceUserId,
+        username: String(payload.username || 'Explorer').slice(0, 24),
+        message,
+        sentAt: Number(payload.sentAt) || Date.now()
+      });
+      if (multiplayerChatMessages.length > MULTIPLAYER_CHAT_MAX_MESSAGES) {
+        multiplayerChatMessages.splice(0, multiplayerChatMessages.length - MULTIPLAYER_CHAT_MAX_MESSAGES);
+      }
+      renderMultiplayerChat();
+      return true;
+    }
+
+    function openMultiplayerChat() {
+      if (!multiplayerMode || !multiplayerConnected || state.gameState !== 'playing' || state.paused) return false;
+      multiplayerChatOpen = true;
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      renderMultiplayerChat();
+      const input = document.getElementById('multiplayerChatInput');
+      if (input) {
+        input.value = '';
+        setTimeout(() => { input.focus(); input.select(); }, 0);
+      }
+      return true;
+    }
+
+    function closeMultiplayerChat() {
+      if (!multiplayerChatOpen) return false;
+      multiplayerChatOpen = false;
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      renderMultiplayerChat();
+      return true;
+    }
+
+    function toggleMultiplayerChat() {
+      return multiplayerChatOpen ? closeMultiplayerChat() : openMultiplayerChat();
+    }
+
+    function sendMultiplayerChatMessage() {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser) return false;
+      const input = document.getElementById('multiplayerChatInput');
+      const message = sanitizeMultiplayerChatMessage(input?.value || '');
+      if (!message) return false;
+      const now = Date.now();
+      if (now - multiplayerChatLastSentAt < MULTIPLAYER_CHAT_SEND_COOLDOWN_MS) return false;
+      const payload = {
+        protocol: 1,
+        kind: 'world_chat_message_v1',
+        sourceUserId: String(currentAccountUser.id),
+        worldId: String(MULTIPLAYER_WORLD_ID || ''),
+        username: multiplayerUsername(),
+        message,
+        sentAt: now,
+        messageId: Math.random().toString(36).slice(2, 10) + '-' + now.toString(36)
+      };
+      multiplayerChatLastSentAt = now;
+      if (input) input.value = '';
+      addMultiplayerChatMessage(payload, true);
+      multiplayerChannel.send({ type: 'broadcast', event: 'world_chat_message_v1', payload }).catch((error) => {
+        console.warn('Multiplayer chat send failed:', error);
+      });
+      return true;
+    }
+
+    function handleMultiplayerChatKeydown(e) {
+      if (!multiplayerChatOpen) return false;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeMultiplayerChat();
+        return true;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMultiplayerChatMessage();
+        return true;
+      }
+      return false;
+    }
+
     function multiplayerSkinHex(skinId) {
       return accountSkinColorById[skinId]?.hex ?? 0xFFF0E1;
     }
@@ -10471,7 +11578,9 @@
         lastPacketAt: performance.now(),
         visible: true,
         currentPlanetId: 'ivis',
-        state: { moving: false, sprinting: false, crouching: false, airborne: false, toolActive: false, toolSwing: false, flashlightOn: false, inRocket: false },
+        state: { moving: false, sprinting: false, crouching: false, airborne: false, toolActive: false, toolSwing: false, flashlightOn: false, inRocket: false, emoteId: null, emoteSequence: 0 },
+        emoteStartedAt: 0,
+        emoteSequence: 0,
         stats: { health: HEALTH_MAX, hunger: HUNGER_MAX, stamina: STAMINA_MAX, exhausted: false },
         cosmetics: payload.cosmetics || null,
         cosmeticHat: null,
@@ -10493,7 +11602,16 @@
       if (remote.cosmetics) updateMultiplayerRemoteCosmetics(remote, remote.cosmetics);
       applyMultiplayerRemoteStats(remote, payload);
       updateMultiplayerRemoteHeldItem(remote, payload.equippedItemType || null);
-      if (payload.animation) remote.state = { ...remote.state, ...payload.animation };
+      if (payload.animation) {
+        const nextAnim = { ...remote.state, ...payload.animation };
+        const incomingSeq = Number(payload.animation.emoteSequence) || 0;
+        const incomingId = payload.animation.emoteId ? String(payload.animation.emoteId) : null;
+        if (incomingSeq !== Number(remote.emoteSequence || 0) || incomingId !== remote.state.emoteId) {
+          remote.emoteSequence = incomingSeq;
+          remote.emoteStartedAt = incomingId ? performance.now() : 0;
+        }
+        remote.state = nextAnim;
+      }
       remote.root.visible = true;
       if (remote.visualRoot) remote.visualRoot.visible = !remote.state.inRocket;
       if (remote.nameTag) remote.nameTag.visible = !remote.state.inRocket;
@@ -11214,7 +12332,16 @@
       if (Array.isArray(payload.position) && payload.position.length >= 3 && Array.isArray(payload.quaternion) && payload.quaternion.length >= 4) {
         pushMultiplayerNetworkSample(remote.networkSamples, remote.targetPosition, remote.targetQuaternion, receivedAt);
       }
-      if (payload.animation) remote.state = { ...remote.state, ...payload.animation };
+      if (payload.animation) {
+        const nextAnim = { ...remote.state, ...payload.animation };
+        const incomingSeq = Number(payload.animation.emoteSequence) || 0;
+        const incomingId = payload.animation.emoteId ? String(payload.animation.emoteId) : null;
+        if (incomingSeq !== Number(remote.emoteSequence || 0) || incomingId !== remote.state.emoteId) {
+          remote.emoteSequence = incomingSeq;
+          remote.emoteStartedAt = incomingId ? performance.now() : 0;
+        }
+        remote.state = nextAnim;
+      }
       if (payload.currentPlanetId) remote.currentPlanetId = String(payload.currentPlanetId);
       // Player-state Broadcast is a proven multiplayer path, so a player who is visibly in a
       // rocket can always bootstrap a stable remote rocket entity from the player's transform.
@@ -12127,9 +13254,12 @@
       const trees = treeSpawns.map((tree) => ({
         direction: tree.direction?.toArray?.() || [0, 1, 0],
         size: Number(tree.size) || 1,
+        visualScale: Number.isFinite(Number(tree.visualScale)) ? Number(tree.visualScale) : getTreeVisualScale(tree),
         yaw: Number(tree.yaw) || 0,
+        variant: tree.variant === TREE_VARIANT_FRUIT ? TREE_VARIANT_FRUIT : TREE_VARIANT_EVERGREEN,
         chopped: !!tree.chopped,
-        generation: Math.max(0, Math.floor(Number(tree.resourceGeneration) || 0))
+        generation: Math.max(0, Math.floor(Number(tree.resourceGeneration) || 0)),
+        fruits: tree.variant === TREE_VARIANT_FRUIT ? (Array.isArray(tree.fruits) && tree.fruits.length === VEYRA_FRUIT_COUNT ? tree.fruits.map(Boolean) : [true, true]) : []
       }));
       const rocks = rockSpawns.map((rock) => ({
         direction: rock.direction?.toArray?.() || [0, 1, 0],
@@ -12142,7 +13272,29 @@
         yaw: Number(ore.yaw) || 0,
         oreType: String(ore.oreType || 'iron_ore')
       }));
-      return { trees, rocks, ironOres };
+      const plots = tilledPlots.map((plot) => {
+        if (plot.crop) { advanceCropGrowth(plot.crop, Date.now()); plot.crop.stage = getCropGrowthStage(plot.crop); }
+        return {
+          plotKey: String(plot.plotKey || getTilledPlotKey(plot.surfaceBodyId, plot.direction)),
+          surfaceBodyId: String(plot.surfaceBodyId || 'ivis'),
+          direction: plot.direction?.toArray?.() || [0, 1, 0],
+          forward: plot.forward?.toArray?.() || [1, 0, 0],
+          cropGeneration: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)),
+          crop: plot.crop ? {
+            cropKey: String(plot.crop.cropKey || getFarmPlotCropKey(plot)),
+            cropId: String(plot.crop.cropId || ''),
+            plantedAtMs: Math.max(0, Math.floor(Number(plot.crop.plantedAtMs) || Date.now())),
+            stage: Math.max(0, Math.min(3, Math.floor(Number(plot.crop.stage) || 0))),
+            generation: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)),
+            growthProgressSec: Math.max(0, Number(plot.crop.growthProgressSec) || 0),
+            growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())),
+            wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)),
+            wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0))
+          } : null
+        };
+      });
+      const flowerState = cordeliaFlowers.map(flower => ({ cactusIndex: flower.cactusIndex, picked: !!flower.picked, regrowAtMs: Math.max(0, Number(flower.regrowAtMs) || 0), generation: Math.max(0, Math.floor(Number(flower.generation) || 0)) }));
+      return { trees, rocks, ironOres, plots, cordeliaFlowers: flowerState };
     }
 
     function applyMultiplayerTreeChopped(payload) {
@@ -12164,6 +13316,72 @@
       markMultiplayerWorldDirty('remote-tree-chopped');
     }
 
+    function applyMultiplayerTreeFruitHarvested(payload) {
+      if (!payload || payload.kind !== 'tree_fruit_harvested_v1') return;
+      if (String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return;
+      if (String(payload.sourceUserId || '') === String(currentAccountUser?.id || '')) return;
+      const bodyId = String(payload.bodyId || 'ivis');
+      const index = Math.max(0, Math.floor(Number(payload.treeIndex) || 0));
+      const fruitIndex = Math.max(0, Math.min(VEYRA_FRUIT_COUNT - 1, Math.floor(Number(payload.fruitIndex) || 0)));
+      const trees = bodyId === 'aurora' ? auroraTreeSpawns : treeSpawns;
+      const tree = trees[index];
+      if (!tree || tree.variant !== TREE_VARIANT_FRUIT) return;
+      const receivedGeneration = Math.max(0, Math.floor(Number(payload.generation) || 0));
+      const localGeneration = Math.max(0, Math.floor(Number(tree.resourceGeneration) || 0));
+      if (receivedGeneration !== localGeneration) return;
+      normalizeTreeFruitState(tree);
+      if (!tree.fruits[fruitIndex]) return;
+      playVeyraFruitHarvestEffect(tree, fruitIndex);
+      tree.fruits[fruitIndex] = false;
+      cacheTreeFruitAssemblies(tree);
+      updateTreeFruitVisual(tree);
+      markMultiplayerWorldDirty('remote-veyra-fruit-harvest');
+      updateCrystalPrompt();
+    }
+
+    function broadcastMultiplayerTilledPlot(plot) {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser || !plot) return;
+      const payload = {
+        kind: 'plot_tilled_v1',
+        sourceUserId: String(currentAccountUser.id),
+        worldId: String(MULTIPLAYER_WORLD_ID),
+        plotKey: String(plot.plotKey || getTilledPlotKey(plot.surfaceBodyId, plot.direction)),
+        surfaceBodyId: String(plot.surfaceBodyId || 'ivis'),
+        direction: plot.direction?.toArray?.() || [0, 1, 0],
+        forward: plot.forward?.toArray?.() || [1, 0, 0],
+        sentAt: Date.now()
+      };
+      multiplayerChannel.send({ type: 'broadcast', event: 'world_plot_tilled', payload }).catch((error) => {
+        console.warn('Multiplayer plot-till broadcast failed', error);
+      });
+    }
+
+    function applyMultiplayerTilledPlot(payload) {
+      if (!payload || payload.kind !== 'plot_tilled_v1') return;
+      if (String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return;
+      if (String(payload.sourceUserId || '') === String(currentAccountUser?.id || '')) return;
+      const key = String(payload.plotKey || '');
+      if (key && findTilledPlotByKey(key)) return;
+      const surfaceBodyId = ['ivis', 'aurora', 'cordelia'].includes(String(payload.surfaceBodyId || '')) ? String(payload.surfaceBodyId) : 'ivis';
+      const ctx = getPlaceableSurfaceContext(surfaceBodyId);
+      if (!ctx) return;
+      const copyVec = (raw, fallback) => {
+        if (!Array.isArray(raw) || raw.length < 3) return fallback.clone();
+        const v = new THREE.Vector3().fromArray(raw).normalize();
+        return v.lengthSq() > 0.5 ? v : fallback.clone();
+      };
+      const dir = copyVec(payload.direction, new THREE.Vector3(0, 1, 0));
+      const fallbackForward = new THREE.Vector3(1, 0, 0);
+      const tangent = copyVec(payload.forward, fallbackForward);
+      const projected = tangent.sub(dir.clone().multiplyScalar(tangent.dot(dir)));
+      if (projected.lengthSq() < 0.0001) return;
+      projected.normalize();
+      const plot = createTilledPlot({ ctx, dir, forward: projected }, key || getTilledPlotKey(surfaceBodyId, dir));
+      if (!plot) return;
+      markMultiplayerWorldDirty('remote-plot-tilled');
+      updateCrystalPrompt();
+    }
+
     function applyMultiplayerEnvironmentSnapshot(payload) {
       if (!payload || payload.kind !== 'environment_snapshot_v1') return;
       const sourceUserId = String(payload.sourceUserId || '');
@@ -12175,6 +13393,7 @@
       const trees = Array.isArray(payload.trees) ? payload.trees : [];
       const rocks = Array.isArray(payload.rocks) ? payload.rocks : [];
       const ironOres = Array.isArray(payload.ironOres) ? payload.ironOres : [];
+      const plots = Array.isArray(payload.plots) ? payload.plots : [];
 
       // Match the current procedural world by index. All clients create the same counts,
       // so the host's stable directions become the canonical multiplayer layout.
@@ -12190,10 +13409,26 @@
         if (!tree || !saved) continue;
         const dir = copyDir(saved.direction, tree.direction?.clone?.() || new THREE.Vector3(0, 1, 0));
         tree.direction.copy(dir);
-        tree.size = Number.isFinite(Number(saved.size)) ? Number(saved.size) : tree.size;
+        tree.size = Number.isFinite(Number(saved.size)) ? clampTreeScale(saved.size, tree.size || TREE_MIN_SCALE) : clampTreeScale(tree.size || tree.visualScale);
+        tree.visualScale = getTreeVisualScale(tree);
+        const wantedVariant = saved.variant === TREE_VARIANT_FRUIT ? TREE_VARIANT_FRUIT : TREE_VARIANT_EVERGREEN;
+        if (wantedVariant !== tree.variant) {
+          const replacement = cloneTreeModel(wantedVariant);
+          if (replacement) {
+            tree.root.clear();
+            tree.root.add(replacement);
+            tree.variant = wantedVariant;
+          }
+        }
         tree.yaw = Number.isFinite(Number(saved.yaw)) ? Number(saved.yaw) : tree.yaw;
         tree.chopped = !!saved.chopped;
         tree.resourceGeneration = Math.max(0, Math.floor(Number(saved.generation) || 0));
+        if (tree.variant === TREE_VARIANT_FRUIT) {
+          tree.fruits = Array.isArray(saved.fruits) && saved.fruits.length === VEYRA_FRUIT_COUNT ? saved.fruits.map(Boolean) : [true, true];
+          cacheTreeFruitAssemblies(tree);
+        } else {
+          tree.fruits = [];
+        }
         updateTreeRootVisual(tree);
         tree.root.visible = !tree.chopped;
       }
@@ -12229,6 +13464,40 @@
         ore.root.visible = !ore.mined;
       }
 
+      for (const saved of plots) {
+        const surfaceBodyId = ['ivis', 'aurora', 'cordelia'].includes(String(saved?.surfaceBodyId || '')) ? String(saved.surfaceBodyId) : 'ivis';
+        const ctx = getPlaceableSurfaceContext(surfaceBodyId);
+        if (!ctx) continue;
+        const dir = copyDir(saved.direction, new THREE.Vector3(0, 1, 0));
+        const tangentRaw = copyDir(saved.forward, new THREE.Vector3(1, 0, 0));
+        const projected = tangentRaw.sub(dir.clone().multiplyScalar(tangentRaw.dot(dir)));
+        if (projected.lengthSq() < 0.0001) continue;
+        projected.normalize();
+        const plotKey = String(saved.plotKey || getTilledPlotKey(surfaceBodyId, dir));
+        if (findTilledPlotByKey(plotKey) || findNearbyTilledPlot(dir, ctx)) {
+          const existing = findTilledPlotByKey(plotKey);
+          if (existing && saved.crop && cropById[String(saved.crop.cropId || '')]) {
+            existing.cropGeneration = Math.max(0, Math.floor(Number(saved.cropGeneration) || Number(saved.crop.generation) || 0));
+            existing.crop = { cropId: String(saved.crop.cropId), plantedAtMs: Math.max(0, Number(saved.crop.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(saved.crop.stage) || 0))), cropKey: String(saved.crop.cropKey || getFarmPlotCropKey(existing)), growthProgressSec: Math.max(0, Number(saved.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(saved.crop.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(saved.crop.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(saved.crop.wateredUntilMs) || 0) };
+            hydrateCropGrowthState(existing.crop);
+            updateTilledPlotCropVisual(existing);
+          }
+          continue;
+        }
+        const created = createTilledPlot({ ctx, dir, forward: projected }, plotKey);
+        if (created && saved.crop && cropById[String(saved.crop.cropId || '')]) {
+          created.cropGeneration = Math.max(0, Math.floor(Number(saved.cropGeneration) || Number(saved.crop.generation) || 0));
+          created.crop = { cropId: String(saved.crop.cropId), plantedAtMs: Math.max(0, Number(saved.crop.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(saved.crop.stage) || 0))), cropKey: String(saved.crop.cropKey || getFarmPlotCropKey(created)), growthProgressSec: Math.max(0, Number(saved.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(saved.crop.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(saved.crop.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(saved.crop.wateredUntilMs) || 0) };
+          hydrateCropGrowthState(created.crop);
+          updateTilledPlotCropVisual(created);
+        }
+      }
+
+      const savedFlowers = Array.isArray(payload.cordeliaFlowers) ? payload.cordeliaFlowers : [];
+      for (const savedFlower of savedFlowers) {
+        const flower = cordeliaFlowers.find(f => f.cactusIndex === Math.max(0, Math.floor(Number(savedFlower?.cactusIndex) || 0)));
+        if (flower) applyCordeliaFlowerState(flower, savedFlower);
+      }
       if (typeof relocateBunniesFromTrees === 'function') relocateBunniesFromTrees();
       updateCrystalPrompt();
     }
@@ -12364,7 +13633,9 @@
           snapshotId: 'server:' + String(snapshot.savedAt || Date.now()),
           trees: environment.trees || [],
           rocks: environment.rocks || [],
-          ironOres: environment.ironOres || []
+          ironOres: environment.ironOres || [],
+          plots: environment.plots || [],
+          cordeliaFlowers: environment.cordeliaFlowers || []
         });
       }
 
@@ -12780,6 +14051,7 @@
       if (multiplayerDebugPanel) multiplayerDebugPanel.classList.add('hidden');
       multiplayerDebugPendingPings.clear();
       closeMultiplayerPlayerList(false);
+      resetMultiplayerChat();
       if (restoreLocalAccount && secureAccountAuthorityEnabled) {
         restoreLocalAccountSnapshot();
         secureAccountAuthorityEnabled = false;
@@ -13014,7 +14286,9 @@
           snapshotId: 'bootstrap:' + String(payload.requestId || payload.sentAt || Date.now()),
           trees: environment.trees || [],
           rocks: environment.rocks || [],
-          ironOres: environment.ironOres || []
+          ironOres: environment.ironOres || [],
+          plots: environment.plots || [],
+          cordeliaFlowers: environment.cordeliaFlowers || []
         });
       }
       if (payload.worldStateSource && payload.placeables && typeof payload.placeables === 'object') {
@@ -13106,6 +14380,16 @@
         .on('broadcast', { event: 'world_placeable_interaction' }, ({ payload }) => applyMultiplayerPlaceableInteraction(payload))
         .on('broadcast', { event: 'world_mineable_mined' }, ({ payload }) => applyMultiplayerMineableMined(payload))
         .on('broadcast', { event: 'world_tree_chopped' }, ({ payload }) => applyMultiplayerTreeChopped(payload))
+        .on('broadcast', { event: 'world_tree_fruit_harvested' }, ({ payload }) => applyMultiplayerTreeFruitHarvested(payload))
+        .on('broadcast', { event: 'world_plot_tilled' }, ({ payload }) => { multiplayerDebugRecordReceived('world_plot_tilled', payload); applyMultiplayerTilledPlot(payload); })
+        .on('broadcast', { event: 'world_plot_crop_planted' }, ({ payload }) => { multiplayerDebugRecordReceived('world_plot_crop_planted', payload); applyMultiplayerCropPlanted(payload); })
+        .on('broadcast', { event: 'world_plot_crop_harvested' }, ({ payload }) => { multiplayerDebugRecordReceived('world_plot_crop_harvested', payload); applyMultiplayerCropHarvested(payload); })
+        .on('broadcast', { event: 'world_plot_crop_watered' }, ({ payload }) => { multiplayerDebugRecordReceived('world_plot_crop_watered', payload); applyMultiplayerCropWatered(payload); })
+        .on('broadcast', { event: 'world_cordelia_flower_picked' }, ({ payload }) => { multiplayerDebugRecordReceived('world_cordelia_flower_picked', payload); applyMultiplayerCordeliaFlowerPicked(payload); })
+        .on('broadcast', { event: 'world_chat_message_v1' }, ({ payload }) => {
+          multiplayerDebugRecordReceived('world_chat_message_v1', payload);
+          addMultiplayerChatMessage(payload, String(payload?.sourceUserId || '') === String(currentAccountUser?.id || ''));
+        })
         .on('broadcast', { event: 'world_environment_snapshot' }, ({ payload }) => {
           multiplayerDebugRecordReceived('world_environment_snapshot', payload);
           multiplayerDebugStats.lastEnvironmentReceivedAt = performance.now();
@@ -13303,10 +14587,142 @@
       return best;
     }
 
+    function currentEmoteSnapshot() {
+      if (!activeEmoteId) return null;
+      const def = EMOTE_DEFINITIONS[activeEmoteId];
+      if (!def) return null;
+      return { id: activeEmoteId, sequence: activeEmoteSequence, remainingMs: Math.max(0, def.duration * 1000 - (performance.now() - activeEmoteStartedAt)) };
+    }
+
+    function triggerEmote(emoteId) {
+      const id = String(emoteId || '');
+      const def = EMOTE_DEFINITIONS[id];
+      if (!def || state.gameState !== 'playing' || state.paused || playerState.inRocket || sleepingActive) return false;
+      activeEmoteId = id;
+      activeEmoteStartedAt = performance.now();
+      activeEmoteSequence += 1;
+      closeEmoteWheel();
+      return true;
+    }
+
+    function updateEmoteState() {
+      if (!activeEmoteId) return null;
+      const def = EMOTE_DEFINITIONS[activeEmoteId];
+      if (!def) { activeEmoteId = null; return null; }
+      const elapsed = performance.now() - activeEmoteStartedAt;
+      if (elapsed >= def.duration * 1000) {
+        activeEmoteId = null;
+        activeEmoteStartedAt = 0;
+        return null;
+      }
+      return { id: activeEmoteId, t: Math.max(0, elapsed / (def.duration * 1000)) };
+    }
+
+    function applyEmotePose(parts, baseRotations, basePositions, emoteId, normalizedTime, isLocal = false) {
+      if (!parts || !baseRotations || !basePositions || !emoteId) return false;
+      const t = Math.max(0, Math.min(1, Number(normalizedTime) || 0));
+      const wave = Math.sin(t * Math.PI * 5.0);
+      const bounce = Math.sin(t * Math.PI * 6.0);
+      const dance = Math.sin(t * Math.PI * 8.0);
+      const danceOpp = Math.sin(t * Math.PI * 8.0 + Math.PI);
+      const lerpInOut = Math.sin(Math.min(1, t) * Math.PI);
+      const setPart = (name, rotZ = 0, rotX = 0, posY = 0, posX = 0) => {
+        const part = parts[name];
+        const base = baseRotations[name];
+        const basePos = basePositions[name];
+        if (!part || !base || !basePos) return;
+        part.position.copy(basePos);
+        part.position.y += posY;
+        part.position.x += posX;
+        part.rotation.copy(base);
+        part.rotation.z += rotZ;
+        part.rotation.x += rotX;
+      };
+
+      if (emoteId === 'wave') {
+        setPart('rightArm', -1.15 + wave * 0.34, -0.10, 0.08, 0.01);
+        setPart('leftArm', 0.08, 0, 0.02);
+        setPart('body', bounce * 0.025, 0, bounce * 0.015);
+        setPart('head', 0.05 * Math.sin(t * Math.PI * 2), 0, 0.01);
+        return true;
+      }
+      if (emoteId === 'cheer') {
+        setPart('leftArm', 1.08 + wave * 0.16, -0.08, 0.10, -0.01);
+        setPart('rightArm', -1.08 - wave * 0.16, -0.08, 0.10, 0.01);
+        setPart('body', 0.00, 0, Math.abs(bounce) * 0.06);
+        setPart('head', 0, 0, Math.abs(bounce) * 0.05);
+        setPart('leftLeg', -0.08, 0, 0);
+        setPart('rightLeg', 0.08, 0, 0);
+        return true;
+      }
+      if (emoteId === 'point') {
+        setPart('rightArm', -0.72, -0.46, 0.04, 0.08);
+        setPart('leftArm', 0.12, 0.04, 0.01);
+        setPart('body', -0.035 * lerpInOut, -0.04 * lerpInOut, 0.00, 0.02 * lerpInOut);
+        setPart('head', -0.06 * lerpInOut, -0.08 * lerpInOut, 0.00, 0.02 * lerpInOut);
+        return true;
+      }
+      if (emoteId === 'shrug') {
+        setPart('leftArm', 0.48 + wave * 0.08, -0.05, 0.08, -0.02);
+        setPart('rightArm', -0.48 - wave * 0.08, -0.05, 0.08, 0.02);
+        setPart('head', 0.10 + wave * 0.03, 0, 0.01);
+        setPart('body', 0, 0, 0.02);
+        return true;
+      }
+      if (emoteId === 'dance') {
+        setPart('leftArm', 0.72 + dance * 0.38, danceOpp * 0.20, 0.05 + Math.abs(dance) * 0.02);
+        setPart('rightArm', -0.72 - danceOpp * 0.38, -dance * 0.20, 0.05 + Math.abs(danceOpp) * 0.02);
+        setPart('leftLeg', -dance * 0.24, 0, Math.max(0, -dance) * 0.03, -dance * 0.035);
+        setPart('rightLeg', -danceOpp * 0.24, 0, Math.max(0, -danceOpp) * 0.03, -danceOpp * 0.035);
+        setPart('body', dance * 0.08, danceOpp * 0.035, Math.abs(bounce) * 0.08, dance * 0.03);
+        setPart('head', dance * 0.10, 0, Math.abs(bounce) * 0.04, dance * 0.015);
+        return true;
+      }
+      return false;
+    }
+
+    function openEmoteWheel() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || sleepingActive || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || uiState.containerOpen || uiState.telephoneOpen || economyState.merchantOpen || settingsModal?.classList?.contains('hidden') === false) return false;
+      emoteWheelOpen = true;
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      document.getElementById('emoteWheel')?.classList.remove('hidden');
+      return true;
+    }
+
+    function closeEmoteWheel() {
+      emoteWheelOpen = false;
+      document.getElementById('emoteWheel')?.classList.add('hidden');
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+    }
+
+    function toggleEmoteWheel() {
+      return emoteWheelOpen ? (closeEmoteWheel(), true) : openEmoteWheel();
+    }
+
+    function buildEmoteWheel() {
+      const wheel = document.getElementById('emoteWheel');
+      const buttons = document.getElementById('emoteWheelButtons');
+      if (!wheel || !buttons) return;
+      buttons.replaceChildren();
+      for (const [id, def] of Object.entries(EMOTE_DEFINITIONS)) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'emoteButton';
+        button.dataset.emote = id;
+        button.innerHTML = '<span class="emoteButtonIcon">' + def.icon + '</span><span class="emoteButtonLabel">' + def.label + '</span>';
+        button.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); triggerEmote(id); });
+        buttons.appendChild(button);
+      }
+    }
+
     function multiplayerLocalPacket() {
       const username = multiplayerUsername();
       const moving = isActionDown('moveForward') || isActionDown('moveBackward') || isActionDown('moveLeft') || isActionDown('moveRight');
       const toolActive = isToolUseHeld() || scytheCutting || !!choppingTree || !!miningStone || !!systemState?.breakingSpaceObject;
+      const emote = currentEmoteSnapshot();
       const anim = {
         moving,
         sprinting: !playerCrouchBlend && isActionDown('sprint') && playerState.stamina > 0 && !playerState.exhausted,
@@ -13315,7 +14731,9 @@
         toolActive,
         toolSwing: !!toolSwingState.active || !!toolImpactState.active,
         flashlightOn: !!playerState.flashlightOn,
-        inRocket: !!playerState.inRocket
+        inRocket: !!playerState.inRocket,
+        emoteId: emote?.id || null,
+        emoteSequence: emote?.sequence || 0
       };
       return {
         userId: currentAccountUser?.id || '',
@@ -13347,6 +14765,15 @@
         sampleMultiplayerNetworkTransform(remote.networkSamples, remote.currentPosition, remote.currentQuaternion, now, MULTIPLAYER_PLAYER_RENDER_DELAY_MS);
 
         const anim = remote.state;
+        const remoteEmoteDef = anim.emoteId ? EMOTE_DEFINITIONS[String(anim.emoteId)] : null;
+        let remoteEmoteT = 0;
+        if (remoteEmoteDef && remote.emoteStartedAt) {
+          const elapsed = performance.now() - remote.emoteStartedAt;
+          remoteEmoteT = Math.max(0, Math.min(1, elapsed / (remoteEmoteDef.duration * 1000)));
+          if (elapsed >= remoteEmoteDef.duration * 1000) {
+            remote.state = { ...remote.state, emoteId: null };
+          }
+        }
         // The player root is always alive for networking/rocket association. While flying, the
         // player's transform is world-space because the local player is detached from
         // planetSystem; the dedicated rocket entity owns that world transform, so do not copy
@@ -13419,6 +14846,9 @@
           parts.head.position.x += crouch * 0.035;
           parts.head.rotation.copy(base.head);
           parts.head.rotation.z += crouch * -0.06;
+        }
+        if (remoteEmoteDef && remote.state.emoteId) {
+          applyEmotePose(parts, base, basePos, String(remote.state.emoteId), remoteEmoteT, false);
         }
         if (remote.nameTag) remote.nameTag.position.y = 2.55 + (anim.crouching ? -0.16 : 0);
       }
@@ -13526,6 +14956,7 @@
       const legForward = playerCrouchBlend * 0.10;
       const legCrouchBend = playerCrouchBlend * -0.26;
       const armCrouchBend = playerCrouchBlend * -0.10;
+      const emote = updateEmoteState();
 
       // Keep the model at its original scale. The body parts themselves do the crouching.
       playerVisual.scale.copy(playerModelBaseScale || new THREE.Vector3(PLAYER_MODEL_SCALE, PLAYER_MODEL_SCALE, PLAYER_MODEL_SCALE));
@@ -13581,6 +15012,17 @@
         // Match the torso's forward crouch motion so the head actually follows the
         // body down and forward instead of appearing to float upright above it.
         playerModelParts.head.rotation.z += headCrouchLean;
+      }
+
+      if (emote?.id) {
+        applyEmotePose(
+          playerModelParts,
+          playerModelBaseRotations,
+          playerModelBasePositions,
+          emote.id,
+          emote.t,
+          true
+        );
       }
 
       if (playerHatVisual) {
@@ -14286,6 +15728,16 @@
       return group;
     }
 
+    function createVeyraFruitVisual(scale = 1) {
+      const group = new THREE.Group();
+      const fruitMat = new THREE.MeshStandardMaterial({ color: VEYRA_FRUIT_COLOR, roughness: 0.68, metalness: 0.02 });
+      const fruit = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), fruitMat);
+      fruit.scale.set(1.0, 1.16, 1.0);
+      group.add(fruit);
+      group.scale.setScalar(scale);
+      return group;
+    }
+
     function createBeobakaMeatVisual(scale = 1, cooked = false) {
       const group = new THREE.Group();
       const meatMat = new THREE.MeshStandardMaterial({
@@ -14316,6 +15768,554 @@
       return group;
     }
 
+    function createSeedPacketVisual(typeId, scale = 1) {
+      const seed = seedById[typeId] || seedById.sunroot_seed;
+      const isStarter = typeId === 'starter_seed_pack';
+      const group = new THREE.Group();
+      const paper = new THREE.MeshStandardMaterial({ color: isStarter ? 0xf2e2b9 : seed.packetColor, roughness: 0.88, metalness: 0 });
+      const ink = new THREE.MeshStandardMaterial({ color: seed.seedColor, roughness: 0.8, metalness: 0 });
+      const outline = new THREE.MeshStandardMaterial({ color: 0x6f5b43, roughness: 0.92, metalness: 0 });
+
+      const packet = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.46, 0.055), paper);
+      packet.position.y = 0.02;
+      group.add(packet);
+      const flap = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.075, 0.064), paper.clone());
+      flap.position.set(0, 0.245, 0);
+      flap.rotation.z = 0.04;
+      group.add(flap);
+
+      // Simple printed seed drawing on the front.
+      const drawnSeed = new THREE.Mesh(new THREE.SphereGeometry(0.065, 10, 7), ink);
+      drawnSeed.scale.set(1, 0.66, 0.18);
+      drawnSeed.position.set(0, 0.035, 0.043);
+      group.add(drawnSeed);
+      const stem = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.105, 0.018), ink);
+      stem.position.set(0, 0.118, 0.043);
+      stem.rotation.z = -0.18;
+      group.add(stem);
+      const leaf = new THREE.Mesh(new THREE.BoxGeometry(0.065, 0.022, 0.018), ink);
+      leaf.position.set(0.032, 0.155, 0.043);
+      leaf.rotation.z = -0.34;
+      group.add(leaf);
+
+      const label = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.055, 0.066), outline);
+      label.position.set(0, -0.135, 0.045);
+      group.add(label);
+      if (isStarter) {
+        const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.29, 0.034, 0.069), new THREE.MeshStandardMaterial({ color: 0xd3aa47, roughness: 0.78 }));
+        stripe.position.set(0, -0.225, 0.044);
+        group.add(stripe);
+      }
+      group.rotation.set(-0.06, 0.07, -0.04);
+      group.scale.setScalar(scale);
+      return group;
+    }
+
+
+    function createCropHarvestVisual(typeId, scale = 1) {
+      const crop = cropById[typeId] || cropById.sunroot;
+      const group = new THREE.Group();
+      const stemMat = new THREE.MeshStandardMaterial({ color: 0x4e8b42, roughness: 0.9 });
+      const leafMat = new THREE.MeshStandardMaterial({ color: 0x5f9c52, roughness: 0.85 });
+      const accentMat = new THREE.MeshStandardMaterial({ color: parseInt(String(crop.color || '#d98b2b').replace('#',''), 16) || 0xd98b2b, roughness: 0.7, emissive: typeId === 'glowberry' || typeId === 'glowmelon' ? 0x12302a : 0x000000, emissiveIntensity: typeId === 'glowberry' || typeId === 'glowmelon' ? 0.35 : 0 });
+      if (typeId === 'sunroot') {
+        const root = new THREE.Mesh(new THREE.SphereGeometry(0.20, 9, 7), accentMat);
+        root.scale.set(0.78, 1.18, 0.78);
+        const leaves = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.38, 5), leafMat);
+        leaves.position.y = 0.20;
+        group.add(root, leaves);
+      } else if (typeId === 'ivisleaf') {
+        for (let i = 0; i < 3; i++) {
+          const leaf = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.06, 0.34), leafMat);
+          leaf.position.set((i-1)*0.09, 0.05 + i*0.04, 0);
+          leaf.rotation.y = (i-1)*0.45;
+          leaf.rotation.z = (i-1)*0.22;
+          group.add(leaf);
+        }
+      } else if (typeId === 'glowberry') {
+        const bush = new THREE.Mesh(new THREE.SphereGeometry(0.23, 9, 7), leafMat);
+        group.add(bush);
+        const berryMat = new THREE.MeshStandardMaterial({ color: 0x7b62d7, roughness: 0.55, emissive: 0x4a3494, emissiveIntensity: 0.9 });
+        const positions = [[-0.12,0.08,0.08],[0.12,0.12,0.04],[0,0.18,-0.10],[0.02,0.02,0.13]];
+        for (const [x,y,z] of positions) {
+          const berry = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 7), berryMat);
+          berry.position.set(x,y,z); group.add(berry);
+        }
+      } else if (typeId === 'starcorn') {
+        const stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.07, 0.64, 7), stemMat);
+        stalk.position.y = 0.30; group.add(stalk);
+        const kernelMat = new THREE.MeshStandardMaterial({ color: 0xf2d35c, roughness: 0.62, emissive: 0x7b5a10, emissiveIntensity: 0.22 });
+        for (let i = -1; i <= 1; i++) {
+          const star = new THREE.Mesh(new THREE.OctahedronGeometry(0.10, 0), kernelMat);
+          star.position.set(0.10, 0.22 + (i+1)*0.12, 0.02 + i*0.015);
+          star.scale.set(0.75, 0.75, 0.75); group.add(star);
+        }
+        const tassel = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.24, 5), new THREE.MeshStandardMaterial({ color: 0xc9aa3c, roughness: 0.72 }));
+        tassel.position.y = 0.72; group.add(tassel);
+      } else if (typeId === 'glowmelon') {
+        const vine = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 0.28, 6), stemMat);
+        vine.position.y = 0.14; group.add(vine);
+        const melon = new THREE.Mesh(new THREE.SphereGeometry(0.27, 10, 8), accentMat);
+        melon.scale.set(1.18, 0.95, 1.0);
+        melon.position.y = 0.20; group.add(melon);
+        const stripeMat = new THREE.MeshStandardMaterial({ color: 0x8ee7a9, roughness: 0.72, emissive: 0x2e7254, emissiveIntensity: 0.34 });
+        for (let i=-1;i<=1;i++) {
+          const stripe = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.018, 5, 16), stripeMat);
+          stripe.rotation.y = Math.PI/2;
+          stripe.position.set(i*0.05,0.20,0);
+          group.add(stripe);
+        }
+      }
+      group.scale.setScalar(scale);
+      return group;
+    }
+
+    function createCropVisual(cropId, stage = 0) {
+      const group = new THREE.Group();
+      if (stage <= 0) {
+        const seed = new THREE.Mesh(new THREE.SphereGeometry(0.06, 7, 6), new THREE.MeshStandardMaterial({ color: cropById[cropId]?.color || '#d98b2b', roughness: 0.9 }));
+        seed.scale.y = 0.55;
+        group.add(seed);
+      } else if (stage === 1) {
+        const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.035, 0.20, 6), new THREE.MeshStandardMaterial({ color: 0x4e8b42, roughness: 0.9 }));
+        stem.position.y = 0.10; group.add(stem);
+        const leaf = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.035, 0.07), new THREE.MeshStandardMaterial({ color: 0x5f9c52, roughness: 0.9 }));
+        leaf.position.set(0.08,0.16,0); leaf.rotation.z = -0.28; group.add(leaf);
+      } else if (stage === 2) {
+        const visual = createCropHarvestVisual(cropId, 0.72); visual.position.y = 0.02; group.add(visual);
+        group.scale.setScalar(0.82);
+      } else {
+        const visual = createCropHarvestVisual(cropId, 1.0); visual.position.y = 0.03; group.add(visual);
+      }
+      return group;
+    }
+
+    function hydrateCropGrowthState(crop, now = Date.now()) {
+      const def = cropById[crop?.cropId];
+      if (!def || !crop) return;
+      const plantedAt = Number(crop.plantedAtMs) || now;
+      if (!Number.isFinite(Number(crop.growthProgressSec))) {
+        // Migration for 18C-E crops: preserve the old wall-clock growth they already earned.
+        crop.growthProgressSec = Math.max(0, Math.min(def.growSeconds, (now - plantedAt) / 1000));
+      }
+      if (!Number.isFinite(Number(crop.growthUpdatedAtMs))) crop.growthUpdatedAtMs = now;
+      if (!Number.isFinite(Number(crop.wateredAtMs))) crop.wateredAtMs = 0;
+      if (!Number.isFinite(Number(crop.wateredUntilMs))) crop.wateredUntilMs = 0;
+    }
+
+    function isCropWet(crop, now = Date.now()) {
+      hydrateCropGrowthState(crop, now);
+      return Number(crop?.wateredUntilMs || 0) > now;
+    }
+
+    function advanceCropGrowth(crop, now = Date.now()) {
+      const def = cropById[crop?.cropId];
+      if (!def || !crop) return;
+      hydrateCropGrowthState(crop, now);
+      const last = Math.max(0, Number(crop.growthUpdatedAtMs) || now);
+      const until = Math.max(0, Number(crop.wateredUntilMs) || 0);
+      if (until > last) {
+        const activeUntil = Math.min(now, until);
+        if (activeUntil > last) crop.growthProgressSec += (activeUntil - last) / 1000;
+        crop.growthUpdatedAtMs = Math.max(last, activeUntil);
+      } else {
+        crop.growthUpdatedAtMs = Math.max(last, now);
+      }
+      crop.growthProgressSec = Math.max(0, Math.min(def.growSeconds, Number(crop.growthProgressSec) || 0));
+    }
+
+    function getCropGrowthStage(crop) {
+      const def = cropById[crop?.cropId];
+      if (!def) return 0;
+      const now = Date.now();
+      advanceCropGrowth(crop, now);
+      const progress = Math.max(0, Math.min(def.growSeconds, Number(crop.growthProgressSec) || 0));
+      if (progress >= def.growSeconds) return 3;
+      const ratio = progress / def.growSeconds;
+      return ratio < 0.25 ? 0 : ratio < 0.52 ? 1 : 2;
+    }
+
+    function getCropSecondsRemaining(crop) {
+      const def = cropById[crop?.cropId];
+      if (!def) return 0;
+      advanceCropGrowth(crop, Date.now());
+      return Math.max(0, def.growSeconds - Math.max(0, Number(crop.growthProgressSec) || 0));
+    }
+
+    function updateTilledPlotWetVisual(plot, now = Date.now()) {
+      if (!plot) return;
+      const wet = !!plot.crop && isCropWet(plot.crop, now);
+      if (plot.soilMaterial?.color) plot.soilMaterial.color.setHex(wet ? 0x4a3025 : 0x6b432b);
+      if (plot.innerSoilMaterial?.color) plot.innerSoilMaterial.color.setHex(wet ? 0x3d291f : 0x5a3825);
+      if (plot.wetSheenMaterial) plot.wetSheenMaterial.opacity = wet ? 0.16 : 0.0;
+      if (plot.wetSheen) plot.wetSheen.visible = wet;
+    }
+
+    function addCropWateredMarker(visual) {
+      if (!visual) return;
+      const marker = new THREE.Group();
+      marker.name = 'WateredMarker';
+      const ringMat = new THREE.MeshStandardMaterial({ color: 0x74d9ff, emissive: 0x1e6d8a, emissiveIntensity: 0.35, transparent: true, opacity: 0.56, roughness: 0.4, metalness: 0.0 });
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.25, 0.012, 6, 18), ringMat);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = 0.015;
+      const drop1 = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 5), ringMat);
+      const drop2 = new THREE.Mesh(new THREE.SphereGeometry(0.018, 6, 5), ringMat);
+      drop1.position.set(-0.18, 0.10, 0.10);
+      drop2.position.set(0.18, 0.09, -0.08);
+      marker.add(ring, drop1, drop2);
+      marker.userData.wetMarker = true;
+      visual.add(marker);
+      visual.userData.wetMarker = marker;
+    }
+
+    function updateTilledPlotCropVisual(plot) {
+      if (!plot?.root) return;
+      if (!plot.crop) {
+        if (plot.cropVisual?.parent) plot.cropVisual.parent.remove(plot.cropVisual);
+        plot.cropVisual = null;
+        updateTilledPlotWetVisual(plot);
+        return;
+      }
+      const stage = getCropGrowthStage(plot.crop);
+      const wet = isCropWet(plot.crop);
+      if (plot.cropVisual && plot.cropVisual.userData?.cropStage === stage && plot.cropVisual.userData?.cropId === plot.crop.cropId && plot.cropVisual.userData?.cropWet === wet) {
+        updateTilledPlotWetVisual(plot);
+        return;
+      }
+      if (plot.cropVisual?.parent) plot.cropVisual.parent.remove(plot.cropVisual);
+      const visual = createCropVisual(plot.crop.cropId, stage);
+      visual.userData.cropStage = stage;
+      visual.userData.cropId = plot.crop.cropId;
+      visual.userData.cropWet = wet;
+      visual.position.y = 0.055;
+      if (wet) addCropWateredMarker(visual);
+      plot.root.add(visual);
+      plot.cropVisual = visual;
+      updateTilledPlotWetVisual(plot);
+    }
+
+    let farmCropPromptTimer = 0;
+    function updateFarmCrops(delta = 0) {
+      let changed = false;
+      const now = Date.now();
+      farmCropPromptTimer += Math.max(0, Number(delta) || 0);
+      for (const plot of tilledPlots) {
+        if (!plot?.crop) { updateTilledPlotWetVisual(plot, now); continue; }
+        hydrateCropGrowthState(plot.crop, now);
+        const beforeStage = Number(plot.crop.stage) || 0;
+        const beforeWet = isCropWet(plot.crop, now);
+        advanceCropGrowth(plot.crop, now);
+        const stage = getCropGrowthStage(plot.crop);
+        const wet = isCropWet(plot.crop, now);
+        plot.crop.stage = stage;
+        if (stage >= 3) recordCropGrown(plot.crop.cropId);
+        if (stage !== beforeStage || wet !== beforeWet) { updateTilledPlotCropVisual(plot); changed = true; }
+        else updateTilledPlotWetVisual(plot, now);
+        if (plot.cropVisual?.userData?.wetMarker && wet) {
+          const pulse = 1 + Math.sin(performance.now() * 0.0035) * 0.06;
+          plot.cropVisual.userData.wetMarker.scale.setScalar(pulse);
+          plot.cropVisual.userData.wetMarker.rotation.y = performance.now() * 0.00035;
+        }
+      }
+      if (changed || farmCropPromptTimer >= 0.35) {
+        farmCropPromptTimer = 0;
+        updateCrystalPrompt();
+      }
+    }
+
+    function findNearbyFarmPlotForInteraction(requireEmpty = false) {
+      const cameraWorld = camera.getWorldPosition(new THREE.Vector3());
+      const lookDir = camera.getWorldDirection(new THREE.Vector3()).normalize();
+      let best = null, bestScore = Infinity;
+      for (const plot of tilledPlots) {
+        if (!plot?.root?.visible) continue;
+        if (requireEmpty && plot.crop) continue;
+        const world = plot.root.getWorldPosition(new THREE.Vector3());
+        const to = world.clone().sub(cameraWorld);
+        const distance = to.length();
+        if (distance > 4.8 || distance < 0.2) continue;
+        to.normalize();
+        const facing = lookDir.dot(to);
+        if (facing < 0.12) continue;
+        const score = distance - facing * 1.05;
+        if (score < bestScore) { bestScore = score; best = plot; }
+      }
+      return best;
+    }
+
+    function findNearbyFarmPlotForInteraction(requireEmpty = false) {
+      const cameraWorld = camera.getWorldPosition(new THREE.Vector3());
+      const lookDir = camera.getWorldDirection(new THREE.Vector3()).normalize();
+      let best = null, bestScore = Infinity;
+      for (const plot of tilledPlots) {
+        if (!plot?.root?.visible) continue;
+        if (requireEmpty && plot.crop) continue;
+        const world = plot.root.getWorldPosition(new THREE.Vector3());
+        const to = world.clone().sub(cameraWorld);
+        const distance = to.length();
+        if (distance > 4.8 || distance < 0.2) continue;
+        to.normalize();
+        const facing = lookDir.dot(to);
+        if (facing < 0.12) continue;
+        const score = distance - facing * 1.05;
+        if (score < bestScore) { bestScore = score; best = plot; }
+      }
+      return best;
+    }
+
+    function getFarmPlotCropKey(plot) {
+      const generation = Math.max(1, Math.floor(Number(plot?.cropGeneration || 0)));
+      return String(plot?.plotKey || '') + ':crop:g' + generation;
+    }
+
+    function plantSeedInNearbyPlot() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || !settingsModal.classList.contains('hidden')) return false;
+      const crop = cropBySeedId[uiState.equippedItemType];
+      if (!crop) return false;
+      const plot = findNearbyFarmPlotForInteraction(true);
+      const prompt = document.getElementById('crystalPrompt');
+      if (!plot) {
+        const occupied = findNearbyFarmPlotForInteraction(false);
+        if (occupied) {
+          if (prompt) {
+            const occupiedCrop = cropById[occupied.crop?.cropId];
+            const ready = occupied.crop ? getCropGrowthStage(occupied.crop) >= 3 : false;
+            const wet = occupied.crop ? isCropWet(occupied.crop) : false;
+            const remain = occupied.crop ? Math.ceil(getCropSecondsRemaining(occupied.crop)) : 0;
+            prompt.classList.remove('hidden');
+            prompt.innerHTML = ready ? '<span class="promptKey">READY</span> ' + (occupiedCrop?.name || 'Crop') + ' is ready to harvest' : (wet ? '<span class="promptKey">GROWING</span> ' + (occupiedCrop?.name || 'Crop') + ' · wet ' + Math.ceil(Math.max(0, Number(occupied.crop.wateredUntilMs || 0) - Date.now()) / 1000) + 's · ' + remain + 's left' : '<span class="promptKey">DRY</span> Water ' + (occupiedCrop?.name || 'Crop') + ' to resume growth · ' + remain + 's left');
+          }
+          return true;
+        }
+        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">E</span> Plant ' + crop.name + ' Seeds on tilled soil'; }
+        return true;
+      }
+      if (!removeItemsFromInventory(crop.seedId, 1)) return true;
+      plot.cropGeneration = Math.max(1, Math.floor(Number(plot.cropGeneration || 0)) + 1);
+      const plantedAtMs = Date.now();
+      plot.crop = { cropId: crop.id, plantedAtMs, stage: 0, cropKey: getFarmPlotCropKey(plot), growthProgressSec: 0, growthUpdatedAtMs: plantedAtMs, wateredAtMs: 0, wateredUntilMs: 0 };
+      updateTilledPlotCropVisual(plot);
+      updateHotbarUI(); updateInventoryUI(); refreshEquippedItem();
+      markJournalItemDiscovered(crop.seedId);
+      recordCropPlanted(crop.id);
+      if (multiplayerMode) broadcastMultiplayerCropPlanted(plot);
+      markMultiplayerWorldDirty('crop-planted');
+      scheduleMultiplayerEnvironmentSnapshot();
+      playAudio('chop', 0.24, 1.28, 350);
+      spawnImpactParticles(plot.root.getWorldPosition(new THREE.Vector3()).add(plot.direction.clone().multiplyScalar(0.06)), 0x5f9c52, { count: 7, life: 0.38, speed: 0.55, size: 0.045, gravity: 0.4, spread: 0.7, upward: 0.75 });
+      if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">PLANTED</span> ' + crop.name + ' · ' + Math.ceil(crop.growSeconds) + 's'; }
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 650);
+      return true;
+    }
+
+    function getSelectedWateringCanSlot() {
+      const idx = getSelectedHotbarInventoryIndex();
+      const slot = inventorySlots[idx];
+      return slot && slot.typeId === 'watering_can' ? { index: idx, slot } : null;
+    }
+
+    function getWateringCanAmount(slot) {
+      return Math.max(0, Math.min(WATERING_CAN_CAPACITY, Math.floor(Number(slot?.water) || 0)));
+    }
+
+    function findNearbyIvisRiverForFill() {
+      const ctx = getPlaceableSurfaceContext();
+      if (!ctx || ctx.id !== 'ivis' || omegaWalkingBodyId || moonWalking || cordeliaWalking) return null;
+      const dir = player.position.clone().normalize();
+      const info = nearestRiverInfo(dir);
+      if (!info || info.index < 0) return null;
+      const distance = PLANET_RADIUS * Math.max(0, Number(info.angle) || Infinity);
+      if (distance > WATERING_RIVER_RANGE) return null;
+      return { dir, info, distance };
+    }
+
+    function fillWateringCanFromRiver() {
+      const current = getSelectedWateringCanSlot();
+      if (!current) return false;
+      const river = findNearbyIvisRiverForFill();
+      const prompt = document.getElementById('crystalPrompt');
+      if (!river) return false;
+      const amount = getWateringCanAmount(current.slot);
+      if (amount >= WATERING_CAN_CAPACITY) {
+        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">FULL</span> Watering Can · 5/5'; }
+        return true;
+      }
+      current.slot.water = WATERING_CAN_CAPACITY;
+      refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
+      playAudio('river', 0.40, 1.05, 450);
+      spawnImpactParticles(player.position.clone().add(player.position.clone().normalize().multiplyScalar(0.10)), 0x72d8ff, { count: 12, life: 0.40, speed: 0.75, size: 0.045, gravity: 1.0, spread: 0.8, upward: 0.7 });
+      if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">FILLED</span> Watering Can · 5/5'; }
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 700);
+      return true;
+    }
+
+    function waterNearbyCrop() {
+      const current = getSelectedWateringCanSlot();
+      if (!current) return false;
+      const prompt = document.getElementById('crystalPrompt');
+      const plot = findNearbyFarmPlotForInteraction(false);
+      if (!plot?.crop) return false;
+      const crop = cropById[plot.crop.cropId];
+      if (!crop) return false;
+      advanceCropGrowth(plot.crop, Date.now());
+      if (getCropGrowthStage(plot.crop) >= 3) {
+        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">READY</span> ' + crop.name + ' is ready to harvest'; }
+        return true;
+      }
+      const amount = getWateringCanAmount(current.slot);
+      if (amount <= 0) {
+        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">EMPTY</span> Fill the Watering Can at the Ivis river'; }
+        return true;
+      }
+      const now = Date.now();
+      plot.crop.wateredAtMs = now;
+      plot.crop.wateredUntilMs = now + Math.max(1, Number(crop.moistureSeconds) || 30) * 1000;
+      plot.crop.growthUpdatedAtMs = now;
+      current.slot.water = amount - 1;
+      recordCropWatered(crop.id);
+      updateTilledPlotCropVisual(plot);
+      refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
+      playAudio('river', 0.22, 1.42, 600);
+      const base = plot.root.getWorldPosition(new THREE.Vector3()).add(plot.direction.clone().multiplyScalar(0.09));
+      spawnImpactParticles(base, 0x74d9ff, { count: 16, life: 0.55, speed: 0.82, size: 0.052, gravity: 1.35, spread: 0.9, upward: 0.85 });
+      if (multiplayerMode) broadcastMultiplayerCropWatered(plot);
+      markMultiplayerWorldDirty('crop-watered');
+      scheduleMultiplayerEnvironmentSnapshot();
+      if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">WATERED</span> ' + crop.name + ' · Can ' + (amount - 1) + '/5'; }
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 650);
+      return true;
+    }
+
+    function findNearbyMatureCrop() {
+      const plot = findNearbyFarmPlotForInteraction(false);
+      if (!plot?.crop) return null;
+      return getCropGrowthStage(plot.crop) >= 3 ? plot : null;
+    }
+
+    function harvestNearbyFarmCrop() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || !settingsModal.classList.contains('hidden')) return false;
+      if (uiState.equippedItemType) return false;
+      const plot = findNearbyMatureCrop();
+      if (!plot?.crop) return false;
+      const crop = cropById[plot.crop.cropId];
+      if (!crop) return false;
+      if (!canAddItemToInventory(crop.id, crop.harvestCount)) {
+        const prompt = document.getElementById('crystalPrompt');
+        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">FULL</span> Not enough room for ' + crop.harvestCount + ' × ' + crop.name; }
+        return true;
+      }
+      const cropKey = String(plot.crop.cropKey || getFarmPlotCropKey(plot));
+      if (!addItemToInventory(crop.id, crop.harvestCount, null, true)) return true;
+      markJournalItemDiscovered(crop.id);
+      recordCropGrown(crop.id);
+      recordCropHarvested(crop.id);
+      plot.crop = null;
+      updateTilledPlotCropVisual(plot);
+      if (multiplayerMode) broadcastMultiplayerCropHarvested(plot, cropKey, crop.id, crop.harvestCount);
+      markMultiplayerWorldDirty('crop-harvested');
+      scheduleMultiplayerEnvironmentSnapshot();
+      playAudio('crystalPickup', 0.46, 1.1, 500);
+      spawnImpactParticles(plot.root.getWorldPosition(new THREE.Vector3()).add(plot.direction.clone().multiplyScalar(0.08)), 0xd1b24a, { count: 9, life: 0.44, speed: 0.8, size: 0.055, gravity: 1.1, spread: 0.9, upward: 0.85 });
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">+' + crop.harvestCount + '</span> ' + crop.name + ' harvested'; }
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 700);
+      return true;
+    }
+
+    function broadcastMultiplayerCropPlanted(plot) {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser || !plot?.crop) return;
+      const payload = {
+        kind: 'plot_crop_planted_v1',
+        sourceUserId: String(currentAccountUser.id), worldId: String(MULTIPLAYER_WORLD_ID),
+        plotKey: String(plot.plotKey || ''), surfaceBodyId: String(plot.surfaceBodyId || 'ivis'),
+        cropKey: String(plot.crop.cropKey || getFarmPlotCropKey(plot)), cropId: String(plot.crop.cropId || ''),
+        plantedAtMs: Math.max(0, Math.floor(Number(plot.crop.plantedAtMs) || Date.now())),
+        growthProgressSec: Math.max(0, Number(plot.crop.growthProgressSec) || 0),
+        growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())),
+        wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)),
+        wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0)),
+        stage: Math.max(0, Math.min(3, Math.floor(Number(plot.crop.stage) || 0))),
+        generation: Math.max(1, Math.floor(Number(plot.cropGeneration) || 1)), sentAt: Date.now()
+      };
+      multiplayerChannel.send({ type: 'broadcast', event: 'world_plot_crop_planted', payload }).catch((error) => console.warn('Multiplayer crop plant broadcast failed', error));
+    }
+
+    function broadcastMultiplayerCropWatered(plot) {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser || !plot?.crop) return;
+      const payload = {
+        kind: 'plot_crop_watered_v1', sourceUserId: String(currentAccountUser.id), worldId: String(MULTIPLAYER_WORLD_ID),
+        plotKey: String(plot.plotKey || ''), cropKey: String(plot.crop.cropKey || getFarmPlotCropKey(plot)),
+        generation: Math.max(1, Math.floor(Number(plot.cropGeneration) || 1)),
+        cropId: String(plot.crop.cropId || ''), wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || Date.now())),
+        wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0)),
+        growthProgressSec: Math.max(0, Number(plot.crop.growthProgressSec) || 0),
+        growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())), sentAt: Date.now()
+      };
+      multiplayerChannel.send({ type: 'broadcast', event: 'world_plot_crop_watered', payload }).catch((error) => console.warn('Multiplayer crop water broadcast failed', error));
+    }
+
+    function applyMultiplayerCropWatered(payload) {
+      if (!payload || payload.kind !== 'plot_crop_watered_v1') return;
+      if (String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return;
+      if (String(payload.sourceUserId || '') === String(currentAccountUser?.id || '')) return;
+      const plot = findTilledPlotByKey(String(payload.plotKey || ''));
+      if (!plot?.crop) return;
+      const generation = Math.max(1, Math.floor(Number(payload.generation) || 1));
+      if (generation !== Math.max(1, Math.floor(Number(plot.cropGeneration) || 1))) return;
+      const cropId = String(payload.cropId || plot.crop.cropId || '');
+      if (cropId !== String(plot.crop.cropId || '')) return;
+      plot.crop.wateredAtMs = Math.max(0, Number(payload.wateredAtMs) || Date.now());
+      plot.crop.wateredUntilMs = Math.max(plot.crop.wateredAtMs, Number(payload.wateredUntilMs) || plot.crop.wateredAtMs);
+      plot.crop.growthProgressSec = Math.max(0, Number(payload.growthProgressSec) || Number(plot.crop.growthProgressSec) || 0);
+      plot.crop.growthUpdatedAtMs = Math.max(plot.crop.growthUpdatedAtMs || plot.crop.wateredAtMs, Number(payload.growthUpdatedAtMs) || plot.crop.wateredAtMs);
+      hydrateCropGrowthState(plot.crop);
+      updateTilledPlotCropVisual(plot);
+      markMultiplayerWorldDirty('remote-crop-watered');
+      updateCrystalPrompt();
+    }
+
+    function broadcastMultiplayerCropHarvested(plot, cropKey, cropId, quantity) {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser || !plot) return;
+      const payload = {
+        kind: 'plot_crop_harvested_v1', sourceUserId: String(currentAccountUser.id), worldId: String(MULTIPLAYER_WORLD_ID),
+        plotKey: String(plot.plotKey || ''), cropKey: String(cropKey || ''), cropId: String(cropId || ''),
+        quantity: Math.max(1, Math.floor(Number(quantity) || 1)), sentAt: Date.now()
+      };
+      multiplayerChannel.send({ type: 'broadcast', event: 'world_plot_crop_harvested', payload }).catch((error) => console.warn('Multiplayer crop harvest broadcast failed', error));
+    }
+
+    function applyMultiplayerCropPlanted(payload) {
+      if (!payload || payload.kind !== 'plot_crop_planted_v1') return;
+      if (String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return;
+      if (String(payload.sourceUserId || '') === String(currentAccountUser?.id || '')) return;
+      const plot = findTilledPlotByKey(String(payload.plotKey || ''));
+      const cropId = String(payload.cropId || '');
+      if (!plot || !cropById[cropId]) return;
+      const generation = Math.max(1, Math.floor(Number(payload.generation) || 1));
+      if (generation <= Math.floor(Number(plot.cropGeneration || 0))) return;
+      plot.cropGeneration = generation;
+      plot.crop = { cropId, plantedAtMs: Math.max(0, Number(payload.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(payload.stage) || 0))), cropKey: String(payload.cropKey || (String(plot.plotKey || '') + ':crop:g' + generation)), growthProgressSec: Math.max(0, Number(payload.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(payload.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(payload.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(payload.wateredUntilMs) || 0) };
+      hydrateCropGrowthState(plot.crop);
+      updateTilledPlotCropVisual(plot);
+      markMultiplayerWorldDirty('remote-crop-planted');
+      updateCrystalPrompt();
+    }
+
+    function applyMultiplayerCropHarvested(payload) {
+      if (!payload || payload.kind !== 'plot_crop_harvested_v1') return;
+      if (String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return;
+      if (String(payload.sourceUserId || '') === String(currentAccountUser?.id || '')) return;
+      const plot = findTilledPlotByKey(String(payload.plotKey || ''));
+      if (!plot?.crop) return;
+      const cropKey = String(payload.cropKey || '');
+      if (cropKey && String(plot.crop.cropKey || '') !== cropKey) return;
+      plot.crop = null;
+      updateTilledPlotCropVisual(plot);
+      markMultiplayerWorldDirty('remote-crop-harvested');
+      updateCrystalPrompt();
+    }
+
     function setHeldItem(typeId) {
       clearHeldItem(heldCrystalFirstPerson);
       clearHeldItem(heldCrystalThirdPerson);
@@ -14339,6 +16339,19 @@
         // the first-person view instead of appearing to float in the middle of the screen.
         fpModel.position.y -= 0.12;
         tpModel.position.y -= 0.05;
+      } else if (typeId === 'wooden_hoe' || typeId === 'stone_hoe' || typeId === 'iron_hoe') {
+        const headType = typeId === 'stone_hoe' ? 'stone' : (typeId === 'iron_hoe' ? 'iron' : 'wood');
+        fpModel = createHoeVisual(0.90, headType);
+        tpModel = createHoeVisual(0.65, headType);
+        fpModel.position.y -= 0.09;
+        tpModel.position.y -= 0.04;
+      } else if (typeId === 'watering_can') {
+        const current = getSelectedWateringCanSlot();
+        const water = current ? getWateringCanAmount(current.slot) : 0;
+        fpModel = createWateringCanVisual(0.82, water);
+        tpModel = createWateringCanVisual(0.58, water);
+        fpModel.position.y -= 0.08;
+        tpModel.position.y -= 0.04;
       } else if (typeId === 'drill') {
         fpModel = createDrillVisual(0.90);
         tpModel = createDrillVisual(0.64);
@@ -14381,6 +16394,23 @@
         tpModel = createBeobakaMeatVisual(0.60, cooked);
         fpModel.rotation.set(0.18, -0.34, 0.22);
         tpModel.rotation.set(0.10, 0.18, 0.18);
+      } else if (typeId === 'veyra_fruit') {
+        fpModel = createVeyraFruitVisual(0.84);
+        tpModel = createVeyraFruitVisual(0.62);
+        fpModel.position.y -= 0.03;
+        tpModel.position.y -= 0.02;
+      } else if (typeId === 'starter_seed_pack' || seedById[typeId]) {
+        fpModel = createSeedPacketVisual(typeId, 0.82);
+        tpModel = createSeedPacketVisual(typeId, 0.58);
+        fpModel.rotation.set(0.02, -0.18, -0.06);
+        tpModel.rotation.set(0.02, 0.12, -0.04);
+        fpModel.position.y -= 0.04;
+        tpModel.position.y -= 0.02;
+      } else if (itemById[typeId]?.kind === 'crop') {
+        fpModel = createCropHarvestVisual(typeId, 0.78);
+        tpModel = createCropHarvestVisual(typeId, 0.56);
+        fpModel.position.y -= 0.03;
+        tpModel.position.y -= 0.02;
       } else if (typeId === 'warp_drive') {
         const warpVisual = (scale) => { const g=new THREE.Group(); const core=new THREE.Mesh(new THREE.SphereGeometry(.22,12,10),new THREE.MeshStandardMaterial({color:0x59ceff,emissive:0x198ac1,emissiveIntensity:1.4,metalness:.35,roughness:.25})); const ring=new THREE.Mesh(new THREE.TorusGeometry(.3,.05,8,20),new THREE.MeshStandardMaterial({color:0xdaf5ff,emissive:0x3f9fc8,emissiveIntensity:.8,metalness:.55,roughness:.25})); ring.rotation.x=Math.PI/2; g.add(core,ring); g.scale.setScalar(scale); return g; };
         fpModel=warpVisual(.9); tpModel=warpVisual(.65);
@@ -14392,6 +16422,107 @@
       heldCrystalFirstPerson.visible = !playerState.thirdPerson;
       heldCrystalThirdPerson.visible = playerState.thirdPerson;
       updatePlayerHatVisibility();
+    }
+
+    function createHoeVisual(scale = 1, headType = 'wood') {
+      if (hoeModelTemplate) {
+        const actual = hoeModelTemplate.clone(true);
+        actual.traverse((node) => {
+          if (!node.isMesh) return;
+          if (Array.isArray(node.material)) node.material = node.material.map(m => m && m.clone ? m.clone() : m);
+          else if (node.material && node.material.clone) node.material = node.material.clone();
+          const mats = Array.isArray(node.material) ? node.material : [node.material];
+          const isHead = node.userData?.hoePart === 'head' || String(node.name || '').toLowerCase().includes('head');
+          for (const mat of mats) {
+            if (!mat || !mat.color) continue;
+            if (isHead) {
+              mat.color.setHex(headType === 'wood' ? 0x6f4328 : headType === 'stone' ? 0x9aa1a8 : 0x4d5359);
+              mat.roughness = headType === 'iron' ? 0.32 : 0.82;
+              mat.metalness = headType === 'iron' ? 0.55 : 0.05;
+            } else {
+              mat.color.setHex(0x7a4d2c);
+              mat.roughness = 0.86;
+              mat.metalness = 0.03;
+            }
+            mat.side = THREE.DoubleSide;
+          }
+        });
+        actual.scale.setScalar(scale);
+        return actual;
+      }
+
+      const group = new THREE.Group();
+      const handleMat = new THREE.MeshStandardMaterial({ color: 0x8b5a32, roughness: 0.84 });
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.060, 0.078, 1.38, 8), handleMat);
+      handle.rotation.z = -0.06;
+      handle.position.set(-0.035, -0.08, 0);
+      group.add(handle);
+
+      const headMat = makeToolHeadMaterial(headType, 0.46);
+      const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.082, 0.082, 0.13, 8), headMat);
+      collar.rotation.z = Math.PI / 2;
+      collar.position.set(0.05, 0.58, 0);
+      group.add(collar);
+
+      const bladeShape = new THREE.Shape();
+      bladeShape.moveTo(-0.02, 0.61);
+      bladeShape.lineTo(0.44, 0.60);
+      bladeShape.lineTo(0.51, 0.47);
+      bladeShape.lineTo(0.46, 0.32);
+      bladeShape.lineTo(0.06, 0.29);
+      bladeShape.lineTo(-0.02, 0.39);
+      bladeShape.closePath();
+      const bladeGeo = new THREE.ExtrudeGeometry(bladeShape, { depth: 0.12, bevelEnabled: false, curveSegments: 1, steps: 1 });
+      bladeGeo.translate(0, 0, -0.06);
+      const blade = new THREE.Mesh(bladeGeo, headMat);
+      blade.rotation.z = -0.02;
+      group.add(blade);
+
+      group.scale.setScalar(scale);
+      return group;
+    }
+
+    function createWateringCanVisual(scale = 1, water = 0) {
+      if (wateringCanModelTemplate) {
+        const actual = wateringCanModelTemplate.clone(true);
+        actual.traverse((node) => {
+          if (!node.isMesh) return;
+          if (Array.isArray(node.material)) node.material = node.material.map(m => m && m.clone ? m.clone() : m);
+          else if (node.material?.clone) node.material = node.material.clone();
+          const mats = Array.isArray(node.material) ? node.material : [node.material];
+          for (const mat of mats) {
+            if (!mat) continue;
+            if (node.name === 'tube') mat.color?.setHex(0x4b5960);
+            else mat.color?.setHex(0x8ec7ae);
+          }
+        });
+        if (getWateringCanAmount({ water }) > 0) {
+          const waterMat = new THREE.MeshStandardMaterial({ color: 0x5ac8ff, emissive: 0x1b688e, emissiveIntensity: 0.38, transparent: true, opacity: 0.42, roughness: 0.35, metalness: 0.02 });
+          const waterBadge = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 0.015, 12), waterMat);
+          waterBadge.position.y = 0.12;
+          waterBadge.name = 'WaterLevelHint';
+          actual.add(waterBadge);
+        }
+        actual.scale.setScalar(scale);
+        return actual;
+      }
+      const group = new THREE.Group();
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x8ec7ae, roughness: 0.68, metalness: 0.05 });
+      const tubeMat = new THREE.MeshStandardMaterial({ color: 0x4b5960, roughness: 0.62, metalness: 0.22 });
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.34, 14, 10), bodyMat);
+      body.scale.set(1.0, 0.82, 0.74); body.position.y = 0.34; group.add(body);
+      const spout = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.075, 0.44, 8), tubeMat);
+      spout.rotation.z = -0.92; spout.position.set(0.34, 0.48, 0); group.add(spout);
+      const rose = new THREE.Mesh(new THREE.CylinderGeometry(0.10,0.11,0.08,10), tubeMat);
+      rose.rotation.z = -0.92; rose.position.set(0.55, 0.68, 0); group.add(rose);
+      const handle = new THREE.Mesh(new THREE.TorusGeometry(0.24,0.045,7,16,Math.PI*1.55), tubeMat);
+      handle.rotation.set(Math.PI/2,0,0.1); handle.position.set(-0.08,0.60,0); group.add(handle);
+      if (getWateringCanAmount({ water }) > 0) {
+        const waterMat = new THREE.MeshStandardMaterial({ color: 0x5ac8ff, emissive: 0x1b688e, emissiveIntensity: 0.38, transparent: true, opacity: 0.42 });
+        const badge = new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.16,0.018,14), waterMat); badge.position.y=0.18; group.add(badge);
+      }
+      group.scale.setScalar(scale);
+      return group;
     }
 
     function createScytheVisual(scale = 1, headType = 'wood') {
@@ -14634,7 +16765,7 @@
       const selected = uiState.equippedItemType;
       const isTool = selected === 'axe' || selected === 'wooden_axe' || selected === 'stone_axe' || selected === 'iron_axe' ||
         selected === 'wooden_pickaxe' || selected === 'stone_pickaxe' || selected === 'iron_pickaxe' ||
-        selected === 'wooden_scythe' || selected === 'stone_scythe' || selected === 'iron_scythe' || selected === 'drill';
+        selected === 'wooden_scythe' || selected === 'stone_scythe' || selected === 'iron_scythe' || selected === 'wooden_hoe' || selected === 'stone_hoe' || selected === 'iron_hoe' || selected === 'drill';
 
       // Always restore the exact resting pose when no tool action is active.
       if (!toolSwingState.active || !isTool) {
@@ -15088,8 +17219,9 @@
         + ((typeId === 'wooden_axe' || typeId === 'wooden_pickaxe') ? ' woodenTool' : '')
         + ((typeId === 'stone_axe' || typeId === 'stone_pickaxe') ? ' stoneTool' : '')
         + ((typeId === 'iron_axe' || typeId === 'iron_pickaxe' || typeId === 'iron_scythe') ? ' ironTool' : '')
-        + ((typeId === 'wooden_scythe') ? ' woodenTool' : '')
-        + ((typeId === 'stone_scythe') ? ' stoneTool' : '');
+        + ((typeId === 'wooden_scythe' || typeId === 'wooden_hoe') ? ' woodenTool' : '')
+        + ((typeId === 'stone_scythe' || typeId === 'stone_hoe') ? ' stoneTool' : '')
+        + ((typeId === 'iron_hoe') ? ' ironTool' : '');
       if (data.kind === 'crystal') {
         icon.style.background = data.css;
         icon.style.boxShadow = '0 0 12px ' + data.css;
@@ -15101,6 +17233,7 @@
       if (data.kind === 'iron_plate') { icon.style.background = 'linear-gradient(145deg,#cbd0d5 0%,#6e747a 62%,#aeb5bb 100%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.25),0 0 8px rgba(160,170,180,.24)'; }
       if (data.kind === 'titanium_plate') { icon.style.background = 'linear-gradient(145deg,#f7fcff 0%,#9eb2c1 58%,#dce8ef 100%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.4),0 0 9px rgba(180,215,235,.34)'; }
       if (data.kind === 'charcoal') { icon.style.background = 'radial-gradient(circle at 35% 30%,#5a5652 0%,#2f2c2a 48%,#171614 100%)'; icon.style.boxShadow = '0 0 8px rgba(30,28,26,.32)'; }
+      if (data.kind === 'fruit') { icon.style.background = data.css; icon.style.boxShadow = '0 0 12px rgba(192,255,204,.42)'; }
       if (data.kind === 'meat') {
         icon.style.background = typeId === 'raw_beobaka'
           ? 'radial-gradient(circle at 35% 32%,#d77aa0 0%,#9b3e65 48%,#5b2440 100%)'
@@ -15146,6 +17279,19 @@
       if (data.kind === 'warp_drive') { icon.style.background = 'radial-gradient(circle at 50% 50%,#f5fbff 0 10%,#66cfff 12% 24%,#174a78 27% 45%,#1b1f27 47% 100%)'; icon.style.boxShadow = '0 0 14px rgba(70,190,255,.65)'; }
       if (data.kind === 'warp_drive_mk2') { icon.style.background = 'radial-gradient(circle at 50% 50%,#fff1ff 0 10%,#ff82ea 12% 24%,#6f2d75 27% 45%,#211927 47% 100%)'; icon.style.boxShadow = '0 0 14px rgba(255,108,232,.62)'; }
       if (data.kind === 'engine_mark_3') { icon.style.background = 'linear-gradient(145deg,#f5fbff 0%,#9ed9ef 42%,#d7eef8 60%,#6f8794 100%)'; icon.style.boxShadow = '0 0 12px rgba(175,225,245,.5)'; }
+      if (data.kind === 'seed' || data.kind === 'seed_pack') {
+        const seed = seedById[typeId] || seedById.sunroot_seed;
+        icon.classList.add('seedPacket');
+        icon.style.setProperty('--seed-packet', data.kind === 'seed_pack' ? '#f2e2b9' : seed.packetColor);
+        icon.style.setProperty('--seed-ink', seed.seedColor);
+        icon.style.setProperty('--seed-label', data.kind === 'seed_pack' ? '#d3aa47' : seed.seedColor);
+      }
+      if (data.kind === 'crop') {
+        icon.style.background = 'radial-gradient(circle at 38% 34%, ' + data.css + ' 0%, ' + data.css + 'cc 42%, #2c4b32 43%, #203523 100%)';
+        icon.style.boxShadow = '0 0 10px ' + data.css + '55';
+      }
+      if (data.kind === 'watering_can') { icon.classList.add('wateringCanIcon'); }
+      if (data.kind === 'edible_flower') { icon.style.background = 'radial-gradient(circle at 45% 40%,#ffd1e3 0 16%,#ff82b3 18% 42%,#a13d68 44% 100%)'; icon.style.boxShadow = '0 0 10px rgba(255,130,179,.34)'; }
       // Dedicated CSS icons are used for special multi-part items too.
       // Keeping this function data-driven means inventory, hotbar, and journal
       // entries all render the same item identity.
@@ -15168,6 +17314,12 @@
           slot.appendChild(count);
 
           const itemInfo = itemById[inventorySlot.typeId];
+          if (inventorySlot.typeId === 'watering_can') {
+            const water = document.createElement('div');
+            water.className = 'waterAmount';
+            water.textContent = getWateringCanAmount(inventorySlot) + '/5';
+            slot.appendChild(water);
+          }
           if (itemInfo.tool) {
             const durability = document.createElement('div');
             durability.className = 'toolDurability';
@@ -15197,7 +17349,7 @@
 
     function inventoryFeedbackSignature(slotData) {
       if (!slotData) return 'empty';
-      return [slotData.typeId || '', slotData.count || 0, slotData.durability == null ? '' : slotData.durability].join('|');
+      return [slotData.typeId || '', slotData.count || 0, slotData.durability == null ? '' : slotData.durability, slotData.typeId === 'watering_can' ? getWateringCanAmount(slotData) : ''].join('|');
     }
 
     function hideInventoryTooltip() {
@@ -15237,6 +17389,7 @@
       if (!item) return;
       const journalInfo = JOURNAL_ITEM_INFO[slotData.typeId];
       const parts = ['x' + slotData.count];
+      if (slotData.typeId === 'watering_can') parts.push('WATER ' + getWateringCanAmount(slotData) + '/5');
       if (item.tool) {
         const maxDurability = getToolMaxDurability(item);
         const durability = Math.max(0, Math.min(maxDurability, slotData.durability == null ? maxDurability : slotData.durability));
@@ -15321,6 +17474,12 @@
           slot.appendChild(count);
 
           const itemInfo = itemById[slotData.typeId];
+          if (slotData.typeId === 'watering_can') {
+            const water = document.createElement('div');
+            water.className = 'waterAmount';
+            water.textContent = getWateringCanAmount(slotData) + '/5';
+            slot.appendChild(water);
+          }
           if (itemInfo.tool) {
             const durability = document.createElement('div');
             durability.className = 'toolDurability';
@@ -15578,7 +17737,8 @@
       document.body.style.cursor = 'default';
     });
 
-    function resetInventory() {
+    function resetInventory(options = {}) {
+      const includeStarterSeedPack = !!options.starterSeedPack;
       for (let i = 0; i < INVENTORY_SLOT_COUNT; i++) inventorySlots[i] = null;
       uiState.selectedHotbarSlot = 0;
       uiState.equippedItemType = null;
@@ -15589,7 +17749,9 @@
       // A brand-new player starts with the Starter Axe and Journal.
       inventorySlots[INVENTORY_MAIN_SLOTS] = { typeId: 'axe', count: 1, durability: TOOL_MAX_DURABILITY };
       inventorySlots[INVENTORY_MAIN_SLOTS + 1] = { typeId: 'journal', count: 1 };
+      if (includeStarterSeedPack) inventorySlots[INVENTORY_MAIN_SLOTS + 2] = { typeId: 'starter_seed_pack', count: 1 };
       journalDiscoveredItems = new Set(['journal', 'axe']);
+      if (includeStarterSeedPack) journalDiscoveredItems.add('starter_seed_pack');
       uiState.selectedHotbarSlot = 0;
       refreshEquippedItem();
       updateHotbarUI();
@@ -15918,6 +18080,30 @@
         name: 'Wooden Scythe',
         ingredients: [{ typeId: 'sticks', count: 2 }, { typeId: 'planks', count: 3 }],
         output: { typeId: 'wooden_scythe', count: 1 }
+      },
+      {
+        id: 'wooden_hoe',
+        name: 'Wooden Hoe',
+        ingredients: [{ typeId: 'sticks', count: 2 }, { typeId: 'planks', count: 3 }],
+        output: { typeId: 'wooden_hoe', count: 1 }
+      },
+      {
+        id: 'stone_hoe',
+        name: 'Stone Hoe',
+        ingredients: [{ typeId: 'sticks', count: 2 }, { typeId: 'stone', count: 3 }],
+        output: { typeId: 'stone_hoe', count: 1 }
+      },
+      {
+        id: 'iron_hoe',
+        name: 'Iron Hoe',
+        ingredients: [{ typeId: 'sticks', count: 2 }, { typeId: 'iron_ingot', count: 3 }],
+        output: { typeId: 'iron_hoe', count: 1 }
+      },
+      {
+        id: 'watering_can',
+        name: 'Watering Can',
+        ingredients: [{ typeId: 'iron_plate', count: 3 }, { typeId: 'iron_ingot', count: 1 }],
+        output: { typeId: 'watering_can', count: 1 }
       },
       {
         id: 'stone_scythe',
@@ -18220,7 +20406,11 @@
       first_launch_pad:24, fuel_rocket:38, launch_first_space:32, voyager:62, long_spaceflight_land:72,
       takeoff_100:68, low_fuel_return:76, safe_flight:66, fuel_emergency:58, full_day_night:43, first_night:20,
       stone_20:14, iron_20:25, credits_1000:70, low_durability:34, tough_nut:64, space_10min:88, mir_station:98,
-      sun_blackout_survived:60, moon_quartz_sale:24, upgraded_engine:42
+      sun_blackout_survived:60, moon_quartz_sale:24, upgraded_engine:42,
+      farm_first_plant:3, farm_first_water:3, farm_first_harvest:4, farm_harvest_10:6,
+      farm_harvest_25:9, farm_harvest_50:14, farm_harvest_100:22, farm_all_grown:34,
+      farm_all_harvested:42, farm_plant_25:8, farm_water_25:11, farm_self_harvest:16,
+      farm_seed_shop:6, farm_eat_own:18, farm_harvest_500:52
     };
 
     const ACHIEVEMENTS = [
@@ -18268,6 +20458,21 @@
       { id: 'sun_blackout_survived', name: "Can't touch that!", requirement: 'Start blacking out near the Sun and survive the recovery.', icon: '☀' },
       { id: 'moon_quartz_sale', name: 'Deal of a Lifetime', requirement: 'Collect Moon Quartz and sell it to the merchant.', icon: '☾' },
       { id: 'upgraded_engine', name: 'Houston, We Have an Upgrade!', requirement: 'Install Engine Mark 2.', icon: '🚀' },
+      { id: 'farm_first_plant', name: 'It Grows!', requirement: 'Plant your first crop.', icon: '🌱' },
+      { id: 'farm_first_water', name: "Don't dry!", requirement: 'Water your first crop.', icon: '💧' },
+      { id: 'farm_first_harvest', name: 'Dinner Served!', requirement: 'Harvest your first fully grown crop.', icon: '🥕' },
+      { id: 'farm_harvest_10', name: 'Amateur Farmer', requirement: 'Harvest 10 crops.', icon: '🌾' },
+      { id: 'farm_harvest_25', name: 'Love the effort!', requirement: 'Harvest 25 crops.', icon: '🌾' },
+      { id: 'farm_harvest_50', name: 'Pro Farmer', requirement: 'Harvest 50 crops.', icon: '🚜' },
+      { id: 'farm_harvest_100', name: 'Farming 100', requirement: 'Harvest 100 crops.', icon: '💯' },
+      { id: 'farm_all_grown', name: 'Agriculture', requirement: 'Grow every currently available crop type.', icon: '🌱' },
+      { id: 'farm_all_harvested', name: 'The whole assortment', requirement: 'Harvest each currently available crop type at least once.', icon: '🧺' },
+      { id: 'farm_plant_25', name: 'Planting is life!', requirement: 'Plant 25 crops.', icon: '🌱' },
+      { id: 'farm_water_25', name: 'Overflow', requirement: 'Water 25 crops.', icon: '💦' },
+      { id: 'farm_self_harvest', name: 'This took blood, sweat and tears', requirement: 'Harvest a crop that you planted yourself.', icon: '🧑‍🌾' },
+      { id: 'farm_seed_shop', name: 'Expensive seeds were these', requirement: 'Collect seeds from the seed shop.', icon: '💰' },
+      { id: 'farm_eat_own', name: 'Yum!', requirement: 'Eat a fruit that you grew yourself.', icon: '🍎' },
+      { id: 'farm_harvest_500', name: 'Get a job, oh wait you have one!', requirement: 'Harvest 500 crops.', icon: '🏆' },
     ];
     for (const achievement of ACHIEVEMENTS) {
       achievement.difficulty = ACHIEVEMENT_DIFFICULTIES[achievement.id] || 1;
@@ -18359,7 +20564,8 @@
           return {
             typeId: inner.typeId,
             count: innerCount,
-            ...(innerItem.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(innerItem), Number.isFinite(Number(inner.durability)) ? Math.floor(Number(inner.durability)) : getToolMaxDurability(innerItem))) } : {})
+            ...(innerItem.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(innerItem), Number.isFinite(Number(inner.durability)) ? Math.floor(Number(inner.durability)) : getToolMaxDurability(innerItem))) } : {}),
+            ...(inner.typeId === 'watering_can' ? { water: getWateringCanAmount(inner) } : {})
           };
         });
         return createBackpackItem(storage, typeof rawSlot.backpackId === 'string' ? rawSlot.backpackId : null);
@@ -18367,7 +20573,8 @@
       return {
         typeId: rawSlot.typeId,
         count,
-        ...(item.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(item), Number.isFinite(Number(rawSlot.durability)) ? Math.floor(Number(rawSlot.durability)) : getToolMaxDurability(item))) } : {})
+        ...(item.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(item), Number.isFinite(Number(rawSlot.durability)) ? Math.floor(Number(rawSlot.durability)) : getToolMaxDurability(item))) } : {}),
+        ...(rawSlot.typeId === 'watering_can' ? { water: getWateringCanAmount(rawSlot) } : {})
       };
     }
 
@@ -18380,6 +20587,9 @@
         if (!left || !right || left.typeId !== right.typeId || Number(left.count || 0) !== Number(right.count || 0)) return false;
         if (left.durability != null || right.durability != null) {
           if (Number(left.durability ?? 0) !== Number(right.durability ?? 0)) return false;
+        }
+        if (left.typeId === 'watering_can' || right.typeId === 'watering_can') {
+          if (Number(left.water ?? 0) !== Number(right.water ?? 0)) return false;
         }
       }
       return true;
@@ -18463,6 +20673,12 @@
           const localSlot = local.find(slot => slot?.typeId === serverSlot.typeId);
           if (localSlot) localSlot.durability = Number(serverSlot.durability);
         }
+      }
+      // Preserve server-side watering-can charge changes when the same can is present locally.
+      for (const serverSlot of serverInventory) {
+        if (serverSlot?.typeId !== 'watering_can') continue;
+        const localSlot = local.find(slot => slot?.typeId === 'watering_can');
+        if (localSlot) localSlot.water = getWateringCanAmount(serverSlot);
       }
       return local;
     }
@@ -18599,10 +20815,21 @@
     async function craftRecipeSecureMultiplayer(recipe) {
       if (!recipe || !secureAccountAuthorityEnabled || !multiplayerMode || !pocketSupabase || !currentAccountUser) return false;
       try {
-        const { data, error } = await pocketSupabase.rpc('pu_craft_recipe', {
-          p_world_id: MULTIPLAYER_WORLD_ID,
-          p_recipe_id: String(recipe.id || '')
-        });
+        const usesHoeRpc = recipe.id === 'stone_hoe' || recipe.id === 'iron_hoe';
+        const usesWateringCanRpc = recipe.id === 'watering_can';
+        const { data, error } = usesHoeRpc
+          ? await pocketSupabase.rpc('pu_craft_farming_hoe_v1', {
+              p_world_id: MULTIPLAYER_WORLD_ID,
+              p_hoe_type: String(recipe.output?.typeId || '')
+            })
+          : usesWateringCanRpc
+          ? await pocketSupabase.rpc('pu_craft_watering_can_v1', {
+              p_world_id: MULTIPLAYER_WORLD_ID
+            })
+          : await pocketSupabase.rpc('pu_craft_recipe', {
+              p_world_id: MULTIPLAYER_WORLD_ID,
+              p_recipe_id: String(recipe.id || '')
+            });
         if (error) throw error;
         const profile = data?.profile || data;
         if (profile?.user_id) applySecureProfileSnapshot(profile, { mergeLocalInventoryChanges: false });
@@ -18871,7 +21098,7 @@
         // Legacy Ivis Freeplay can still use the old account profile until it gets its
         // first world-scoped checkpoint. Every other world must start from a clean state.
         if (String(data?.world_state_source || '') === 'fresh_world' || MULTIPLAYER_WORLD_ID !== DEFAULT_MULTIPLAYER_WORLD_ID) {
-          resetInventory();
+          resetInventory({ starterSeedPack: true });
           economyState.credits = 0;
           uiState.selectedHotbarSlot = 0;
           refreshEquippedItem();
@@ -19389,6 +21616,19 @@
         ? raw.celestialBodies.filter(id => ['ivis', 'moon', 'cordelia'].includes(id))
         : [];
       if (!celestialBodies.includes('ivis')) celestialBodies.push('ivis');
+      const grownCropTypes = Array.isArray(raw && raw.grownCropTypes)
+        ? raw.grownCropTypes.filter(id => cropById && cropById[id])
+        : [];
+      const harvestedCropTypes = Array.isArray(raw && raw.harvestedCropTypes)
+        ? raw.harvestedCropTypes.filter(id => cropById && cropById[id])
+        : [];
+      const ownHarvestPending = {};
+      if (raw && raw.ownHarvestPending && typeof raw.ownHarvestPending === 'object') {
+        for (const crop of CROP_TYPES) {
+          const value = Math.max(0, Math.floor(Number(raw.ownHarvestPending[crop.id]) || 0));
+          if (value > 0) ownHarvestPending[crop.id] = value;
+        }
+      }
       return {
         crystals: [...new Set(crystals)],
         celestialBodies: [...new Set(celestialBodies)],
@@ -19397,7 +21637,13 @@
         takeoffBodies: [...new Set(Array.isArray(raw && raw.takeoffBodies) ? raw.takeoffBodies.filter(id => ['ivis', 'moon', 'cordelia'].includes(id)) : [])],
         stoneMined: Math.max(0, Math.floor(Number(raw && raw.stoneMined) || 0)),
         ironMined: Math.max(0, Math.floor(Number(raw && raw.ironMined) || 0)),
-        spaceSeconds: Math.max(0, Number(raw && raw.spaceSeconds) || 0)
+        spaceSeconds: Math.max(0, Number(raw && raw.spaceSeconds) || 0),
+        cropsPlanted: Math.max(0, Math.floor(Number(raw && raw.cropsPlanted) || 0)),
+        cropsWatered: Math.max(0, Math.floor(Number(raw && raw.cropsWatered) || 0)),
+        cropsHarvested: Math.max(0, Math.floor(Number(raw && raw.cropsHarvested) || 0)),
+        grownCropTypes: [...new Set(grownCropTypes)],
+        harvestedCropTypes: [...new Set(harvestedCropTypes)],
+        ownHarvestPending
       };
     }
     function renderAchievements() {
@@ -19500,7 +21746,13 @@
         takeoffBodies: [...accountAchievementProgress.takeoffBodies],
         stoneMined: accountAchievementProgress.stoneMined,
         ironMined: accountAchievementProgress.ironMined,
-        spaceSeconds: accountAchievementProgress.spaceSeconds
+        spaceSeconds: accountAchievementProgress.spaceSeconds,
+        cropsPlanted: accountAchievementProgress.cropsPlanted,
+        cropsWatered: accountAchievementProgress.cropsWatered,
+        cropsHarvested: accountAchievementProgress.cropsHarvested,
+        grownCropTypes: [...accountAchievementProgress.grownCropTypes],
+        harvestedCropTypes: [...accountAchievementProgress.harvestedCropTypes],
+        ownHarvestPending: { ...accountAchievementProgress.ownHarvestPending }
       };
       metadata.pocketUniverseCosmetics = cosmeticMetadataSnapshot();
       achievementWriteChain = achievementWriteChain.then(async () => {
@@ -19567,6 +21819,67 @@
       }
       awardAchievement('first_crystal');
       if (accountAchievementProgress.crystals.length >= CRYSTAL_TYPES.length) awardAchievement('all_crystals');
+    }
+
+    function persistFarmingAchievementProgress() {
+      persistAchievementState();
+    }
+
+    function recordCropPlanted(cropId) {
+      if (!currentAccountUser || state.gameMode !== 'survival') return;
+      const progress = accountAchievementProgress;
+      progress.cropsPlanted += 1;
+      awardAchievement('farm_first_plant');
+      if (progress.cropsPlanted >= 25) awardAchievement('farm_plant_25');
+      if (cropId && cropById[cropId]) {
+        progress.ownHarvestPending[cropId] = Math.max(0, Math.floor(Number(progress.ownHarvestPending[cropId]) || 0));
+      }
+      persistFarmingAchievementProgress();
+    }
+
+    function recordCropWatered(cropId) {
+      if (!currentAccountUser || state.gameMode !== 'survival') return;
+      const progress = accountAchievementProgress;
+      progress.cropsWatered += 1;
+      awardAchievement('farm_first_water');
+      if (progress.cropsWatered >= 25) awardAchievement('farm_water_25');
+      persistFarmingAchievementProgress();
+    }
+
+    function recordCropGrown(cropId) {
+      if (!currentAccountUser || state.gameMode !== 'survival' || !cropById[cropId]) return;
+      const progress = accountAchievementProgress;
+      if (!progress.grownCropTypes.includes(cropId)) {
+        progress.grownCropTypes.push(cropId);
+        if (progress.grownCropTypes.length >= CROP_TYPES.length) awardAchievement('farm_all_grown');
+        persistFarmingAchievementProgress();
+      }
+    }
+
+    function recordCropHarvested(cropId) {
+      if (!currentAccountUser || state.gameMode !== 'survival' || !cropById[cropId]) return;
+      const progress = accountAchievementProgress;
+      progress.cropsHarvested += 1;
+      progress.ownHarvestPending[cropId] = Math.max(0, Math.floor(Number(progress.ownHarvestPending[cropId]) || 0)) + 1;
+      if (!progress.harvestedCropTypes.includes(cropId)) progress.harvestedCropTypes.push(cropId);
+      awardAchievement('farm_first_harvest');
+      if (progress.cropsHarvested >= 10) awardAchievement('farm_harvest_10');
+      if (progress.cropsHarvested >= 25) awardAchievement('farm_harvest_25');
+      if (progress.cropsHarvested >= 50) awardAchievement('farm_harvest_50');
+      if (progress.cropsHarvested >= 100) awardAchievement('farm_harvest_100');
+      if (progress.cropsHarvested >= 500) awardAchievement('farm_harvest_500');
+      if (progress.harvestedCropTypes.length >= CROP_TYPES.length) awardAchievement('farm_all_harvested');
+      awardAchievement('farm_self_harvest');
+      persistFarmingAchievementProgress();
+    }
+
+    function recordEatingOwnGrownCrop(cropId) {
+      if (!currentAccountUser || state.gameMode !== 'survival' || !cropById[cropId]) return;
+      const pending = Math.max(0, Math.floor(Number(accountAchievementProgress.ownHarvestPending[cropId]) || 0));
+      if (pending <= 0) return;
+      accountAchievementProgress.ownHarvestPending[cropId] = pending - 1;
+      awardAchievement('farm_eat_own');
+      persistFarmingAchievementProgress();
     }
 
     function recordCelestialBodyVisit(bodyId) {
@@ -22250,27 +24563,24 @@
           collisionTreeOffset.copy(local).sub(tree.root.position);
           collisionTreeInverse.copy(tree.root.quaternion).invert();
           collisionTreeLocal.copy(collisionTreeOffset).applyQuaternion(collisionTreeInverse);
+          const treeVisualScale = getTreeVisualScale(tree);
+          if (treeVisualScale > 0.0001) collisionTreeLocal.multiplyScalar(1 / treeVisualScale);
 
-          const size = tree.size;
-          const shipRadius = FLIGHT_PROP_COLLISION_RADIUS;
-          const treeHalfHeight = 3.12 * size;
-          const trunkRadius = 0.30 * size + shipRadius;
-          const canopyRadius = 0.66 * size + shipRadius;
+          const bounds = getTreeBounds(tree, false);
+          const shipRadius = FLIGHT_PROP_COLLISION_RADIUS / Math.max(0.75, treeVisualScale);
 
-          // Trunk: a tall capsule-like cylinder around the tree's local Y axis.
+          // Trunk: a compact capsule-like collision volume around the authored trunk.
           const trunkXZ = Math.hypot(collisionTreeLocal.x, collisionTreeLocal.z);
-          if (collisionTreeLocal.y >= -shipRadius && collisionTreeLocal.y <= 1.48 * size + shipRadius && trunkXZ < trunkRadius) {
+          if (collisionTreeLocal.y >= -shipRadius && collisionTreeLocal.y <= bounds.height * 0.80 + shipRadius && trunkXZ < bounds.trunkRadius + shipRadius) {
             return true;
           }
 
-          // Canopy: the cone occupies the upper part of the tree, so use a generous spherical
-          // footprint there. This prevents flying straight through the visible foliage.
-          if (collisionTreeLocal.y > 0.72 * size && collisionTreeLocal.y < treeHalfHeight + shipRadius) {
-            const coneCenterY = 2.05 * size;
-            const canopyVertical = collisionTreeLocal.y - coneCenterY;
+          // Canopy: use a generous spherical bound around the upper foliage.
+          if (collisionTreeLocal.y > bounds.height * 0.28 && collisionTreeLocal.y < bounds.height + shipRadius) {
+            const canopyCenterY = bounds.height * 0.66;
+            const canopyVertical = collisionTreeLocal.y - canopyCenterY;
             const canopyXZ = Math.hypot(collisionTreeLocal.x, collisionTreeLocal.z);
-            const verticalLimit = 1.18 * size + shipRadius;
-            if (Math.abs(canopyVertical) <= verticalLimit && canopyXZ < canopyRadius) return true;
+            if (canopyVertical * canopyVertical + canopyXZ * canopyXZ < (bounds.canopyRadius + shipRadius) ** 2) return true;
           }
         }
 
@@ -22288,7 +24598,7 @@
         }
 
         // Both permanent Ivis stalls are solid to the spaceship as well.
-        for (const stall of [crystalStall, hatStall]) {
+        for (const stall of [crystalStall, hatStall, seedShopStall]) {
           if (!stall || !stall.visible) continue;
           collisionStallOffset.copy(local).sub(stall.position);
           collisionStallInverse.copy(stall.quaternion).invert();
@@ -22344,7 +24654,7 @@
       }
 
       // Both permanent stalls are solid to the spaceship as well.
-      for (const stall of [crystalStall, hatStall]) {
+      for (const stall of [crystalStall, hatStall, seedShopStall]) {
         if (!stall || !stall.visible) continue;
         collisionStallOffset.copy(local).sub(stall.position);
         collisionStallInverse.copy(stall.quaternion).invert();
@@ -22849,8 +25159,8 @@
     // The save is a normal JSON file, so the player can keep it outside the browser and
     // move it between computers. A small browser-local backup is also written whenever
     // we save/leave a world, which is useful if the downloaded file is forgotten.
-    const SAVE_VERSION = 20;
-    const LOCAL_SAVE_KEY = "pocketUniverseSave_v20";
+    const SAVE_VERSION = 21;
+    const LOCAL_SAVE_KEY = "pocketUniverseSave_v21";
 
     function serializeSave() {
       commitActiveBackpackStorage();
@@ -22895,13 +25205,15 @@
             return { typeId: 'backpack', count: 1, backpackId: slot.backpackId, storage: slot.storage.map(inner => inner ? {
               typeId: inner.typeId,
               count: inner.count,
-              ...(itemById[inner.typeId] && itemById[inner.typeId].tool ? { durability: inner.durability == null ? getToolMaxDurability(itemById[inner.typeId]) : inner.durability } : {})
+              ...(itemById[inner.typeId] && itemById[inner.typeId].tool ? { durability: inner.durability == null ? getToolMaxDurability(itemById[inner.typeId]) : inner.durability } : {}),
+              ...(inner.typeId === 'watering_can' ? { water: getWateringCanAmount(inner) } : {})
             } : null) };
           }
           return {
             typeId: slot.typeId,
             count: slot.count,
-            ...(itemById[slot.typeId] && itemById[slot.typeId].tool ? { durability: slot.durability == null ? getToolMaxDurability(itemById[slot.typeId]) : slot.durability } : {})
+            ...(itemById[slot.typeId] && itemById[slot.typeId].tool ? { durability: slot.durability == null ? getToolMaxDurability(itemById[slot.typeId]) : slot.durability } : {}),
+            ...(slot.typeId === 'watering_can' ? { water: getWateringCanAmount(slot) } : {})
           };
         }),
         journal: {
@@ -22924,14 +25236,19 @@
         trees: treeSpawns.map(tree => ({
           direction: tree.direction.toArray(),
           size: tree.size,
+          visualScale: getTreeVisualScale(tree),
+          variant: tree.variant === TREE_VARIANT_FRUIT ? TREE_VARIANT_FRUIT : TREE_VARIANT_EVERGREEN,
           yaw: tree.yaw,
           chopped: tree.chopped,
-          generation: Math.max(0, Math.floor(Number(tree.resourceGeneration) || 0))
+          generation: Math.max(0, Math.floor(Number(tree.resourceGeneration) || 0)),
+          fruits: tree.variant === TREE_VARIANT_FRUIT ? (Array.isArray(tree.fruits) && tree.fruits.length === VEYRA_FRUIT_COUNT ? tree.fruits.map(Boolean) : [true, true]) : []
         })),
         saplings: saplingSpawns.filter(s => s.active).map(s => ({
           treeIndex: s.treeIndex,
           direction: s.direction.toArray(),
           size: s.size,
+          visualScale: Number.isFinite(Number(s.visualScale)) ? Number(s.visualScale) : getTreeVisualScale(s),
+          variant: s.variant === TREE_VARIANT_FRUIT ? TREE_VARIANT_FRUIT : TREE_VARIANT_EVERGREEN,
           yaw: s.yaw,
           plantedAtSpin: s.plantedAtSpin
         })),
@@ -22983,6 +25300,18 @@
         containers: containers.map(container => ({ containerId: container.containerId, direction: container.direction.toArray(), yaw: container.yaw, surfaceBodyId: container.surfaceBodyId || 'ivis', inventory: container.inventory.map(slot => slot ? { typeId: slot.typeId, count: slot.count, ...(itemById[slot.typeId]?.tool ? { durability: slot.durability } : {}) } : null) })),
         sleepingBags: sleepingBags.map(bag => ({ direction: bag.direction.toArray(), yaw: bag.yaw, surfaceBodyId: bag.surfaceBodyId || 'ivis' })),
         drills: placedDrills.map(drill => ({ direction: drill.direction.toArray(), yaw: drill.yaw, durability: drill.durability, surfaceBodyId: drill.surfaceBodyId || 'ivis' })),
+        farmPlots: tilledPlots.map(plot => {
+          if (plot.crop) { advanceCropGrowth(plot.crop, Date.now()); plot.crop.stage = getCropGrowthStage(plot.crop); }
+          return {
+            plotKey: String(plot.plotKey || getTilledPlotKey(plot.surfaceBodyId, plot.direction)),
+            surfaceBodyId: String(plot.surfaceBodyId || 'ivis'),
+            direction: plot.direction.toArray(),
+            forward: plot.forward?.toArray?.() || [1,0,0],
+            cropGeneration: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)),
+            crop: plot.crop ? { cropKey: String(plot.crop.cropKey || getFarmPlotCropKey(plot)), cropId: String(plot.crop.cropId || ''), plantedAtMs: Math.max(0, Math.floor(Number(plot.crop.plantedAtMs) || Date.now())), stage: Math.max(0, Math.min(3, Math.floor(Number(plot.crop.stage) || 0))), generation: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)), growthProgressSec: Math.max(0, Number(plot.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())), wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)), wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0)) } : null
+          };
+        }),
+        cordeliaFlowers: cordeliaFlowers.map(flower => ({ cactusIndex: flower.cactusIndex, picked: !!flower.picked, regrowAtMs: Math.max(0, Number(flower.regrowAtMs) || 0), generation: Math.max(0, Math.floor(Number(flower.generation) || 0)) })),
         conciergeDeliveries: conciergeDeliveryOrders.map(order => ({ id: order.id, items: order.items.map(line => ({ typeId: line.typeId, count: line.count })), phase: order.phase, progress: Number(order.progress)||0, elapsed: Number(order.elapsed)||0, departureElapsed: Number(order.departureElapsed)||0, waitTime: getConciergeDeliveryWaitTime(order), expedited: !!order.expedited })),
         droppedItems: droppedItems.map(drop => ({ typeId: drop.typeId, count: drop.count, direction: drop.direction.toArray(), surfaceBodyId: drop.surfaceBodyId || 'ivis' }))
       };
@@ -22994,7 +25323,7 @@
       const protectedAccountCredits = secureAccountAuthorityEnabled ? economyState.credits : null;
       const protectedSelectedHotbarSlot = secureAccountAuthorityEnabled ? uiState.selectedHotbarSlot : null;
 
-      if (!Array.from({ length: 19 }, (_, i) => i + 1).includes(data?.version)) {
+      if (!Number.isInteger(data?.version) || data.version < 1 || data.version > SAVE_VERSION) {
         throw new Error("Unsupported or invalid save file.");
       }
 
@@ -23021,7 +25350,8 @@
             return {
               typeId: inner.typeId,
               count: Math.max(1, Math.min(innerItem.maxStack, Math.floor(inner.count))),
-              ...(innerItem.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(innerItem), Number.isFinite(inner.durability) ? Math.floor(inner.durability) : getToolMaxDurability(innerItem))) } : {})
+              ...(innerItem.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(innerItem), Number.isFinite(inner.durability) ? Math.floor(inner.durability) : getToolMaxDurability(innerItem))) } : {}),
+              ...(inner.typeId === 'watering_can' ? { water: getWateringCanAmount(inner) } : {})
             };
           }) : createBackpackStorage();
           inventorySlots[i] = createBackpackItem(storage, slot.backpackId);
@@ -23029,7 +25359,8 @@
           inventorySlots[i] = {
             typeId: slot.typeId,
             count: Math.max(1, Math.min(item.maxStack, Math.floor(slot.count))),
-            ...(item.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(item), Number.isFinite(slot.durability) ? Math.floor(slot.durability) : getToolMaxDurability(item))) } : {})
+            ...(item.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(item), Number.isFinite(slot.durability) ? Math.floor(slot.durability) : getToolMaxDurability(item))) } : {}),
+            ...(slot.typeId === 'watering_can' ? { water: getWateringCanAmount(slot) } : {})
           };
         }
       }
@@ -23143,23 +25474,29 @@
           const dir = new THREE.Vector3().fromArray(saved.direction).normalize();
           const h = heightAt(dir);
           tree.direction.copy(dir);
-          tree.size = Number.isFinite(saved.size) ? Math.max(1.5, Math.min(4, saved.size)) : tree.size;
+          tree.size = Number.isFinite(saved.size) ? clampTreeScale(saved.size, tree.size || TREE_MIN_SCALE) : clampTreeScale(tree.size || tree.visualScale);
+          tree.visualScale = getTreeVisualScale(tree);
+          const wantedVariant = saved.variant === TREE_VARIANT_FRUIT ? TREE_VARIANT_FRUIT : TREE_VARIANT_EVERGREEN;
+          if (wantedVariant !== tree.variant) {
+            const replacement = cloneTreeModel(wantedVariant);
+            if (replacement) {
+              tree.root.clear();
+              tree.root.add(replacement);
+              tree.variant = wantedVariant;
+              tree.fruitAssemblies = [];
+            }
+          }
           tree.yaw = Number.isFinite(saved.yaw) ? saved.yaw : tree.yaw;
           tree.root.position.copy(dir).multiplyScalar(PLANET_RADIUS + h);
-          // Reapply the saved size and orientation so chopping after a reload gives the same yield.
-          if (tree.root.children[0]) {
-            tree.root.children[0].scale.setScalar(tree.size);
-            tree.root.children[0].position.y = 0.7 * tree.size;
-          }
-          if (tree.root.children[1]) {
-            tree.root.children[1].scale.setScalar(tree.size);
-            tree.root.children[1].position.y = 2.0 * tree.size;
-          }
-          tree.root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-          tree.root.rotateY(tree.yaw);
           tree.chopped = !!saved.chopped;
           tree.resourceGeneration = Math.max(0, Math.floor(Number(saved.generation) || 0));
-          tree.root.visible = !tree.chopped;
+          if (tree.variant === TREE_VARIANT_FRUIT) {
+            tree.fruits = Array.isArray(saved.fruits) && saved.fruits.length === VEYRA_FRUIT_COUNT ? saved.fruits.map(Boolean) : [true, true];
+            cacheTreeFruitAssemblies(tree);
+          } else {
+            tree.fruits = [];
+          }
+          updateTreeRootVisual(tree);
         }
       }
 
@@ -23173,23 +25510,32 @@
           const treeIndex = Number.isInteger(saved.treeIndex) ? saved.treeIndex : -1;
           const tree = treeSpawns[treeIndex];
           if (!tree || !Array.isArray(saved.direction)) continue;
+          const wantedVariant = saved.variant === TREE_VARIANT_FRUIT ? TREE_VARIANT_FRUIT : (tree.variant || TREE_VARIANT_EVERGREEN);
           const sapling = {
             root: null,
             treeIndex,
             direction: new THREE.Vector3().fromArray(saved.direction).normalize(),
-            size: Number.isFinite(saved.size) ? Math.max(1.5, Math.min(4, saved.size)) : tree.size,
+            size: Number.isFinite(saved.size) ? clampTreeScale(saved.size, tree.size || TREE_MIN_SCALE) : tree.size,
+            visualScale: getTreeVisualScale(tree),
+            variant: wantedVariant,
             yaw: Number.isFinite(saved.yaw) ? saved.yaw : tree.yaw,
             plantedAtSpin: Number.isFinite(saved.plantedAtSpin) ? saved.plantedAtSpin : state.planetSpinAngle,
             active: true
           };
           const root = new THREE.Group();
           root.name = 'TreeSapling';
-          const trunk = new THREE.Mesh(treeTrunkGeo, treeTrunkMat);
-          const leaves = new THREE.Mesh(treeLeafGeo, treeLeafMat);
-          trunk.position.y = 0.7;
-          leaves.position.y = 2.0;
-          root.add(trunk);
-          root.add(leaves);
+          const authoredRoot = cloneTreeModel(wantedVariant);
+          if (authoredRoot) {
+            root.add(authoredRoot);
+            if (wantedVariant === TREE_VARIANT_FRUIT) {
+              root.traverse((node) => {
+                if (node.userData?.harvestableFruit || node.userData?.treePart === 'fruit-stem') node.visible = false;
+              });
+            }
+          } else {
+            root.add(createProceduralTreeRoot(1, wantedVariant));
+          }
+          root.frustumCulled = false;
           sapling.root = root;
           planetSystem.add(root);
           saplingSpawns.push(sapling);
@@ -23292,7 +25638,7 @@
             tree.direction.copy(new THREE.Vector3().fromArray(saved.direction).normalize());
             placeAuroraProp(tree.root, tree.direction, 0);
           }
-          tree.size = Number.isFinite(saved.size) ? Math.max(1.25, Math.min(4, saved.size)) : tree.size;
+          tree.size = Number.isFinite(saved.size) ? clampTreeScale(saved.size, tree.size || TREE_MIN_SCALE) : clampTreeScale(tree.size || TREE_MIN_SCALE);
           tree.yaw = Number.isFinite(saved.yaw) ? saved.yaw : tree.yaw;
           if (tree.root.children[0]) { tree.root.children[0].scale.setScalar(tree.size); tree.root.children[0].position.y = 0.7 * tree.size; }
           if (tree.root.children[1]) { tree.root.children[1].scale.setScalar(tree.size); tree.root.children[1].position.y = 2.0 * tree.size; }
@@ -23300,6 +25646,37 @@
           tree.root.rotateY(tree.yaw);
           tree.chopped = !!saved.chopped;
           tree.root.visible = !tree.chopped;
+        }
+      }
+
+      // Restore farm plots and any planted crops. Older saves simply contain no farmPlots field.
+      clearTilledPlots();
+      if (Array.isArray(data.farmPlots)) {
+        for (const saved of data.farmPlots) {
+          const surfaceBodyId = ['ivis','aurora','cordelia'].includes(String(saved?.surfaceBodyId || '')) ? String(saved.surfaceBodyId) : 'ivis';
+          const ctx = getPlaceableSurfaceContext(surfaceBodyId);
+          if (!ctx || !Array.isArray(saved.direction)) continue;
+          const dir = new THREE.Vector3().fromArray(saved.direction).normalize();
+          const forwardRaw = Array.isArray(saved.forward) ? new THREE.Vector3().fromArray(saved.forward).normalize() : new THREE.Vector3(1,0,0);
+          const projected = forwardRaw.sub(dir.clone().multiplyScalar(forwardRaw.dot(dir)));
+          if (projected.lengthSq() < 0.0001) continue;
+          projected.normalize();
+          const plotKey = String(saved.plotKey || getTilledPlotKey(surfaceBodyId, dir));
+          const plot = createTilledPlot({ ctx, dir, forward: projected }, plotKey);
+          if (!plot) continue;
+          plot.cropGeneration = Math.max(0, Math.floor(Number(saved.cropGeneration) || Number(saved.crop?.generation) || 0));
+          if (saved.crop && cropById[String(saved.crop.cropId || '')]) {
+            plot.crop = { cropId: String(saved.crop.cropId), plantedAtMs: Math.max(0, Number(saved.crop.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(saved.crop.stage) || 0))), cropKey: String(saved.crop.cropKey || getFarmPlotCropKey(plot)), growthProgressSec: Number.isFinite(Number(saved.crop.growthProgressSec)) ? Math.max(0, Number(saved.crop.growthProgressSec)) : undefined, growthUpdatedAtMs: Number.isFinite(Number(saved.crop.growthUpdatedAtMs)) ? Math.max(0, Number(saved.crop.growthUpdatedAtMs)) : Date.now(), wateredAtMs: Number.isFinite(Number(saved.crop.wateredAtMs)) ? Math.max(0, Number(saved.crop.wateredAtMs)) : 0, wateredUntilMs: Number.isFinite(Number(saved.crop.wateredUntilMs)) ? Math.max(0, Number(saved.crop.wateredUntilMs)) : 0 };
+            hydrateCropGrowthState(plot.crop);
+            updateTilledPlotCropVisual(plot);
+          }
+        }
+      }
+
+      if (Array.isArray(data.cordeliaFlowers)) {
+        for (const savedFlower of data.cordeliaFlowers) {
+          const flower = cordeliaFlowers.find(f => f.cactusIndex === Math.max(0, Math.floor(Number(savedFlower?.cactusIndex) || 0)));
+          if (flower) applyCordeliaFlowerState(flower, savedFlower);
         }
       }
 
@@ -23623,10 +26000,11 @@
       return null;
     }
 
-    function resetPlayerState() {
+    function resetPlayerState(options = {}) {
+      clearTilledPlots();
       if (sleepingActive) finishSleeping();
       if (playerState.inRocket) exitRocketFlight(true);
-      resetInventory();
+      resetInventory({ starterSeedPack: !!options.starterSeedPack });
       economyState.credits = 0;
       economyState.fuelingPad = null;
       economyState.fuelingStartedAt = 0;
@@ -23869,6 +26247,277 @@
 
     let nearbyTree = null;
     let nearbyRock = null;
+    let nearbyVeyraTree = null;
+
+    function findNearbyCordeliaFlower() {
+      if (!cordeliaWalking) return null;
+      const cameraWorld = camera.getWorldPosition(new THREE.Vector3());
+      const lookDir = camera.getWorldDirection(new THREE.Vector3()).normalize();
+      let best = null, bestScore = Infinity;
+      for (const flower of cordeliaFlowers) {
+        if (!flower?.flowerMesh || !flower.flowerMesh.visible || flower.picked) continue;
+        const world = flower.flowerMesh.getWorldPosition(new THREE.Vector3());
+        const to = world.clone().sub(cameraWorld);
+        const distance = to.length();
+        if (distance > 4.6 || distance < 0.15) continue;
+        to.normalize();
+        const facing = lookDir.dot(to);
+        if (facing < 0.08) continue;
+        const score = distance - facing * 0.9;
+        if (score < bestScore) { bestScore = score; best = flower; }
+      }
+      return best;
+    }
+
+    function applyCordeliaFlowerState(flower, saved) {
+      if (!flower) return;
+      flower.picked = !!saved?.picked;
+      flower.regrowAtMs = Math.max(0, Number(saved?.regrowAtMs) || 0);
+      flower.generation = Math.max(0, Math.floor(Number(saved?.generation) || 0));
+      if (!flower.picked && flower.regrowAtMs && Date.now() >= flower.regrowAtMs) flower.regrowAtMs = 0;
+      if (flower.flowerMesh) flower.flowerMesh.visible = !flower.picked;
+    }
+
+    function updateCordeliaFlowers() {
+      let regrown = false;
+      const now = Date.now();
+      for (const flower of cordeliaFlowers) {
+        if (!flower?.picked || !flower.regrowAtMs) continue;
+        if (now < flower.regrowAtMs) continue;
+        flower.picked = false;
+        flower.regrowAtMs = 0;
+        if (flower.flowerMesh) flower.flowerMesh.visible = true;
+        regrown = true;
+      }
+      if (regrown) {
+        markMultiplayerWorldDirty('cordelia-flower-regrown');
+        scheduleMultiplayerEnvironmentSnapshot();
+        updateCrystalPrompt();
+      }
+    }
+
+    async function pickNearbyCordeliaFlower() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || !settingsModal.classList.contains('hidden')) return false;
+      if (uiState.equippedItemType) return false;
+      const flower = findNearbyCordeliaFlower();
+      if (!flower) return false;
+      if (!canAddItemToInventory('cordelia_flower', 1)) {
+        const prompt = document.getElementById('crystalPrompt');
+        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">FULL</span> Not enough room for Cordelia Flower'; }
+        return true;
+      }
+      const generation = Math.max(0, Math.floor(Number(flower.generation) || 0));
+      if (multiplayerMode && secureAccountAuthorityEnabled) {
+        const key = makeSecureResourceKey('cordelia_flower', 'cordelia', flower.cactusIndex, generation);
+        const result = await claimSecureResourceReward(key, 'cordelia_flower', 1);
+        if (!result?.granted) {
+          const prompt = document.getElementById('crystalPrompt');
+          if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">GONE</span> That flower was already picked'; }
+          return true;
+        }
+      } else {
+        if (!addItemToInventory('cordelia_flower', 1, null, true)) return true;
+      }
+      const now = Date.now();
+      flower.picked = true;
+      flower.regrowAtMs = now + CORDELIA_FLOWER_REGROW_MS;
+      flower.generation = generation + 1;
+      if (flower.flowerMesh) flower.flowerMesh.visible = false;
+      markJournalItemDiscovered('cordelia_flower');
+      if (multiplayerMode) broadcastMultiplayerCordeliaFlowerPicked(flower, generation, now + CORDELIA_FLOWER_REGROW_MS);
+      markMultiplayerWorldDirty('cordelia-flower-picked');
+      scheduleMultiplayerEnvironmentSnapshot();
+      playAudio('crystalPickup', 0.30, 1.5, 600);
+      const world = flower.flowerMesh?.getWorldPosition(new THREE.Vector3()) || player.position.clone();
+      spawnImpactParticles(world, 0xff82b3, { count: 8, life: 0.46, speed: 0.6, size: 0.045, gravity: 0.8, spread: 0.8, upward: 0.7 });
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">+1</span> Cordelia Flower collected · regrows in 3m'; }
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 800);
+      return true;
+    }
+
+    function broadcastMultiplayerCordeliaFlowerPicked(flower, pickedGeneration, regrowAtMs) {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser || !flower) return;
+      const payload = {
+        kind: 'cordelia_flower_picked_v1', sourceUserId: String(currentAccountUser.id), worldId: String(MULTIPLAYER_WORLD_ID),
+        cactusIndex: Math.max(0, Math.floor(Number(flower.cactusIndex) || 0)), generation: Math.max(0, Math.floor(Number(pickedGeneration) || 0)),
+        regrowAtMs: Math.max(0, Math.floor(Number(regrowAtMs) || 0)), sentAt: Date.now()
+      };
+      multiplayerChannel.send({ type: 'broadcast', event: 'world_cordelia_flower_picked', payload }).catch((error) => console.warn('Multiplayer Cordelia flower broadcast failed', error));
+    }
+
+    function applyMultiplayerCordeliaFlowerPicked(payload) {
+      if (!payload || payload.kind !== 'cordelia_flower_picked_v1') return;
+      if (String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return;
+      if (String(payload.sourceUserId || '') === String(currentAccountUser?.id || '')) return;
+      const cactusIndex = Math.max(0, Math.floor(Number(payload.cactusIndex) || 0));
+      const flower = cordeliaFlowers.find(f => f.cactusIndex === cactusIndex);
+      if (!flower) return;
+      const generation = Math.max(0, Math.floor(Number(payload.generation) || 0));
+      if (generation !== Math.max(0, Math.floor(Number(flower.generation) || 0))) return;
+      flower.picked = true;
+      flower.regrowAtMs = Math.max(Date.now(), Number(payload.regrowAtMs) || (Date.now() + CORDELIA_FLOWER_REGROW_MS));
+      flower.generation = generation + 1;
+      if (flower.flowerMesh) flower.flowerMesh.visible = false;
+      markMultiplayerWorldDirty('remote-cordelia-flower-picked');
+      updateCrystalPrompt();
+    }
+
+    function findNearbyVeyraFruitTree() {
+      const cameraWorld = new THREE.Vector3();
+      const lookDir = new THREE.Vector3();
+      camera.getWorldPosition(cameraWorld);
+      camera.getWorldDirection(lookDir).normalize();
+
+      let best = null;
+      let bestScore = Infinity;
+      for (const tree of treeSpawns) {
+        if (!tree || tree.variant !== TREE_VARIANT_FRUIT || tree.chopped || !tree.root?.visible) continue;
+        normalizeTreeFruitState(tree);
+        if (!tree.fruits.some(Boolean)) continue;
+        const treeWorld = tree.root.getWorldPosition(new THREE.Vector3());
+        const toTree = treeWorld.clone().sub(cameraWorld);
+        const distance = toTree.length();
+        if (distance > 4.8 || distance < 0.2) continue;
+        toTree.normalize();
+        const facing = lookDir.dot(toTree);
+        if (facing < 0.30) continue;
+        const score = distance - facing * 1.0;
+        if (score < bestScore) {
+          bestScore = score;
+          best = tree;
+        }
+      }
+      return best;
+    }
+
+    function chooseAvailableVeyraFruitIndex(tree) {
+      if (!tree) return -1;
+      normalizeTreeFruitState(tree);
+      const cameraWorld = camera.getWorldPosition(new THREE.Vector3());
+      const lookDir = camera.getWorldDirection(new THREE.Vector3()).normalize();
+      const assemblies = Array.isArray(tree.fruitAssemblies) ? tree.fruitAssemblies : cacheTreeFruitAssemblies(tree);
+      let best = -1, bestScore = Infinity;
+      for (let i = 0; i < VEYRA_FRUIT_COUNT; i++) {
+        if (!tree.fruits[i]) continue;
+        const assembly = assemblies[i];
+        const world = assembly ? assembly.getWorldPosition(new THREE.Vector3()) : tree.root.getWorldPosition(new THREE.Vector3());
+        const toFruit = world.clone().sub(cameraWorld);
+        const distance = toFruit.length();
+        if (distance > 4.9 || distance < 0.2) continue;
+        toFruit.normalize();
+        const facing = lookDir.dot(toFruit);
+        const score = distance - facing * 0.75;
+        if (score < bestScore) { bestScore = score; best = i; }
+      }
+      return best;
+    }
+
+    async function claimSecureVeyraFruit(tree, treeIndex, fruitIndex, generation) {
+      if (!secureAccountAuthorityEnabled || !multiplayerMode || !pocketSupabase || !currentAccountUser) return { granted: false, skipped: true };
+      const key = 'veyra:' + String(getSecureWorldSessionId()) + ':' + String(treeIndex) + ':' + String(generation) + ':' + String(fruitIndex);
+      if (secureResourceClaimsInFlight.has(key)) return { granted: false, skipped: true };
+      secureResourceClaimsInFlight.add(key);
+      try {
+        const { data, error } = await pocketSupabase.rpc('pu_harvest_tree_fruit_v1', {
+          p_world_id: getSecureWorldSessionId(),
+          p_tree_key: `tree:ivis:${Math.max(0, Math.floor(Number(treeIndex) || 0))}:g${Math.max(0, Math.floor(Number(generation) || 0))}`,
+          p_fruit_index: Math.max(0, Math.min(1, Math.floor(Number(fruitIndex) || 0)))
+        });
+        if (error) throw error;
+        const profile = data?.profile || data;
+        if (profile?.user_id) applySecureProfileSnapshot(profile, { mergeLocalInventoryChanges: true });
+        return data || { granted: false };
+      } finally {
+        secureResourceClaimsInFlight.delete(key);
+      }
+    }
+
+    function broadcastMultiplayerTreeFruitHarvested(tree, treeIndex, bodyId, generation, fruitIndex) {
+      if (!tree || !multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser) return;
+      const payload = {
+        kind: 'tree_fruit_harvested_v1',
+        sourceUserId: String(currentAccountUser.id),
+        worldId: String(MULTIPLAYER_WORLD_ID),
+        bodyId: String(bodyId || 'ivis'),
+        treeIndex: Math.max(0, Math.floor(Number(treeIndex) || 0)),
+        generation: Math.max(0, Math.floor(Number(generation) || 0)),
+        fruitIndex: Math.max(0, Math.min(1, Math.floor(Number(fruitIndex) || 0))),
+        sentAt: Date.now()
+      };
+      multiplayerChannel.send({ type: 'broadcast', event: 'world_tree_fruit_harvested', payload }).catch((error) => {
+        console.warn('Multiplayer Veyra fruit harvest broadcast failed', error);
+      });
+    }
+
+    async function harvestNearbyVeyraFruit() {
+      if (state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || !settingsModal.classList.contains('hidden')) return false;
+      if (uiState.equippedItemType) return false;
+      const tree = findNearbyVeyraFruitTree();
+      if (!tree) return false;
+      const fruitIndex = chooseAvailableVeyraFruitIndex(tree);
+      if (fruitIndex < 0) return false;
+      if (!canAddItemToInventory('veyra_fruit', 1)) {
+        const prompt = document.getElementById('crystalPrompt');
+        prompt.classList.remove('hidden');
+        prompt.textContent = 'Inventory full — make room first';
+        return true;
+      }
+
+      const treeIndex = treeSpawns.indexOf(tree);
+      const generation = Math.max(0, Math.floor(Number(tree.resourceGeneration) || 0));
+      if (secureAccountAuthorityEnabled && multiplayerMode) {
+        try {
+          const result = await claimSecureVeyraFruit(tree, treeIndex, fruitIndex, generation);
+          if (!result?.granted) {
+            if (result?.already_claimed) {
+              tree.fruits = tree.fruits.map((value, i) => i === fruitIndex ? false : value);
+              updateTreeFruitVisual(tree);
+              updateCrystalPrompt();
+              return true;
+            }
+            const prompt = document.getElementById('crystalPrompt');
+            prompt.classList.remove('hidden');
+            prompt.textContent = 'Veyra Fruit was already harvested';
+            return true;
+          }
+        } catch (error) {
+          const prompt = document.getElementById('crystalPrompt');
+          prompt.classList.remove('hidden');
+          prompt.textContent = error?.message || 'Veyra Fruit harvest failed';
+          return true;
+        }
+      } else if (!addItemToInventory('veyra_fruit', 1, null, true)) {
+        const prompt = document.getElementById('crystalPrompt');
+        prompt.classList.remove('hidden');
+        prompt.textContent = 'Inventory full — make room first';
+        return true;
+      }
+
+      normalizeTreeFruitState(tree);
+      playVeyraFruitHarvestEffect(tree, fruitIndex);
+      tree.fruits[fruitIndex] = false;
+      cacheTreeFruitAssemblies(tree);
+      updateTreeFruitVisual(tree);
+      playAudio('crystalPickup', 0.50, 1.14 + Math.random() * 0.05, 500);
+      if (treeIndex >= 0) broadcastMultiplayerTreeFruitHarvested(tree, treeIndex, 'ivis', generation, fruitIndex);
+      markMultiplayerWorldDirty('veyra-fruit-harvest');
+      scheduleMultiplayerEnvironmentSnapshot();
+
+      const prompt = document.getElementById('crystalPrompt');
+      prompt.classList.remove('hidden');
+      const remaining = tree.fruits.filter(Boolean).length;
+      prompt.innerHTML = '<span class="promptKey">+1</span> Veyra Fruit collected' + (remaining ? ' · ' + remaining + ' left' : '');
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 650);
+      return true;
+    }
+
+    function triggerVeyraFruitHarvest() {
+      const nearby = findNearbyVeyraFruitTree();
+      if (!nearby) return false;
+      void harvestNearbyVeyraFruit();
+      return true;
+    }
 
     function findNearbyRock() {
       const playerWorld = new THREE.Vector3();
@@ -23959,6 +26608,7 @@
     let scytheCuttingTarget = null;
 
     function isScythe(typeId) { return typeId === 'wooden_scythe' || typeId === 'stone_scythe' || typeId === 'iron_scythe'; }
+    function isHoe(typeId) { return typeId === 'wooden_hoe' || typeId === 'stone_hoe' || typeId === 'iron_hoe'; }
 
     function cutNearbyGrass() {
       if (state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen) return false;
@@ -24580,6 +27230,33 @@
       }, 700);
     }
 
+    function openStarterSeedPack() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket) return false;
+      const idx = getSelectedHotbarInventoryIndex();
+      const selected = inventorySlots[idx];
+      if (!selected || selected.typeId !== 'starter_seed_pack') return false;
+      if (!canAddItemToInventory('sunroot_seed', 5)) {
+        const prompt = document.getElementById('crystalPrompt');
+        if (prompt) { prompt.classList.remove('hidden'); prompt.textContent = 'Inventory full — make room for your seeds'; }
+        return true;
+      }
+      if (!addItemToInventory('sunroot_seed', 5, null, true)) return true;
+      inventorySlots[idx] = null;
+      markJournalItemDiscovered('starter_seed_pack');
+      markJournalItemDiscovered('sunroot_seed');
+      refreshEquippedItem();
+      updateHotbarUI();
+      updateInventoryUI();
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">OPENED</span> Starter Seed Pack · +5 Sunroot Seeds';
+        setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 900);
+      }
+      persistLocalBackup();
+      return true;
+    }
+
     function updateCrystalPrompt() {
       nearbyCrystal = null;
       nearbyRock = null;
@@ -24607,6 +27284,35 @@
       if (nearbyTelephone) {
         prompt.classList.remove('hidden');
         prompt.innerHTML = '<span class="promptKey">E</span> Use Telephone';
+        return;
+      }
+
+      if (uiState.equippedItemType === 'starter_seed_pack') {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">E</span> Open Starter Seed Pack · 5 Sunroot Seeds';
+        return;
+      }
+
+      const equippedCropSeed = cropBySeedId[uiState.equippedItemType];
+      if (equippedCropSeed) {
+        const plantablePlot = findNearbyFarmPlotForInteraction(true);
+        const occupiedPlot = findNearbyFarmPlotForInteraction(false);
+        prompt.classList.remove('hidden');
+        if (plantablePlot) prompt.innerHTML = '<span class="promptKey">E</span> Plant ' + equippedCropSeed.name + ' Seeds';
+        else if (occupiedPlot?.crop) {
+          const remaining = getCropSecondsRemaining(occupiedPlot.crop);
+          prompt.innerHTML = '<span class="promptKey">GROWING</span> ' + (cropById[occupiedPlot.crop.cropId]?.name || 'Crop') + ' · ' + Math.ceil(remaining) + 's remaining';
+        } else prompt.innerHTML = '<span class="promptKey">E</span> Plant ' + equippedCropSeed.name + ' on tilled soil';
+        return;
+      }
+
+      const nearbyFarmCropPlot = findNearbyFarmPlotForInteraction(false);
+      if (!uiState.equippedItemType && nearbyFarmCropPlot?.crop) {
+        const cropDef = cropById[nearbyFarmCropPlot.crop.cropId];
+        const remaining = getCropSecondsRemaining(nearbyFarmCropPlot.crop);
+        prompt.classList.remove('hidden');
+        if (remaining <= 0) prompt.innerHTML = '<span class="promptKey">E</span> Harvest ' + (cropDef?.name || 'Crop');
+        else prompt.innerHTML = '<span class="promptKey">GROWING</span> ' + (cropDef?.name || 'Crop') + ' · ' + Math.ceil(remaining) + 's remaining';
         return;
       }
 
@@ -24692,6 +27398,13 @@
       if (uiState.equippedItemType === 'cooked_beobaka') {
         prompt.classList.remove('hidden');
         prompt.innerHTML = '<span class="promptKey">E</span> Eat Cooked Beobaka · +30 Hunger · +35 Stamina';
+        return;
+      }
+
+      const equippedPlantFood = EDIBLE_PLANT_HARVESTS[uiState.equippedItemType];
+      if (equippedPlantFood) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">E</span> Eat ' + (itemById[uiState.equippedItemType]?.name || 'Food') + ' · +' + equippedPlantFood.hunger + ' Hunger';
         return;
       }
 
@@ -24793,6 +27506,58 @@
           prompt.innerHTML = '<span class="promptKey">LMB</span> Cut grass for 3 Grass Fibers · ' + durability + '/' + getToolMaxDurability(uiState.equippedItemType);
           return;
         }
+      }
+
+      if (isHoe(uiState.equippedItemType)) {
+        const current = getCurrentToolSlot();
+        const durability = current ? current.slot.durability : getToolMaxDurability(uiState.equippedItemType);
+        const maxDurability = current ? getToolMaxDurability(current.item) : getToolMaxDurability(uiState.equippedItemType);
+        const placement = getHoeTillingPlacement();
+        prompt.classList.remove('hidden');
+        if (!placement) prompt.innerHTML = '<span class="promptKey">LOCKED</span> Find open soil on Ivis, Aurora, or Cordelia';
+        else if (findNearbyTilledPlot(placement.dir, placement.ctx)) prompt.innerHTML = '<span class="promptKey">TILLED</span> Soil already prepared · ' + durability + '/' + maxDurability;
+        else prompt.innerHTML = '<span class="promptKey">LMB</span> Till soil · ' + durability + '/' + maxDurability;
+        return;
+      }
+
+      if (uiState.equippedItemType === 'watering_can') {
+        const current = getSelectedWateringCanSlot();
+        const amount = current ? getWateringCanAmount(current.slot) : 0;
+        const river = findNearbyIvisRiverForFill();
+        const farmPlot = findNearbyFarmPlotForInteraction(false);
+        if (river) {
+          prompt.classList.remove('hidden');
+          prompt.innerHTML = '<span class="promptKey">E</span> Fill Watering Can · ' + amount + '/5';
+          return;
+        }
+        if (farmPlot?.crop) {
+          const crop = cropById[farmPlot.crop.cropId];
+          const stage = getCropGrowthStage(farmPlot.crop);
+          if (stage >= 3) prompt.innerHTML = '<span class="promptKey">READY</span> ' + (crop?.name || 'Crop') + ' is ready to harvest · Can ' + amount + '/5';
+          else if (isCropWet(farmPlot.crop)) prompt.innerHTML = '<span class="promptKey">LMB</span> Water ' + (crop?.name || 'Crop') + ' · WET ' + Math.ceil(Math.max(0, Number(farmPlot.crop.wateredUntilMs) - Date.now()) / 1000) + 's · Can ' + amount + '/5';
+          else if (amount > 0) prompt.innerHTML = '<span class="promptKey">LMB</span> Water ' + (crop?.name || 'Crop') + ' · DRY · Can ' + amount + '/5';
+          else prompt.innerHTML = '<span class="promptKey">EMPTY</span> Fill the Watering Can at the Ivis river';
+        } else {
+          prompt.classList.remove('hidden');
+          prompt.innerHTML = '<span class="promptKey">CAN</span> Watering Can · ' + amount + '/5 · Fill at the Ivis river';
+        }
+        if (prompt) prompt.classList.remove('hidden');
+        return;
+      }
+
+      const nearbyFlowerPrompt = (!uiState.equippedItemType) ? findNearbyCordeliaFlower() : null;
+      if (nearbyFlowerPrompt) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">E</span> Pick Cordelia Flower · edible +8 Hunger';
+        return;
+      }
+
+      nearbyVeyraTree = (!uiState.equippedItemType) ? findNearbyVeyraFruitTree() : null;
+      if (nearbyVeyraTree) {
+        const remainingFruit = nearbyVeyraTree.fruits.filter(Boolean).length;
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">E</span> Harvest Veyra Fruit · ' + remainingFruit + ' left';
+        return;
       }
 
       if (choppingTree) {
@@ -25045,7 +27810,9 @@
 
       // Starting a new game always begins with clear weather as well as a fresh player state.
       resetWeatherToClear();
-      resetPlayerState();
+      // Every genuinely NEW singleplayer game starts with the same farming starter pack
+      // as a fresh multiplayer world. Loading a save does not call this path.
+      resetPlayerState({ starterSeedPack: true });
       // Freeplay is a sandbox, so the Journal opens as a complete encyclopedia.
       // Survival keeps the normal discovery-based progression.
       if (state.gameMode === 'freeplay') {
@@ -25066,6 +27833,7 @@
       if (playerState.currentPlanetId === 'ivis' || !playerState.currentPlanetId) awardAchievement('spawn_ivis');
       document.body.classList.remove("state-menu");
       document.body.classList.add("state-playing");
+      renderMultiplayerChat();
       updateMultiplayerHud(multiplayerMode ? 'connecting' : null);
 
       // mask the instant camera swap behind a quick fade rather than a hard cut
@@ -25225,6 +27993,17 @@
       if (uiState.shipInventoryOpen && e.key === 'Escape') { e.preventDefault(); closeShipInventory(); }
     });
 
+    const multiplayerChatInput = document.getElementById('multiplayerChatInput');
+    const multiplayerChatSend = document.getElementById('multiplayerChatSend');
+    if (multiplayerChatInput) {
+      multiplayerChatInput.addEventListener('keydown', (e) => handleMultiplayerChatKeydown(e));
+    }
+    if (multiplayerChatSend) {
+      multiplayerChatSend.addEventListener('click', (e) => { e.preventDefault(); sendMultiplayerChatMessage(); multiplayerChatInput?.focus(); });
+    }
+    renderMultiplayerChat();
+    buildEmoteWheel();
+
     // ---------- rebindable keyboard controls ----------
     // Bindings are shared across walking, planetary movement, and spaceship flight.
     // They persist locally so changing a key survives reloads without touching save data.
@@ -25232,7 +28011,7 @@
       moveForward: 'KeyW', moveLeft: 'KeyA', moveBackward: 'KeyS', moveRight: 'KeyD',
       sprint: 'ShiftLeft', jump: 'Space', toggleView: 'KeyX', crouch: 'KeyC', flashlight: 'KeyF',
       interact: 'KeyE', drop: 'KeyQ', inventory: 'KeyI', slot1: 'Digit1', slot2: 'Digit2',
-      slot3: 'Digit3', slot4: 'Digit4', map: 'KeyM', weather: 'KeyG', useTool: 'MouseLeft', pause: 'Escape', screenshotUI: 'Backquote'
+      slot3: 'Digit3', slot4: 'Digit4', map: 'KeyM', weather: 'KeyG', emote: 'KeyB', useTool: 'MouseLeft', pause: 'Escape', screenshotUI: 'Backquote'
     };
     const KEY_BINDING_STORAGE = 'pocketUniverseKeyBindings';
     let keyBindings = { ...DEFAULT_KEY_BINDINGS };
@@ -25256,7 +28035,7 @@
       sprint: 'Sprint / ship down', jump: 'Jump / ship up', toggleView: 'Toggle view', crouch: 'Crouch', flashlight: 'Flashlight',
       interact: 'Interact / collect / enter-exit', drop: 'Drop item', inventory: 'Inventory',
       slot1: 'Hotbar slot 1', slot2: 'Hotbar slot 2', slot3: 'Hotbar slot 3', slot4: 'Hotbar slot 4',
-      map: 'Open map', weather: 'Weather menu (Freeplay)', useTool: 'Chop / use tool', pause: 'Pause menu', screenshotUI: 'Toggle screenshot UI'
+      map: 'Open map', weather: 'Weather menu (Freeplay)', emote: 'Emote wheel', useTool: 'Chop / use tool', pause: 'Pause menu', screenshotUI: 'Toggle screenshot UI'
     };
     const getBoundCodes = (action) => {
       const code = keyBindings[action];
@@ -25366,6 +28145,12 @@
       );
       if (editableTarget) {
         if (e.key === "Escape") {
+          if (multiplayerChatOpen) {
+            e.preventDefault();
+            e.stopPropagation();
+            closeMultiplayerChat();
+            return;
+          }
           if (!accountModal.classList.contains("hidden")) {
             e.preventDefault();
             closeAccount();
@@ -25386,9 +28171,27 @@
         return;
       }
 
+      if (isActionEvent(e, 'emote') && !e.repeat && !emoteWheelOpen && state.gameState === 'playing' && !state.paused && settingsModal.classList.contains('hidden') && !uiState.inventoryOpen && !uiState.freeplayInventoryOpen && !uiState.shipInventoryOpen && !uiState.containerOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !economyState.merchantOpen && !uiState.telephoneOpen) {
+        e.preventDefault();
+        toggleEmoteWheel();
+        return;
+      }
+
+      if (emoteWheelOpen && e.key === 'Escape') {
+        e.preventDefault();
+        closeEmoteWheel();
+        return;
+      }
+
       if (e.code === 'Tab' && !e.repeat && multiplayerMode && state.gameState === 'playing' && !state.paused && settingsModal.classList.contains('hidden') && !uiState.inventoryOpen && !uiState.freeplayInventoryOpen && !uiState.shipInventoryOpen && !uiState.containerOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !economyState.merchantOpen && !uiState.telephoneOpen) {
         e.preventDefault();
         toggleMultiplayerPlayerList();
+        return;
+      }
+
+      if (e.code === 'KeyT' && !e.repeat && multiplayerMode && state.gameState === 'playing' && !state.paused && settingsModal.classList.contains('hidden') && !uiState.inventoryOpen && !uiState.freeplayInventoryOpen && !uiState.shipInventoryOpen && !uiState.containerOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !economyState.merchantOpen && !uiState.telephoneOpen && !playerState.inRocket) {
+        e.preventDefault();
+        toggleMultiplayerChat();
         return;
       }
 
@@ -25433,6 +28236,14 @@
           if (eatRawBeobaka()) return;
         }
         if (uiState.equippedItemType === 'cooked_beobaka' && eatCookedBeobaka()) return;
+        if (uiState.equippedItemType === 'cordelia_flower' && eatCordeliaFlower()) return;
+        if (eatEdiblePlantHarvest(uiState.equippedItemType)) return;
+        if (uiState.equippedItemType === 'starter_seed_pack' && openStarterSeedPack()) return;
+        if (uiState.equippedItemType === 'watering_can' && fillWateringCanFromRiver()) return;
+        if (cropBySeedId[uiState.equippedItemType] && plantSeedInNearbyPlot()) return;
+        if (!uiState.equippedItemType && harvestNearbyFarmCrop()) return;
+        if (!uiState.equippedItemType && pickNearbyCordeliaFlower()) return;
+        if (!uiState.equippedItemType && triggerVeyraFruitHarvest()) return;
         if (uiState.equippedItemType === 'drill' && tryPlaceDrill()) return;
         if (uiState.equippedItemType === 'launch_pad' && tryPlaceLaunchPad()) return;
         if (uiState.equippedItemType === 'container' && tryPlaceContainer()) return;
@@ -25653,6 +28464,8 @@
         return chopNearbyTree();
       }
       if (isScythe(uiState.equippedItemType)) return cutNearbyGrass();
+      if (isHoe(uiState.equippedItemType)) return tillNearbySoil();
+      if (uiState.equippedItemType === 'watering_can') return waterNearbyCrop();
       return false;
     }
 
@@ -25810,7 +28623,7 @@
         );
         const tangentDistance = collisionTreeOffset.length();
         const treeAngle = collisionPlayerDir.angleTo(collisionTreeDir);
-        const trunkRadius = 0.30 * tree.size;
+        const trunkRadius = getTreeBounds(tree).trunkRadius;
 
         if (treeAngle < 0.08 && tangentDistance < PLAYER_COLLISION_RADIUS + trunkRadius) {
           return true;
@@ -25818,7 +28631,7 @@
       }
 
       // Stall collisions: both permanent stalls are solid.
-      for (const stall of [crystalStall, hatStall]) {
+      for (const stall of [crystalStall, hatStall, seedShopStall]) {
         if (!stall || !stall.visible || !stall.userData.collision) continue;
         collisionStallOffset.copy(localPosition).sub(stall.position);
         collisionStallInverse.copy(stall.quaternion).invert();
@@ -26485,6 +29298,7 @@
         updateSurvivalNeeds(simulationDelta);
         updateSurvivalAchievementTelemetry(delta, window.currentNightAmount || 0);
         updateTreeSaplings();
+        updateTreeFruitSway(simulationDelta);
         updateMoon(simulationDelta);
         updateCordelia(simulationDelta);
         updateCordeliaSilverfish(simulationDelta);
@@ -26579,6 +29393,8 @@
             updatePlayer(delta);
           }
           updatePlayerModelAnimation(delta);
+          updateFarmCrops(delta);
+          updateCordeliaFlowers();
           updateMultiplayer(delta);
           updateAccountStatisticsTelemetry(delta);
           updateAccountAchievementTelemetry(delta);
@@ -26620,7 +29436,7 @@
 
     // Give a brand-new world its starter axe before revealing the menu. This does not run
     // when loading a save, because loading restores the exact inventory from that save.
-    resetInventory();
+    resetInventory({ starterSeedPack: true });
 
     // the planet/terrain is fully built at this point — reveal the home screen
     updateHotbarUI();

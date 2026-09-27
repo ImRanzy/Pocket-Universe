@@ -64,6 +64,12 @@
   <div id="rocketFlightControls">WASD MOVE · SPACE UP · SHIFT DOWN · E EXIT</div>
 </div>
 
+<div id="emoteWheel" class="hidden" aria-label="Emote wheel">
+  <div class="emoteWheelTitle">EMOTES</div>
+  <div class="emoteWheelHint">Choose an emote · B to open · Esc to close</div>
+  <div id="emoteWheelButtons"></div>
+</div>
+
 <div id="hotbar">
   <div class="hotbarSlot selected" data-slot="0"><div class="hotbarNumber">1</div><div class="hotbarEmpty">EMPTY</div></div>
   <div class="hotbarSlot" data-slot="1"><div class="hotbarNumber">2</div><div class="hotbarEmpty">EMPTY</div></div>
@@ -178,6 +184,18 @@
               </div>
               <div id="telephoneConciergeShopList" class="telephoneShopList"></div>
               <div id="telephoneConciergeShopStatus" class="telephoneShopStatus" aria-live="polite"></div>
+            </div>
+            <div id="telephoneSeedShopPanel" class="hidden" aria-label="Pippa seed shop">
+              <button type="button" id="telephoneSeedShopGoodbye" class="telephoneCommerceGoodbye">GOODBYE</button>
+              <div class="telephoneShopHeader">
+                <div>
+                  <div class="telephoneShopEyebrow">PIPPA'S GALACTIC SEED CO. · SEED TERMINAL</div>
+                  <h2>FARMING SEED CATALOGUE</h2>
+                </div>
+                <div class="telephoneShopCredits" id="telephoneSeedShopCredits">¢0</div>
+              </div>
+              <div id="telephoneSeedShopList" class="telephoneShopList"></div>
+              <div id="telephoneSeedShopStatus" class="telephoneShopStatus" aria-live="polite"></div>
             </div>
             <div id="telephoneConciergeSellPanel" class="hidden" aria-label="Concierge sell terminal">
               <button type="button" id="telephoneConciergeSellGoodbye" class="telephoneCommerceGoodbye">GOODBYE</button>
@@ -445,6 +463,14 @@
 <div id="multiplayerHud" class="hidden" aria-live="polite" aria-atomic="true">
   <span class="multiplayerHudDot"></span>
   <span id="multiplayerHudText">MULTIPLAYER · CONNECTING…</span>
+</div>
+<div id="multiplayerChat" class="hidden" aria-live="polite" aria-label="Multiplayer world chat">
+  <div id="multiplayerChatLog" class="multiplayerChatLog"></div>
+  <div id="multiplayerChatComposer" class="multiplayerChatComposer hidden">
+    <input id="multiplayerChatInput" type="text" maxlength="180" autocomplete="off" spellcheck="false" placeholder="Type a message…" aria-label="Chat message">
+    <button id="multiplayerChatSend" type="button">SEND</button>
+  </div>
+  <div id="multiplayerChatHint" class="multiplayerChatHint">Press T to chat</div>
 </div>
 <div id="multiplayerDebugPanel" class="hidden" aria-live="polite" aria-label="Multiplayer network diagnostics">
   <div class="multiplayerDebugHeader">
@@ -803,10 +829,12 @@
         <div class="keyRow"><span class="keyLabel">Hotbar slot 4</span><button class="key rebindKey" data-bind="slot4">4</button></div>
         <div class="keyRow"><span class="keyLabel">Open map</span><button class="key rebindKey" data-bind="map">M</button></div>
         <div class="keyRow"><span class="keyLabel">Weather menu (Freeplay)</span><button class="key rebindKey" data-bind="weather">G</button></div>
+        <div class="keyRow"><span class="keyLabel">Emote wheel</span><button class="key rebindKey" data-bind="emote">B</button></div>
         <div class="keyRow"><span class="keyLabel">Chop / use tool</span><button class="key rebindKey" data-bind="useTool">LMB</button></div>
         <div class="keyRow"><span class="keyLabel">Look around</span><span class="keyNote">Mouse, or hold left-click and drag</span></div>
         <div class="keyRow"><span class="keyLabel">Spaceship controls</span><span class="keyNote">Uses the same Move / Up / Down bindings above</span></div>
         <div class="keyRow"><span class="keyLabel">Pause menu</span><button class="key rebindKey" data-bind="pause">Esc</button></div>
+        <div class="keyRow"><span class="keyLabel">Multiplayer chat</span><span class="keyNote">T while inside a multiplayer world</span></div>
         <div class="keyRow"><span class="keyLabel">Toggle screenshot UI</span><button class="key rebindKey" data-bind="screenshotUI">`</button></div>
         <div id="rebindStatus" class="keyNote rebindStatus">Click a control, then press a keyboard key to bind it. Left-click can also be bound back to LMB; click again to cancel.</div>
       </div>
@@ -898,6 +926,21 @@
       <div id="settingsUpdateLogContent">
         <section class="updateLogDay updateLogLatest">
           <div class="updateLogBadge">LATEST</div>
+          <h2>Version 2.2A</h2>
+          <p class="updateLogIntro">Day 18: crop care, edible harvests, and a full set of farming achievements.</p>
+          <ul class="updateLogBullets">
+            <li>Added the <strong>Watering Can</strong>, craftable with 3 Iron Plates and 1 Iron Ingot.</li>
+            <li>Added <strong>river water collection</strong> so the watering can can be refilled from nearby rivers.</li>
+            <li>Made <strong>harvestable fruits edible</strong>, so player-grown and gathered fruit can now be consumed.</li>
+            <li>Added <strong>15 farming achievements</strong> covering planting, watering, harvesting, crop variety, seed collecting, eating home-grown fruit, and long-term farming progress.</li>
+            <li>Added achievement progress for <strong>25, 50, 100, and 500 harvested crops</strong>, plus 25 planted crops and 25 watered crops.</li>
+            <li>Added achievements for <strong>growing and harvesting every available crop type</strong>, harvesting a self-planted crop, collecting seeds from the seed shop, and eating fruit grown by the player.</li>
+            <li>Added <strong>multiplayer chat</strong>, allowing players in the same multiplayer world to send and receive messages in real time.</li>
+            <li>Added <strong>emotes</strong>, including synchronized emote actions for multiplayer players.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
           <h2>Version 2.1B</h2>
           <p class="updateLogIntro">Day 16: multiplayer connection fixes and quality-of-life features for managing worlds, seeing players, and building your friends list.</p>
           <ul class="updateLogBullets">
@@ -1119,6 +1162,8 @@
 
 <script src="js/state/game-state.js"></script>
 <script src="js/tool-model-data.js"></script>
+<script src="js/hoe-model-data.js"></script>
+<script src="js/watering-can-model-data.js"></script>
 <script src="js/rocket-asset-data.js"></script>
 <script src="js/furnace-asset-data.js"></script>
 <script src="js/jerrycan-asset-data.js"></script>
@@ -1131,6 +1176,7 @@
 <script src="js/delivery-rocket-model-data.js"></script>
 <script src="js/player-model-data.js"></script>
 <script src="js/shirt-model-data.js"></script>
+<script src="js/tree-model-data.js"></script>
   <script src="js/state/player-state.js"></script>
 <script src="js/state/inventory-state.js"></script>
 <script src="js/state/ui-state.js"></script>
