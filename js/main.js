@@ -1719,6 +1719,12 @@
       while (mapPlanetRoot.children.length) mapPlanetRoot.remove(mapPlanetRoot.children[0]);
       const clone = ctx.object.clone(true);
       clone.position.set(0, 0, 0);
+      // The gameplay body may be rotated (for example, World Control can instantly
+      // rotate Ivis to day/night). The map is a local survey view, so the copied body
+      // must start with an identity transform; otherwise the red player beacon remains
+      // in local coordinates while the cloned terrain spins underneath it.
+      clone.quaternion.identity();
+      clone.scale.set(1, 1, 1);
       clone.traverse(obj => {
         if (obj.isMesh) {
           obj.castShadow = false;
@@ -3280,6 +3286,14 @@
         return true;
       }
       if (distance <= SYSP0_CORE_WARNING_DISTANCE) {
+        if (playerState.inRocket) {
+          syspoMethaneQuestSampleAccumulator += Math.max(0, Number(delta) || 0);
+          if (syspoMethaneQuestSampleAccumulator >= 1) {
+            const samples = Math.min(3, Math.floor(syspoMethaneQuestSampleAccumulator));
+            syspoMethaneQuestSampleAccumulator -= samples;
+            if (typeof recordConciergeQuestSyspoMethaneSample === 'function') recordConciergeQuestSyspoMethaneSample(samples);
+          }
+        }
         // Warning only: do NOT lock flight movement here. The player must be able to
         // continue through the final 50 units and actually reach the core so the
         // Syspo recovery sequence can trigger. This mirrors the Sun hazard behavior.
@@ -6294,6 +6308,7 @@
     const containers = worldState.containers;
     const sleepingBags = worldState.sleepingBags;
     const droppedItems = worldState.droppedItems;
+    const landmarkSpawns = worldState.landmarks;
     let activeContainer = null;
     let nextContainerId = 1;
     const placedDrills = [];
@@ -7625,6 +7640,931 @@
     scatterRocks(380);
     scatterIronOre(48);
 
+    // ---------- Day 19A: planetary landmarks ----------
+    // Exploration landmarks are deterministic so every multiplayer client
+    // builds the same Ivis locations. Their discovery state is stored separately in the
+    // player's journal, while the landmark positions themselves are stored with the world.
+    const IVIS_LANDMARK_DEFS = Object.freeze([
+      {
+        id: 'ivis_beobaka_sanctuary',
+        name: 'Beobaka Sanctuary',
+        rarity: 'Rare',
+        surfaceBodyId: 'ivis',
+        icon: '🐇',
+        description: 'A peaceful hidden clearing where a large group of Beobaka gather together.',
+        discoveryHint: 'A quiet clearing filled with Beobaka.',
+        seed: 19041,
+        discoveryRadius: 20
+      },
+      {
+        id: 'ivis_ancient_forest',
+        name: 'Ancient Forest',
+        rarity: 'Uncommon',
+        surfaceBodyId: 'ivis',
+        icon: '🌲',
+        description: 'A secluded grove of unusually tall, dark-toned trees that have grown for far longer than the surrounding forest.',
+        discoveryHint: 'A dense grove of enormous dark trees.',
+        seed: 19042,
+        discoveryRadius: 20
+      },
+      {
+        id: 'ivis_abandoned_explorer_camp',
+        name: 'Abandoned Explorer Camp',
+        rarity: 'Uncommon',
+        surfaceBodyId: 'ivis',
+        icon: '⛺',
+        description: 'An old explorer campsite with a tent, sleeping bag, supply containers, scattered resources, and a campfire.',
+        discoveryHint: 'An old campsite left behind by another explorer.',
+        seed: 19043,
+        discoveryRadius: 20
+      }
+    ]);
+
+    const CORDELIA_LANDMARK_DEFS = Object.freeze([
+      {
+        id: 'cordelia_crashed_probe',
+        name: 'Crashed Probe',
+        rarity: 'Rare',
+        surfaceBodyId: 'cordelia',
+        icon: '🛰️',
+        description: 'A small exploration probe that crash-landed on Cordelia long ago, with its broken antenna and scattered components half-buried in the sand.',
+        discoveryHint: 'A broken exploration probe rests in the desert.',
+        seed: 19051,
+        discoveryRadius: 20
+      },
+      {
+        id: 'cordelia_buried_ruins',
+        name: 'Buried Ruins',
+        rarity: 'Very Rare',
+        surfaceBodyId: 'cordelia',
+        icon: '🏛️',
+        description: 'The remains of an abandoned sandstone structure, almost completely swallowed by Cordelia\'s dunes.',
+        discoveryHint: 'Ancient sandstone walls rise from beneath the desert.',
+        seed: 19052,
+        discoveryRadius: 20
+      },
+      {
+        id: 'cordelia_desert_crystal_basin',
+        name: 'Desert Crystal Basin',
+        rarity: 'Uncommon',
+        surfaceBodyId: 'cordelia',
+        icon: '💎',
+        description: 'A natural basin where clusters of several different crystals grow together in one spectacular formation.',
+        discoveryHint: 'A colorful crystal basin glitters in the desert.',
+        seed: 19053,
+        discoveryRadius: 20
+      }
+    ]);
+
+    const AURORA_LANDMARK_DEFS = Object.freeze([
+      {
+        id: 'aurora_giant_glowfish_lake',
+        name: 'Giant Glowfish Lake',
+        rarity: 'Rare',
+        surfaceBodyId: 'aurora',
+        icon: '🐟',
+        description: 'A bright, clear lake where schools of bioluminescent glowfish gather in the shallow water.',
+        discoveryHint: 'A luminous lake filled with glowfish.',
+        seed: 19061,
+        discoveryRadius: 20
+      },
+      {
+        id: 'aurora_underwater_ruins',
+        name: 'Underwater Ruins',
+        rarity: 'Very Rare',
+        surfaceBodyId: 'aurora',
+        icon: '🏛️',
+        description: 'Ancient stone structures rest beneath one of Aurora\'s glowfish lakes, their worn arches and pillars visible through the water.',
+        discoveryHint: 'Ancient stone ruins can be seen below the lake.',
+        seed: 19062,
+        discoveryRadius: 20
+      },
+      {
+        id: 'aurora_abandoned_research_station',
+        name: 'Abandoned Research Station',
+        rarity: 'Very Rare',
+        surfaceBodyId: 'aurora',
+        icon: '🔬',
+        description: 'A small abandoned research outpost overlooking Aurora, with a weathered dome, broken antenna, supply crates, and forgotten equipment.',
+        discoveryHint: 'A long-abandoned research outpost sits among Aurora’s mountains.',
+        seed: 19063,
+        discoveryRadius: 20
+      }
+    ]);
+
+    // Retire the old Cordelia canyon landmark from pre-19A saves. The new landmark
+    // occupies the same rarity slot without leaving the obsolete landmark in the world.
+    for (let i = landmarkSpawns.length - 1; i >= 0; i--) {
+      if (landmarkSpawns[i]?.id === 'cordelia_massive_sandstone_canyon') landmarkSpawns.splice(i, 1);
+    }
+
+    const ALL_LANDMARK_DEFS = Object.freeze([...IVIS_LANDMARK_DEFS, ...CORDELIA_LANDMARK_DEFS, ...AURORA_LANDMARK_DEFS]);
+    const ivisLandmarkById = Object.fromEntries(IVIS_LANDMARK_DEFS.map(def => [def.id, def]));
+    const landmarkById = Object.fromEntries(ALL_LANDMARK_DEFS.map(def => [def.id, def]));
+    const journalDiscoveredLandmarks = new Set();
+    let landmarkDiscoveryPromptTimer = null;
+
+    function deterministicUnit(seed, salt = 0) {
+      const value = Math.sin(Number(seed || 0) * 12.9898 + Number(salt || 0) * 78.233) * 43758.5453123;
+      return value - Math.floor(value);
+    }
+
+    function deterministicLandmarkDirection(seed) {
+      // Search for a safe grassy location far enough from the normal spawn area and river.
+      const spawnDir = new THREE.Vector3(0, 1, 0);
+      for (let attempt = 0; attempt < 240; attempt++) {
+        const a = deterministicUnit(seed, attempt * 2 + 1) * Math.PI * 2;
+        const y = deterministicUnit(seed, attempt * 2 + 2) * 1.56 - 0.78;
+        const radial = Math.sqrt(Math.max(0.02, 1 - y * y));
+        const dir = new THREE.Vector3(Math.cos(a) * radial, y, Math.sin(a) * radial).normalize();
+        if (dir.angleTo(spawnDir) < 0.60) continue;
+        if (isWater(dir)) continue;
+        const h = heightAt(dir);
+        if (h >= ROCK_LEVEL - 0.65) continue;
+        return dir;
+      }
+      return new THREE.Vector3(0.55, 0.34, 0.76).normalize();
+    }
+
+    function landmarkSurfaceOffset(centerDir, x, z, scale = 1) {
+      const normal = centerDir.clone().normalize();
+      const ref = Math.abs(normal.y) > 0.92 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      const tangentA = new THREE.Vector3().crossVectors(ref, normal).normalize();
+      const tangentB = new THREE.Vector3().crossVectors(normal, tangentA).normalize();
+      const dir = normal.clone()
+        .addScaledVector(tangentA, (x * scale) / PLANET_RADIUS)
+        .addScaledVector(tangentB, (z * scale) / PLANET_RADIUS)
+        .normalize();
+      return dir;
+    }
+
+    function setLandmarkTransform(root, dir, extraHeight = 0, surfaceBodyId = 'ivis') {
+      const bodyId = surfaceBodyId || 'ivis';
+      if (bodyId === 'cordelia') {
+        const h = cordeliaHeightAt(dir);
+        root.position.copy(dir).multiplyScalar(CORDELIA_RADIUS + h + extraHeight);
+        root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+        return h;
+      }
+      if (bodyId === 'aurora') {
+        const h = auroraHeightAt(dir);
+        root.position.copy(dir).multiplyScalar(AURORA_RADIUS + h + extraHeight);
+        root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+        return h;
+      }
+      const h = heightAt(dir);
+      root.position.copy(dir).multiplyScalar(PLANET_RADIUS + h + extraHeight);
+      root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      return h;
+    }
+
+    function darkenAncientForestTree(root) {
+      root.traverse((node) => {
+        if (!node.isMesh || !node.material) return;
+        const apply = (mat) => {
+          if (!mat || !mat.clone) return mat;
+          const clone = mat.clone();
+          if (clone.color?.multiplyScalar) clone.color.multiplyScalar(node.userData?.treePart === 'trunk' ? 0.66 : 0.56);
+          if (clone.emissive?.multiplyScalar) clone.emissive.multiplyScalar(0.35);
+          return clone;
+        };
+        node.material = Array.isArray(node.material) ? node.material.map(apply) : apply(node.material);
+      });
+    }
+
+    function createAncientForestVisual(centerDir) {
+      const root = new THREE.Group();
+      root.name = 'AncientForestLandmark';
+      const rootQuat = new THREE.Quaternion();
+      rootQuat.setFromUnitVectors(new THREE.Vector3(0, 1, 0), centerDir.clone().normalize());
+      const inverseRootQuat = rootQuat.clone().invert();
+      const rootSurfacePosition = centerDir.clone().normalize().multiplyScalar(PLANET_RADIUS + heightAt(centerDir));
+      const worldUp = new THREE.Vector3(0, 1, 0);
+      const treeCount = 24;
+      for (let i = 0; i < treeCount; i++) {
+        const angle = (i / treeCount) * Math.PI * 2 + deterministicUnit(19042, i + 80) * 0.5;
+        const radial = 1.5 + deterministicUnit(19042, i + 120) * 9.5;
+        const localDir = landmarkSurfaceOffset(centerDir, Math.cos(angle) * radial, Math.sin(angle) * radial, 1.0);
+        const targetWorldPosition = localDir.multiplyScalar(PLANET_RADIUS + heightAt(localDir));
+        const tree = new THREE.Group();
+        const model = createProceduralTreeRoot(1.0 + deterministicUnit(19042, i + 160) * 0.28, TREE_VARIANT_EVERGREEN);
+        darkenAncientForestTree(model);
+        tree.add(model);
+        const scale = 2.0 + deterministicUnit(19042, i + 200) * 1.25;
+        tree.scale.setScalar(scale);
+
+        // The landmark root is already anchored to the planet surface. Convert the tree's
+        // desired world-space surface point into the root's local frame instead of applying
+        // another full PLANET_RADIUS offset (which previously made the forest float in space).
+        tree.position.copy(targetWorldPosition).sub(rootSurfacePosition).applyQuaternion(inverseRootQuat);
+
+        const desiredWorldQuaternion = new THREE.Quaternion().setFromUnitVectors(worldUp, localDir.clone().normalize());
+        tree.quaternion.copy(inverseRootQuat).multiply(desiredWorldQuaternion);
+        tree.rotateY(deterministicUnit(19042, i + 240) * Math.PI * 2);
+        // Ancient Forest trunks are solid; foliage/canopy is deliberately non-collidable.
+        tree.userData.playerCollision = { type: 'cylinder', radius: 0.34, minY: -0.05, maxY: 3.9 };
+        root.add(tree);
+      }
+      // Deliberately no giant ground marker here; the forest should blend naturally into Ivis.
+      return root;
+    }
+
+    function createSanctuaryBeobakaVisual(index, centerDir) {
+      // Reuse the existing Beobaka model for visual consistency, but mark sanctuary
+      // animals as non-harvestable display wildlife so the original 10 interactive bunnies
+      // remain the only harvestable Ivis population.
+      const data = createIvisBunny(1000 + index);
+      const bunny = data.root;
+      ivisBunnyGroup.remove(bunny);
+      bunny.userData.harvestable = false;
+      bunny.userData.sanctuaryBunny = true;
+      bunny.scale.multiplyScalar(0.82 + deterministicUnit(19041, index + 300) * 0.18);
+      const angle = deterministicUnit(19041, index + 320) * Math.PI * 2;
+      const radial = 2.5 + deterministicUnit(19041, index + 340) * 7.2;
+      const dir = landmarkSurfaceOffset(centerDir, Math.cos(angle) * radial, Math.sin(angle) * radial, 1.0);
+      bunny.position.copy(dir).multiplyScalar(PLANET_RADIUS + heightAt(dir) + 0.12);
+      bunny.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      bunny.rotateY(deterministicUnit(19041, index + 360) * Math.PI * 2);
+      bunny.userData.sanctuaryFacing = deterministicUnit(19041, index + 380);
+      return bunny;
+    }
+
+    function createExplorerTent() {
+      const root = new THREE.Group();
+      root.name = 'AbandonedExplorerTent';
+      const fabric = new THREE.MeshStandardMaterial({ color: 0x777b59, roughness: 0.96 });
+      const flap = new THREE.MeshStandardMaterial({ color: 0x5f6348, roughness: 0.98 });
+      const pole = new THREE.MeshStandardMaterial({ color: 0x6f553c, roughness: 1.0 });
+      const halfWidth = 2.2;
+      const roofLength = 3.8;
+      const roof = new THREE.Mesh(new THREE.BoxGeometry(0.10, 2.55, roofLength), pole);
+      roof.position.set(0, 1.28, 0);
+      root.add(roof);
+      for (const sign of [-1, 1]) {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(halfWidth * 1.42, 0.10, roofLength), fabric);
+        wall.position.set(sign * 0.78, 0.95, 0);
+        wall.rotation.z = sign * -0.86;
+        root.add(wall);
+      }
+      const entrance = new THREE.Mesh(new THREE.BoxGeometry(1.35, 1.45, 0.08), flap);
+      entrance.position.set(0, 0.74, roofLength * 0.42);
+      entrance.rotation.x = -0.08;
+      root.add(entrance);
+      return root;
+    }
+
+    function addStaticCampResourcePile(root, typeId, position) {
+      const materialByType = {
+        iron_ore: new THREE.MeshStandardMaterial({ color: 0x4a4d52, roughness: 1.0 }),
+        copper_ore: new THREE.MeshStandardMaterial({ color: 0xb56439, roughness: 1.0 }),
+        iron_ingot: new THREE.MeshStandardMaterial({ color: 0x7f858b, metalness: 0.7, roughness: 0.38 }),
+        planks: new THREE.MeshStandardMaterial({ color: 0xa66a3b, roughness: 1.0 })
+      };
+      const mat = materialByType[typeId] || materialByType.iron_ore;
+      const geo = typeId === 'planks' ? new THREE.BoxGeometry(0.75, 0.12, 0.20) : new THREE.DodecahedronGeometry(0.18, 0);
+      const pile = new THREE.Group();
+      for (let i = 0; i < (typeId === 'planks' ? 3 : 4); i++) {
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(
+          position.x + (i - 1.5) * 0.13,
+          position.y + (typeId === 'planks' ? i * 0.12 : 0.06 + (i % 2) * 0.12),
+          position.z + ((i % 2) ? 0.10 : -0.10)
+        );
+        mesh.rotation.y = 0.2 * i;
+        pile.add(mesh);
+      }
+      root.add(pile);
+      return pile;
+    }
+
+    function deterministicLandmarkDirectionForBody(seed, bodyId, minDistance = 0.42) {
+      const spawnDir = new THREE.Vector3(0, 1, 0);
+      const existing = landmarkSpawns
+        .filter(item => item?.surfaceBodyId === bodyId && item.direction)
+        .map(item => item.direction.clone().normalize());
+      const minAngle = Math.max(0.12, minDistance);
+      for (let attempt = 0; attempt < 300; attempt++) {
+        const a = deterministicUnit(seed, attempt * 2 + 1) * Math.PI * 2;
+        const y = deterministicUnit(seed, attempt * 2 + 2) * 1.46 - 0.73;
+        const radial = Math.sqrt(Math.max(0.02, 1 - y * y));
+        const dir = new THREE.Vector3(Math.cos(a) * radial, y, Math.sin(a) * radial).normalize();
+        if (bodyId === 'cordelia') {
+          if (dir.angleTo(spawnDir) < 0.38) continue;
+          if (cordeliaHeightAt(dir) > CORDELIA_DUNE_HEIGHT * 0.88) continue;
+        } else {
+          if (dir.angleTo(spawnDir) < 0.60) continue;
+          if (isWater(dir)) continue;
+          if (heightAt(dir) >= ROCK_LEVEL - 0.65) continue;
+        }
+        if (existing.some(other => dir.angleTo(other) < minAngle)) continue;
+        return dir;
+      }
+      return new THREE.Vector3(0.58, 0.28, 0.76).normalize();
+    }
+
+    function cordeliaLandmarkSurfaceOffset(centerDir, x, z, scale = 1) {
+      const normal = centerDir.clone().normalize();
+      const ref = Math.abs(normal.y) > 0.92 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      const tangentA = new THREE.Vector3().crossVectors(ref, normal).normalize();
+      const tangentB = new THREE.Vector3().crossVectors(normal, tangentA).normalize();
+      return normal.clone()
+        .addScaledVector(tangentA, (x * scale) / CORDELIA_RADIUS)
+        .addScaledVector(tangentB, (z * scale) / CORDELIA_RADIUS)
+        .normalize();
+    }
+
+    function createSandstoneBlock(material, width, height, depth, y = 0) {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+      mesh.position.y = y + height * 0.5;
+      return mesh;
+    }
+
+    function createCordeliaBuriedRuinsVisual(centerDir) {
+      const root = new THREE.Group();
+      root.name = 'BuriedRuinsLandmark';
+      const sandstone = new THREE.MeshStandardMaterial({ color: 0xb97b43, roughness: 0.98 });
+      const sandstoneLight = new THREE.MeshStandardMaterial({ color: 0xd6a15d, roughness: 0.95 });
+      const shadowMat = new THREE.MeshBasicMaterial({ color: 0x523722, transparent: true, opacity: 0.45, depthWrite: false });
+
+      // Most of the ruin is visually buried below the surface; only broken upper walls,
+      // columns, and a doorway remain exposed.
+      const buriedFloor = new THREE.Mesh(new THREE.BoxGeometry(9, 0.24, 7), shadowMat);
+      buriedFloor.position.y = 0.12;
+      root.add(buriedFloor);
+      const backWall = createSandstoneBlock(sandstone, 8.2, 3.6, 0.62, -0.8);
+      backWall.userData.playerCollision = { type: 'box', halfX: 4.1, halfY: 1.8, halfZ: 0.31, padding: 0.08 };
+      backWall.position.z = -2.55;
+      root.add(backWall);
+      const sideL = createSandstoneBlock(sandstoneLight, 0.62, 3.0, 5.6, -0.7);
+      sideL.userData.playerCollision = { type: 'box', halfX: 0.31, halfY: 1.5, halfZ: 2.8, padding: 0.08 };
+      sideL.position.x = -3.75;
+      root.add(sideL);
+      const sideR = createSandstoneBlock(sandstone, 0.62, 2.2, 4.8, -0.7);
+      sideR.userData.playerCollision = { type: 'box', halfX: 0.31, halfY: 1.1, halfZ: 2.4, padding: 0.08 };
+      sideR.position.x = 3.78;
+      root.add(sideR);
+
+      for (const x of [-2.65, 2.65]) {
+        const column = new THREE.Mesh(new THREE.BoxGeometry(0.7, 3.9, 0.7), sandstoneLight);
+        column.userData.playerCollision = { type: 'box', halfX: 0.35, halfY: 1.95, halfZ: 0.35, padding: 0.08 };
+        column.position.set(x, 1.15, 1.15);
+        column.rotation.z = (x < 0 ? -1 : 1) * 0.08;
+        root.add(column);
+        const cap = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.36, 1.0), sandstone);
+        cap.userData.playerCollision = { type: 'box', halfX: 0.53, halfY: 0.18, halfZ: 0.50, padding: 0.06 };
+        cap.position.set(x, 3.08, 1.12);
+        root.add(cap);
+      }
+
+      const lintel = new THREE.Mesh(new THREE.BoxGeometry(5.7, 0.58, 0.72), sandstone);
+      lintel.userData.playerCollision = { type: 'box', halfX: 2.85, halfY: 0.29, halfZ: 0.36, padding: 0.06 };
+      lintel.position.set(0, 3.25, 1.15);
+      lintel.rotation.z = -0.04;
+      root.add(lintel);
+
+      for (let i = 0; i < 7; i++) {
+        const block = new THREE.Mesh(new THREE.DodecahedronGeometry(0.42 + deterministicUnit(19052, i + 90) * 0.36, 0), sandstoneLight);
+        block.userData.playerCollision = { type: 'sphere', radius: 0.62 };
+        block.position.set(
+          (deterministicUnit(19052, i + 110) - 0.5) * 9.0,
+          0.26 + deterministicUnit(19052, i + 130) * 0.18,
+          2.2 + (deterministicUnit(19052, i + 150) - 0.5) * 3.5
+        );
+        block.rotation.set(deterministicUnit(19052, i + 170), deterministicUnit(19052, i + 190) * Math.PI, deterministicUnit(19052, i + 210));
+        root.add(block);
+      }
+      return root;
+    }
+
+    function createCordeliaCrystalBasinVisual(centerDir) {
+      const root = new THREE.Group();
+      root.name = 'DesertCrystalBasinLandmark';
+      const basinMat = new THREE.MeshStandardMaterial({ color: 0x7c5a38, roughness: 1.0 });
+      const rimMat = new THREE.MeshStandardMaterial({ color: 0xc48946, roughness: 0.98 });
+      const basin = new THREE.Mesh(new THREE.CylinderGeometry(9.3, 8.0, 0.34, 32), basinMat);
+      basin.position.y = 0.11;
+      root.add(basin);
+
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * Math.PI * 2 + deterministicUnit(19053, i + 20) * 0.28;
+        const radius = 7.1 + deterministicUnit(19053, i + 40) * 1.3;
+        const rim = new THREE.Mesh(new THREE.DodecahedronGeometry(0.48 + deterministicUnit(19053, i + 60) * 0.38, 0), rimMat);
+        rim.position.set(Math.cos(a) * radius, 0.36, Math.sin(a) * radius);
+        rim.scale.y = 0.72;
+        root.add(rim);
+      }
+
+      const types = ['topaz', 'diamond', 'amethyst', 'ruby', 'jasper', 'emerald', 'lapis', 'onyx'];
+      for (let i = 0; i < 12; i++) {
+        const angle = deterministicUnit(19053, i + 90) * Math.PI * 2;
+        const radial = 1.3 + deterministicUnit(19053, i + 110) * 5.4;
+        const typeId = types[i % types.length];
+        const cluster = createCrystalVisual(typeId, false, 1.05 + deterministicUnit(19053, i + 130) * 0.75);
+        cluster.userData.playerCollision = { type: 'sphere', radius: 0.72 };
+        cluster.position.set(Math.cos(angle) * radial, 0.10, Math.sin(angle) * radial);
+        cluster.rotation.y = deterministicUnit(19053, i + 150) * Math.PI * 2;
+        root.add(cluster);
+      }
+      return root;
+    }
+
+    function createIvisLandmarkVisual(def, centerDir) {
+      const root = new THREE.Group();
+      root.name = def.id;
+      if (def.id === 'ivis_beobaka_sanctuary') {
+        const meadow = new THREE.Mesh(
+          new THREE.CircleGeometry(9.5, 32),
+          new THREE.MeshStandardMaterial({ color: 0x355d38, roughness: 1.0 })
+        );
+        meadow.rotation.x = -Math.PI / 2;
+        meadow.position.y = 0.015;
+        root.add(meadow);
+        for (let i = 0; i < 9; i++) root.add(createSanctuaryBeobakaVisual(i, centerDir));
+        const sign = new THREE.Mesh(new THREE.BoxGeometry(2.7, 1.1, 0.16), new THREE.MeshStandardMaterial({ color: 0x70492d, roughness: 1.0 }));
+        sign.position.set(0, 0.72, -8.0);
+        root.add(sign);
+        const signText = makeLandmarkLabelSprite(def.name, def.rarity);
+        signText.position.set(0, 1.25, -7.88);
+        signText.scale.set(5.0, 1.25, 1);
+        root.add(signText);
+      } else if (def.id === 'ivis_ancient_forest') {
+        const forest = createAncientForestVisual(centerDir);
+        root.add(forest);
+      } else if (def.id === 'ivis_abandoned_explorer_camp') {
+        const tent = createExplorerTent();
+        tent.position.set(0, 0.02, 0.7);
+        tent.rotation.y = 0.35;
+        tent.userData.playerCollision = { type: 'box', halfX: 1.88, halfY: 1.30, halfZ: 1.92, center: { x: 0, y: 1.30, z: 0 }, padding: 0.18 };
+        root.add(tent);
+        const bag = createSleepingBagVisual(0.95);
+        bag.position.set(-1.65, 0.03, -0.4);
+        bag.rotation.y = -0.3;
+        root.add(bag);
+        const campfire = createCampfireVisual(0.78);
+        campfire.position.set(2.15, 0.03, -1.25);
+        root.add(campfire);
+        for (const [x,z] of [[1.05, 1.7], [2.35, 1.4], [0.8, -2.0]]) {
+          const crate = createContainerVisual(0.78);
+          crate.position.set(x, 0.03, z);
+          crate.rotation.y = deterministicUnit(def.seed, Math.round((x + 4) * 20 + (z + 4) * 40)) * Math.PI * 2;
+          crate.userData.playerCollision = { type: 'box', halfX: 0.42, halfY: 0.34, halfZ: 0.42, padding: 0.08 };
+          root.add(crate);
+        }
+        addStaticCampResourcePile(root, 'iron_ore', new THREE.Vector3(1.05, 0.25, 1.7));
+        addStaticCampResourcePile(root, 'copper_ore', new THREE.Vector3(2.35, 0.25, 1.4));
+        addStaticCampResourcePile(root, 'planks', new THREE.Vector3(0.80, 0.25, -1.98));
+      }
+      setLandmarkTransform(root, centerDir, 0.03);
+      return root;
+    }
+
+    function makeLandmarkLabelSprite(name, rarity) {
+      // Lightweight canvas sprite used only for the sanctuary's physical sign.
+      const c = document.createElement('canvas');
+      c.width = 420; c.height = 110;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = 'rgba(35,24,17,0.78)'; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.fillStyle = '#f5e7c6'; ctx.font = '700 31px Georgia'; ctx.textAlign = 'center'; ctx.fillText(name, c.width/2, 42);
+      ctx.fillStyle = '#d9c995'; ctx.font = '700 24px Segoe UI'; ctx.fillText(rarity.toUpperCase(), c.width/2, 78);
+      const texture = new THREE.CanvasTexture(c);
+      texture.needsUpdate = true;
+      const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+      const sprite = new THREE.Sprite(material);
+      return sprite;
+    }
+
+    function ensureIvisLandmarks() {
+      for (const def of IVIS_LANDMARK_DEFS) {
+        if (landmarkSpawns.some(existing => existing?.id === def.id)) continue;
+        const direction = deterministicLandmarkDirection(def.seed);
+        const visual = createIvisLandmarkVisual(def, direction);
+        planetSystem.add(visual);
+        landmarkSpawns.push({
+          id: def.id,
+          name: def.name,
+          rarity: def.rarity,
+          surfaceBodyId: 'ivis',
+          direction: direction.clone(),
+          root: visual,
+          discovered: false
+        });
+      }
+    }
+
+    function createCrashedProbeVisual() {
+      const root = new THREE.Group();
+      root.name = 'CrashedProbeLandmark';
+
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x6b7074, roughness: 0.72, metalness: 0.38 });
+      const panelMat = new THREE.MeshStandardMaterial({ color: 0x313b43, roughness: 0.46, metalness: 0.56 });
+      const trimMat = new THREE.MeshStandardMaterial({ color: 0xc98b45, roughness: 0.68, metalness: 0.18 });
+      const darkMat = new THREE.MeshStandardMaterial({ color: 0x24262a, roughness: 0.94, metalness: 0.04 });
+      const glassMat = new THREE.MeshStandardMaterial({ color: 0x9dd8ec, roughness: 0.22, metalness: 0.12, emissive: 0x1e4a5a, emissiveIntensity: 0.22 });
+
+      const wreck = new THREE.Group();
+      wreck.position.y = 0.52;
+      wreck.rotation.set(0.10, -0.52, 0.28);
+      // The wrecked probe is solid, but the flat scorch mark around it is not.
+      wreck.userData.playerCollision = { type: 'box', halfX: 2.05, halfY: 1.15, halfZ: 1.35, padding: 0.16 };
+      root.add(wreck);
+
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.68, 0.82, 2.65, 8), bodyMat);
+      body.rotation.z = Math.PI * 0.5;
+      body.position.x = 0.05;
+      wreck.add(body);
+
+      const nose = new THREE.Mesh(new THREE.ConeGeometry(0.69, 0.75, 8), trimMat);
+      nose.rotation.z = Math.PI * 0.5;
+      nose.position.x = 1.65;
+      wreck.add(nose);
+
+      const rear = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.46, 0.60, 8), darkMat);
+      rear.rotation.z = Math.PI * 0.5;
+      rear.position.x = -1.58;
+      wreck.add(rear);
+
+      const window = new THREE.Mesh(new THREE.SphereGeometry(0.38, 12, 8), glassMat);
+      window.scale.set(0.55, 1.0, 1.0);
+      window.position.set(0.78, 0.47, 0.18);
+      wreck.add(window);
+
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.10, 1.55, 2.10), panelMat);
+      panel.position.set(-0.45, 0.85, 0.0);
+      panel.rotation.z = 0.22;
+      wreck.add(panel);
+
+      const panelFrame = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.72, 2.30), trimMat);
+      panelFrame.position.copy(panel.position);
+      panelFrame.rotation.copy(panel.rotation);
+      panelFrame.scale.set(1, 1.02, 1.02);
+      wreck.add(panelFrame);
+
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.10, 1.55, 7), darkMat);
+      mast.position.set(-0.95, 0.72, 0.18);
+      mast.rotation.z = -0.55;
+      wreck.add(mast);
+      const antenna = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), trimMat);
+      antenna.position.set(-1.48, 1.30, 0.46);
+      wreck.add(antenna);
+
+      for (let i = 0; i < 5; i++) {
+        const shard = new THREE.Mesh(new THREE.DodecahedronGeometry(0.12 + i * 0.025, 0), i % 2 ? trimMat : darkMat);
+        shard.position.set(-1.7 + i * 0.63, 0.10 + (i % 2) * 0.08, (i - 2) * 0.34);
+        shard.rotation.set(i * 0.4, i * 0.6, i * 0.25);
+        root.add(shard);
+      }
+
+      const scorch = new THREE.Mesh(
+        new THREE.CircleGeometry(2.7, 28),
+        new THREE.MeshBasicMaterial({ color: 0x3f2f24, transparent: true, opacity: 0.38, depthWrite: false, side: THREE.DoubleSide })
+      );
+      scorch.rotation.x = -Math.PI / 2;
+      scorch.scale.set(1.3, 0.72, 1);
+      scorch.position.y = 0.028;
+      root.add(scorch);
+
+      return root;
+    }
+
+    function createCordeliaLandmarkVisual(def, centerDir) {
+      const root = new THREE.Group();
+      root.name = def.id;
+      if (def.id === 'cordelia_crashed_probe') {
+        root.add(createCrashedProbeVisual());
+      } else if (def.id === 'cordelia_buried_ruins') {
+        root.add(createCordeliaBuriedRuinsVisual(centerDir));
+      } else if (def.id === 'cordelia_desert_crystal_basin') {
+        root.add(createCordeliaCrystalBasinVisual(centerDir));
+      }
+      setLandmarkTransform(root, centerDir, 0.03, 'cordelia');
+      cordeliaMesh.add(root);
+      return root;
+    }
+
+    function ensureCordeliaLandmarks() {
+      for (const def of CORDELIA_LANDMARK_DEFS) {
+        if (landmarkSpawns.some(existing => existing?.id === def.id)) continue;
+        const direction = deterministicLandmarkDirectionForBody(def.seed, 'cordelia', 0.52);
+        const visual = createCordeliaLandmarkVisual(def, direction);
+        landmarkSpawns.push({
+          id: def.id,
+          name: def.name,
+          rarity: def.rarity,
+          surfaceBodyId: 'cordelia',
+          direction: direction.clone(),
+          root: visual,
+          discovered: false
+        });
+      }
+    }
+
+    function auroraLandmarkSurfaceOffset(centerDir, x, z, scale = 1) {
+      const normal = centerDir.clone().normalize();
+      const ref = Math.abs(normal.y) > 0.92 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      const tangentA = new THREE.Vector3().crossVectors(ref, normal).normalize();
+      const tangentB = new THREE.Vector3().crossVectors(normal, tangentA).normalize();
+      return normal.clone()
+        .addScaledVector(tangentA, (x * scale) / AURORA_RADIUS)
+        .addScaledVector(tangentB, (z * scale) / AURORA_RADIUS)
+        .normalize();
+    }
+
+    function getAuroraLandmarkDirection(def) {
+      if (def.id === 'aurora_giant_glowfish_lake') return auroraLakeDirs[0].clone().normalize();
+      if (def.id === 'aurora_underwater_ruins') return auroraLakeDirs[1].clone().normalize();
+      // Place the abandoned research station on the flank of Aurora's second mountain,
+      // away from the lake system and without modifying the underlying terrain.
+      return auroraResearchStationDirection.clone().normalize();
+    }
+
+    function createAuroraLandmarkWater(centerDir, radius, opacity = 0.84) {
+      const group = new THREE.Group();
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x5bcfff,
+        roughness: 0.12,
+        metalness: 0.01,
+        transparent: true,
+        opacity,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        emissive: 0x0a4052,
+        emissiveIntensity: 0.22
+      });
+      const disk = new THREE.Mesh(new THREE.CircleGeometry(radius, 40), mat);
+      // The landmark root is already anchored to Aurora's surface. Keep the water surface
+      // in the root's local tangent plane instead of applying another full planet-radius
+      // translation, which would make the landmark float far above Aurora.
+      disk.rotation.x = -Math.PI / 2;
+      disk.position.y = 0.02;
+      group.add(disk);
+      return group;
+    }
+
+    function auroraLandmarkLocalPoint(centerDir, x, z, y = 0) {
+      const normal = centerDir.clone().normalize();
+      const ref = Math.abs(normal.y) > 0.92 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      const tangentA = new THREE.Vector3().crossVectors(ref, normal).normalize();
+      const tangentB = new THREE.Vector3().crossVectors(normal, tangentA).normalize();
+      return new THREE.Vector3()
+        .addScaledVector(tangentA, x)
+        .addScaledVector(tangentB, z)
+        .addScaledVector(normal, y);
+    }
+
+    function createGlowfishLakeLandmarkVisual(centerDir) {
+      const root = new THREE.Group();
+      root.name = 'GiantGlowfishLakeLandmark';
+
+      const rimMat = new THREE.MeshStandardMaterial({ color: 0x86d48e, roughness: 0.82, metalness: 0.0 });
+      const rim = new THREE.Mesh(new THREE.RingGeometry(9.3, 9.65, 40), rimMat);
+      rim.rotation.x = -Math.PI / 2;
+      rim.position.y = 0.04;
+      root.add(rim);
+      for (let i = 0; i < 14; i++) {
+        const a = (i / 14) * Math.PI * 2 + deterministicUnit(19061, i + 20) * 0.16;
+        const r = 9.5 + deterministicUnit(19061, i + 40) * 0.4;
+        const reed = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.42 + deterministicUnit(19061, i + 60) * 0.24, 5), rimMat);
+        const x = Math.cos(a) * r;
+        const z = Math.sin(a) * r;
+        const dir = auroraLandmarkSurfaceOffset(centerDir, x, z);
+        reed.position.copy(auroraLandmarkLocalPoint(centerDir, x, z, auroraHeightAt(dir) - auroraHeightAt(centerDir) + 0.20));
+        const localSurfaceNormal = new THREE.Vector3(x / AURORA_RADIUS, 1, z / AURORA_RADIUS).normalize();
+        reed.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), localSurfaceNormal);
+        root.add(reed);
+      }
+      // A handful of extra light-orb fish silhouettes make this landmark immediately read as
+      // a glowfish gathering point even before the animated wildlife schools are nearby.
+      for (let i = 0; i < 7; i++) {
+        const orb = new THREE.Mesh(
+          new THREE.SphereGeometry(0.13 + deterministicUnit(19061, i + 120) * 0.08, 8, 6),
+          new THREE.MeshBasicMaterial({ color: 0xbaf4ff, transparent: true, opacity: 0.78, depthWrite: false })
+        );
+        const a = deterministicUnit(19061, i + 140) * Math.PI * 2;
+        const r = 2.0 + deterministicUnit(19061, i + 160) * 6.2;
+        const x = Math.cos(a) * r;
+        const z = Math.sin(a) * r;
+        const fishDir = auroraLandmarkSurfaceOffset(centerDir, x, z);
+        orb.position.copy(auroraLandmarkLocalPoint(centerDir, x, z, auroraHeightAt(fishDir) - auroraHeightAt(centerDir) + 0.36));
+        const localSurfaceNormal = new THREE.Vector3(x / AURORA_RADIUS, 1, z / AURORA_RADIUS).normalize();
+        orb.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), localSurfaceNormal);
+        root.add(orb);
+      }
+      return root;
+    }
+
+    function createUnderwaterRuinsVisual(centerDir) {
+      const root = new THREE.Group();
+      root.name = 'UnderwaterRuinsLandmark';
+      const stone = new THREE.MeshStandardMaterial({ color: 0x66716f, roughness: 0.95, metalness: 0.0 });
+      const moss = new THREE.MeshStandardMaterial({ color: 0x4f9b79, roughness: 0.92, metalness: 0.0 });
+
+      const ruin = new THREE.Group();
+      ruin.position.y = -1.1;
+      ruin.scale.set(1.0, 0.92, 1.0);
+      const left = new THREE.Mesh(new THREE.BoxGeometry(1.05, 3.8, 1.0), stone);
+      left.userData.playerCollision = { type: 'box', halfX: 0.53, halfY: 1.9, halfZ: 0.50, padding: 0.08 };
+      left.position.set(-3.0, 0.1, 0);
+      left.rotation.z = -0.10;
+      ruin.add(left);
+      const right = new THREE.Mesh(new THREE.BoxGeometry(0.95, 3.2, 1.0), stone);
+      right.userData.playerCollision = { type: 'box', halfX: 0.48, halfY: 1.6, halfZ: 0.50, padding: 0.08 };
+      right.position.set(3.0, 0.0, 0.25);
+      right.rotation.z = 0.14;
+      ruin.add(right);
+      const archTop = new THREE.Mesh(new THREE.BoxGeometry(6.6, 0.85, 1.15), stone);
+      archTop.userData.playerCollision = { type: 'box', halfX: 3.3, halfY: 0.43, halfZ: 0.58, padding: 0.08 };
+      archTop.position.set(0, 1.75, 0.05);
+      archTop.rotation.z = -0.04;
+      ruin.add(archTop);
+      for (const x of [-1.8, 0, 1.8]) {
+        const block = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.65, 1.15), stone);
+        block.userData.playerCollision = { type: 'box', halfX: 0.68, halfY: 0.33, halfZ: 0.58, padding: 0.06 };
+        block.position.set(x, -0.28 + Math.abs(x) * 0.04, 0.0);
+        block.rotation.y = (x / 2) * 0.18;
+        ruin.add(block);
+      }
+      for (let i = 0; i < 8; i++) {
+        const chunk = new THREE.Mesh(new THREE.DodecahedronGeometry(0.35 + deterministicUnit(19062, i + 80) * 0.35, 0), i % 2 ? moss : stone);
+        chunk.userData.playerCollision = { type: 'sphere', radius: 0.56 };
+        chunk.position.set(
+          (deterministicUnit(19062, i + 100) - 0.5) * 7.8,
+          -0.82 + deterministicUnit(19062, i + 120) * 0.45,
+          (deterministicUnit(19062, i + 140) - 0.5) * 4.8
+        );
+        chunk.rotation.set(deterministicUnit(19062, i + 160), deterministicUnit(19062, i + 180), deterministicUnit(19062, i + 200));
+        ruin.add(chunk);
+      }
+      root.add(ruin);
+      return root;
+    }
+
+    function createAbandonedResearchStationVisual(centerDir) {
+      const root = new THREE.Group();
+      root.name = 'AbandonedResearchStationLandmark';
+
+      const foundationMat = new THREE.MeshStandardMaterial({ color: 0x59636a, roughness: 0.96, metalness: 0.15 });
+      const wallMat = new THREE.MeshStandardMaterial({ color: 0x7c8588, roughness: 0.92, metalness: 0.12 });
+      const darkMat = new THREE.MeshStandardMaterial({ color: 0x27343b, roughness: 0.88, metalness: 0.28 });
+      const glassMat = new THREE.MeshStandardMaterial({ color: 0x75cbe2, roughness: 0.2, metalness: 0.05, emissive: 0x164e61, emissiveIntensity: 0.22, transparent: true, opacity: 0.88 });
+      const hazardMat = new THREE.MeshStandardMaterial({ color: 0xc79b5d, roughness: 0.9, metalness: 0.05 });
+
+      const pad = new THREE.Mesh(new THREE.CylinderGeometry(3.8, 4.1, 0.35, 12), foundationMat);
+      pad.userData.playerCollision = { type: 'cylinder', radius: 3.95, minY: 0.0, maxY: 0.6, padding: 0.10 };
+      pad.position.y = 0.18;
+      root.add(pad);
+
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(3.0, 3.25, 2.4, 12), wallMat);
+      body.userData.playerCollision = { type: 'cylinder', radius: 3.18, minY: -1.2, maxY: 1.2, padding: 0.10 };
+      body.position.y = 1.55;
+      root.add(body);
+
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(3.05, 24, 12, 0, Math.PI * 2, 0, Math.PI * 0.52), wallMat);
+      dome.userData.playerCollision = { type: 'sphere', radius: 3.05 };
+      dome.position.y = 2.75;
+      dome.scale.set(1.0, 0.78, 1.0);
+      root.add(dome);
+
+      const frontWindow = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.9, 0.12), glassMat);
+      frontWindow.position.set(0, 2.5, 2.95);
+      frontWindow.rotation.x = -0.06;
+      root.add(frontWindow);
+
+      for (const x of [-2.25, 2.25]) {
+        const sideWindow = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.8, 1.55), glassMat);
+        sideWindow.position.set(x, 2.45, 0.1);
+        root.add(sideWindow);
+      }
+
+      const door = new THREE.Mesh(new THREE.BoxGeometry(1.15, 1.8, 0.16), darkMat);
+      door.position.set(0, 0.98, 3.13);
+      root.add(door);
+
+      // Broken antenna tower.
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.17, 3.8, 8), darkMat);
+      mast.position.set(-1.65, 5.0, -0.7);
+      mast.rotation.z = -0.22;
+      root.add(mast);
+      const dish = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.18, 0.22, 10), wallMat);
+      dish.position.set(-1.95, 6.48, -0.72);
+      dish.rotation.z = -0.75;
+      root.add(dish);
+      const brokenTip = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.0, 6), darkMat);
+      brokenTip.position.set(-1.2, 6.65, -0.67);
+      brokenTip.rotation.z = 0.42;
+      root.add(brokenTip);
+
+      // Old solar panels, one tilted and one damaged.
+      for (let i = 0; i < 2; i++) {
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.08, 1.1), darkMat);
+        panel.position.set(i ? 2.15 : -2.15, 3.9, -0.2);
+        panel.rotation.x = i ? -0.16 : 0.14;
+        panel.rotation.z = i ? -0.08 : 0.11;
+        root.add(panel);
+      }
+
+      // Forgotten containers and field equipment.
+      for (let i = 0; i < 5; i++) {
+        const crate = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.66, 0.78), i % 2 ? hazardMat : foundationMat);
+        crate.position.set(-3.0 + i * 0.52, 0.48 + (i % 2) * 0.34, 1.8 + (i % 3) * 0.32);
+        crate.rotation.y = deterministicUnit(19063, i + 280) * 0.5;
+        root.add(crate);
+      }
+
+      const console = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.65, 0.82), darkMat);
+      console.position.set(2.1, 0.72, 2.0);
+      console.rotation.y = 0.35;
+      root.add(console);
+      const consoleScreen = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.28, 0.05), glassMat);
+      consoleScreen.position.set(2.1, 0.93, 2.43);
+      consoleScreen.rotation.y = 0.35;
+      root.add(consoleScreen);
+
+      return root;
+    }
+
+    function ensureAuroraLandmarks() {
+      for (const def of AURORA_LANDMARK_DEFS) {
+        if (landmarkSpawns.some(existing => existing?.id === def.id)) continue;
+        const direction = getAuroraLandmarkDirection(def);
+        const root = new THREE.Group();
+        root.name = def.id;
+        if (def.id === 'aurora_giant_glowfish_lake') root.add(createGlowfishLakeLandmarkVisual(direction));
+        else if (def.id === 'aurora_underwater_ruins') root.add(createUnderwaterRuinsVisual(direction));
+        else if (def.id === 'aurora_abandoned_research_station') root.add(createAbandonedResearchStationVisual(direction));
+        setLandmarkTransform(root, direction, 0.02, 'aurora');
+        auroraMesh.add(root);
+        landmarkSpawns.push({
+          id: def.id,
+          name: def.name,
+          rarity: def.rarity,
+          surfaceBodyId: 'aurora',
+          direction: direction.clone(),
+          root,
+          discovered: false
+        });
+      }
+    }
+
+    const landmarkDiscoveryToast = document.getElementById('landmarkDiscoveryToast');
+    const landmarkDiscoveryToastName = document.getElementById('landmarkDiscoveryToastName');
+    let landmarkDiscoveryToastQueue = [];
+    let landmarkDiscoveryToastBusy = false;
+
+    function showLandmarkDiscovery(landmark) {
+      if (!landmarkDiscoveryToast || !landmarkDiscoveryToastName) return;
+      landmarkDiscoveryToastQueue.push({ name: landmark.name, icon: landmark.icon || '📍' });
+      if (!landmarkDiscoveryToastBusy) processLandmarkDiscoveryToastQueue();
+    }
+
+    async function processLandmarkDiscoveryToastQueue() {
+      if (landmarkDiscoveryToastBusy || !landmarkDiscoveryToast || !landmarkDiscoveryToastName) return;
+      const next = landmarkDiscoveryToastQueue.shift();
+      if (!next) return;
+      landmarkDiscoveryToastBusy = true;
+      const icon = document.getElementById('landmarkDiscoveryToastIcon');
+      landmarkDiscoveryToast.classList.remove('hide', 'show');
+      void landmarkDiscoveryToast.offsetWidth;
+      landmarkDiscoveryToastName.textContent = next.name;
+      if (icon) icon.textContent = next.icon;
+      landmarkDiscoveryToast.classList.add('show');
+      await new Promise(resolve => setTimeout(resolve, 2200));
+      landmarkDiscoveryToast.classList.remove('show');
+      void landmarkDiscoveryToast.offsetWidth;
+      landmarkDiscoveryToast.classList.add('hide');
+      await new Promise(resolve => setTimeout(resolve, 450));
+      landmarkDiscoveryToast.classList.remove('hide');
+      landmarkDiscoveryToastBusy = false;
+      if (landmarkDiscoveryToastQueue.length) processLandmarkDiscoveryToastQueue();
+    }
+
+    function discoverIvisLandmark(landmark) {
+      if (!landmark || journalDiscoveredLandmarks.has(landmark.id)) return false;
+      journalDiscoveredLandmarks.add(landmark.id);
+      landmark.discovered = true;
+      showLandmarkDiscovery(landmarkById[landmark.id] || landmark);
+      if (typeof recordConciergeQuestLandmarkDiscovery === 'function') recordConciergeQuestLandmarkDiscovery(landmark.id);
+      persistLocalBackup();
+      return true;
+    }
+
+    function updatePlanetaryLandmarkDiscoveries() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket) return;
+      if (!Array.isArray(landmarkSpawns) || !landmarkSpawns.length) return;
+      const activeBodyId = String(playerState.currentPlanetId || getPlanetMapBodyId() || 'ivis').toLowerCase();
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      for (const landmark of landmarkSpawns) {
+        if (!landmark || journalDiscoveredLandmarks.has(landmark.id) || !landmark.root?.visible) continue;
+        const def = landmarkById[landmark.id];
+        const bodyId = landmark.surfaceBodyId || def?.surfaceBodyId || 'ivis';
+        if (bodyId !== activeBodyId) continue;
+        const landmarkWorld = landmark.root.getWorldPosition(new THREE.Vector3());
+        const distance = playerWorld.distanceTo(landmarkWorld);
+        if (distance <= (def?.discoveryRadius || 20)) discoverIvisLandmark(landmark);
+      }
+    }
+
+    ensureIvisLandmarks();
+
     // ---------- meteor crash site ----------
     // One random impact site is generated for each new game. It is a large dark-grey
     // space rock surrounded by ten iron-rich and ten copper-rich ore chunks. The
@@ -7982,6 +8922,13 @@
       helna: { name: 'Helna', role: 'The hat lady at the orange-striped customization stall. She offers character colors and hats for Gems.', connections: 'Runs her customization shop and can be reached from the telephone booth.' },
       pippa: { name: 'Pippa', role: "A cheerful seed merchant who runs Pippa's Galactic Seed Co. through the telephone network.", connections: 'Sells farming seeds through the telephone network.' },
     });
+    const JOURNAL_LANDMARK_INFO = Object.freeze(Object.fromEntries(ALL_LANDMARK_DEFS.map(def => [def.id, {
+      name: def.name,
+      rarity: def.rarity,
+      description: def.description,
+      how: def.discoveryHint,
+      icon: def.icon
+    }])));
     const JOURNAL_SPECIAL_ITEM_INFO = Object.freeze({
       blueprint: {
         name: 'Blueprint',
@@ -7992,6 +8939,7 @@
     });
     let journalDiscoveredItems = new Set(['journal', 'axe', 'blueprint']);
     let journalVisitedBodies = new Set(['ivis']);
+    // journalDiscoveredLandmarks is initialized above beside the Ivis landmark system.
     let journalMetPeople = new Set();
 
     function journalSafeIds(value, allowed) {
@@ -8064,6 +9012,18 @@
       const desc = document.createElement('p'); desc.textContent = info.description;
       body.append(title, desc); card.append(icon, body); return card;
     }
+    function journalLandmarkCard(landmarkId) {
+      const info = JOURNAL_LANDMARK_INFO[landmarkId];
+      if (!info) return null;
+      const card = document.createElement('article'); card.className = 'journalEntry';
+      const icon = document.createElement('div'); icon.className = 'journalBodyIcon'; icon.textContent = info.icon;
+      const body = document.createElement('div'); body.className = 'journalEntryBody';
+      const title = document.createElement('div'); title.className = 'journalEntryTitle'; title.textContent = info.name;
+      const rarity = document.createElement('p'); rarity.innerHTML = '<strong>RARITY:</strong> ' + info.rarity;
+      const desc = document.createElement('p'); desc.textContent = info.description;
+      const how = document.createElement('p'); how.innerHTML = '<strong>DISCOVERY:</strong> ' + info.how;
+      body.append(title, rarity, desc, how); card.append(icon, body); return card;
+    }
     function journalPersonCard(personId) {
       const info = JOURNAL_PERSON_INFO[personId];
       if (!info) return null;
@@ -8094,6 +9054,12 @@
         const ids = ['ivis','moon','cordelia','syspo','aurora','mileria'].filter(id => journalVisitedBodies.has(id));
         if (!ids.length) { empty.textContent = 'No celestial bodies discovered yet.'; journalList.appendChild(empty); }
         else ids.forEach(id => { const card = journalBodyCard(id); if (card) journalList.appendChild(card); });
+      } else if (journalSection === 'landmarks') {
+        heading.textContent = 'LANDMARK DISCOVERIES';
+        journalList.appendChild(heading);
+        const ids = ALL_LANDMARK_DEFS.map(def => def.id).filter(id => journalDiscoveredLandmarks.has(id));
+        if (!ids.length) { empty.textContent = 'No landmarks discovered yet.'; journalList.appendChild(empty); }
+        else ids.forEach(id => { const card = journalLandmarkCard(id); if (card) journalList.appendChild(card); });
       } else {
         heading.textContent = 'PEOPLE';
         journalList.appendChild(heading);
@@ -8265,6 +9231,7 @@
     // Build Cordelia's surface detail only after the crystal visual factory exists.
     const cordelia = createCordelia();
     scatterCordeliaCacti();
+    ensureCordeliaLandmarks();
 
 
     // ---------- Day 13 Phase 1: Cordelia silverfish ----------
@@ -9262,6 +10229,10 @@
       new THREE.Vector3(0.58, 0.58, 0.56).normalize(),
       new THREE.Vector3(-0.70, 0.40, -0.59).normalize()
     ];
+    // Fixed mountain-flank direction used by the Abandoned Research Station landmark.
+    const auroraResearchStationDirection = auroraMountainDirs[1].clone()
+      .add(new THREE.Vector3(0.08, -0.04, 0.06))
+      .normalize();
 
     function omegaSmoothBump(t) {
       return t >= 1 ? 0 : Math.pow(Math.max(0, 1 - t * t), 3);
@@ -9917,6 +10888,8 @@
       }
     }
 
+    ensureAuroraLandmarks();
+
     function createTitaniumDeposit(scale = 1) {
       const group = new THREE.Group();
       const rockMat = new THREE.MeshStandardMaterial({ color: 0x686d72, roughness: 0.96, metalness: 0.08, flatShading: true });
@@ -10227,6 +11200,696 @@
     const telephoneSeedShopGoodbye = document.getElementById('telephoneSeedShopGoodbye');
     let telephoneConciergeSellTypeId = null;
 
+    // ---------- Day 19B: Concierge quest board ----------
+    // Quest rotation is time-based and deterministic per multiplayer world, so everyone in the
+    // same world sees the same three requests while each player's accepted quests remain local.
+    const CONCIERGE_QUEST_ROTATION_MS = 30 * 60 * 1000;
+    const CONCIERGE_QUEST_OFFER_COUNT = 3;
+    const CONCIERGE_QUEST_MAX_ACTIVE = 3;
+    const CONCIERGE_QUEST_TEMPLATES = Object.freeze([
+      { id:'sanctuary_survey', title:'Sanctuary Survey', destination:'Ivis · Beobaka Sanctuary', description:'Locate the rare Beobaka gathering and report back to the Concierge.', objective:'Discover the Beobaka Sanctuary.', reward:150, icon:'🐇' },
+      { id:'ancient_forest_survey', title:'Ancient Forest Survey', destination:'Ivis · Ancient Forest', description:'A forest of unusually old trees has been reported deep in the Ivis wilderness.', objective:'Discover the Ancient Forest.', reward:125, icon:'🌲' },
+      { id:'explorer_camp_search', title:'Lost Explorer Camp', destination:'Ivis · Abandoned Explorer Camp', description:'Search an abandoned field camp and confirm that its location has been found.', objective:'Discover the Abandoned Explorer Camp.', reward:100, icon:'⛺' },
+      { id:'probe_recovery', title:'Probe Recovery', destination:'Cordelia · Crashed Probe', description:'A survey probe went missing somewhere on Cordelia. Its last known signal was weak but local.', objective:'Discover the Crashed Probe.', reward:200, icon:'🛰️' },
+      { id:'crystal_basin_survey', title:'Crystal Basin Survey', destination:'Cordelia · Desert Crystal Basin', description:'Survey a dense crystal formation before the next remote scan window closes.', objective:'Discover the Desert Crystal Basin.', reward:175, icon:'💎' },
+      { id:'buried_history', title:'Buried History', destination:'Cordelia · Buried Ruins', description:'Archaeological telemetry suggests sandstone ruins are buried somewhere beneath Cordelia.', objective:'Discover the Buried Ruins.', reward:300, icon:'🏛️' },
+      { id:'glowfish_census', title:'Glowfish Census', destination:'Aurora · Giant Glowfish Lake', description:'Confirm the location of one of Aurora’s unusual glowfish-rich lakes for a remote wildlife survey.', objective:'Discover the Giant Glowfish Lake.', reward:220, icon:'🐟' },
+      { id:'underwater_ruins', title:'Submerged Mystery', destination:'Aurora · Underwater Ruins', description:'An old sonar sweep detected stonework beneath one of Aurora’s glowfish lakes.', objective:'Discover the Underwater Ruins.', reward:350, icon:'🏛️' },
+      { id:'research_station_check', title:'Station Check-In', destination:'Aurora · Abandoned Research Station', description:'Verify whether an abandoned research outpost can still be located from the surface.', objective:'Discover the Abandoned Research Station.', reward:275, icon:'🔬' },
+      { id:'iron_shipment', title:'Iron Shipment', destination:'Remote Supply Request', description:'A frontier supplier needs raw iron for a routine restocking run.', objective:'Collect 20 Iron.', reward:90, icon:'⛏️' },
+      { id:'iron_plate_order', title:'Iron Plate Order', destination:'Remote Fabrication Request', description:'A fabrication workshop needs finished iron plates for structural repairs.', objective:'Craft 10 Iron Plates.', reward:140, icon:'🔩' },
+      { id:'copper_collection', title:'Copper Collection', destination:'Remote Supply Request', description:'Collect copper for a communications relay scheduled for maintenance.', objective:'Collect 15 Copper.', reward:110, icon:'🟠' },
+      { id:'rare_mineral_request', title:'Rare Mineral Request', destination:'Remote Research Request', description:'A research contact needs a small sample of a less common mineral.', objective:'Collect 5 Rare Minerals.', reward:250, icon:'💠' },
+      { id:'rainbow_opal_request', title:'Rainbow Opal Request', destination:'Remote Research Request', description:'A materials lab is looking for rainbow opals for high-energy optics research.', objective:'Collect 3 Rainbow Opals.', reward:320, icon:'🌈' },
+      { id:'syspo_methane_survey', title:'Syspo Methane Survey', destination:'Syspo', description:'A fuel laboratory needs methane samples from Syspo for an interstellar propulsion study.', objective:'Collect 5 Methane from Syspo.', reward:280, icon:'🧪' },
+      { id:'fresh_harvest', title:'Fresh Harvest', destination:'Agricultural Supply Request', description:'A remote kitchen has requested a fresh shipment straight from a working farm.', objective:'Harvest 15 crops.', reward:120, icon:'🌱' },
+      { id:'fruit_delivery', title:'Fruit Delivery', destination:'Agricultural Supply Request', description:'Deliver a crate of edible fruit to a distant food supplier.', objective:'Collect 10 edible fruits.', reward:150, icon:'🍎' },
+      { id:'farmers_variety_box', title:'Farmer’s Variety Box', destination:'Agricultural Supply Request', description:'A buyer wants a mixed box containing several different crops.', objective:'Harvest 5 different crop types.', reward:225, icon:'🧺' },
+      { id:'freshly_grown', title:'Freshly Grown', destination:'Agricultural Research Request', description:'A crop scientist wants proof that the produce was grown by the requesting explorer.', objective:'Harvest 5 crops you planted yourself.', reward:180, icon:'🌾' },
+      { id:'beobaka_observation', title:'Beobaka Observation', destination:'Ivis · Wildlife Survey', description:'A remote zoology team wants field observations of the sector’s most curious little mammals.', objective:'Observe 3 Beobaka.', reward:130, icon:'🐇' },
+      { id:'wildlife_survey', title:'Wildlife Survey', destination:'Planetary Wildlife Survey', description:'Record field observations from the wildlife on a requested planet.', objective:'Observe wildlife on the requested planet.', reward:160, icon:'🐾' },
+      { id:'rare_wildlife_report', title:'Rare Wildlife Report', destination:'Remote Zoology Request', description:'A field biologist wants confirmation of a notable wildlife gathering or habitat.', objective:'Locate a rare wildlife habitat.', reward:240, icon:'🔎' },
+      { id:'cordelia_expedition', title:'Cordelia Expedition', destination:'Cordelia', description:'The Concierge needs confirmation that you can still reach Cordelia from the remote Ivis sector.', objective:'Travel to Cordelia.', reward:140, icon:'🪐' },
+      { id:'aurora_expedition', title:'Aurora Expedition', destination:'Aurora', description:'A research group wants a fresh field presence on Aurora.', objective:'Travel to Aurora.', reward:160, icon:'🪐' },
+      { id:'system_explorer', title:'System Explorer', destination:'Planetary Expedition', description:'Complete a short expedition to a different world and report the journey.', objective:'Travel to another planet and return.', reward:200, icon:'🚀' },
+      { id:'unusual_signal', title:'Unusual Signal', destination:'Remote Investigation', description:'The network has picked up a strange transmission from somewhere nearby.', objective:'Investigate the detected signal.', reward:260, icon:'📡' },
+      { id:'missing_supplies', title:'Missing Supplies', destination:'Remote Field Cache', description:'A supply shipment vanished before reaching its intended destination.', objective:'Locate the missing supply cache.', reward:210, icon:'📦' },
+      { id:'lost_survey_data', title:'Lost Survey Data', destination:'Remote Research Request', description:'An expedition team lost a data package somewhere in the field.', objective:'Recover the lost survey data.', reward:275, icon:'💾' },
+      { id:'unidentified_object', title:'Unidentified Object', destination:'Remote Investigation', description:'A scanner has detected an object that does not match any known local equipment.', objective:'Locate and investigate the unidentified object.', reward:330, icon:'❔' },
+      { id:'first_contact', title:'First Contact', destination:'Galactic Concierge Network', description:'A new kind of request has arrived through the long-range network. Find out what the Ivis Sector has been missing.', objective:'Complete the introductory remote request.', reward:250, icon:'📞', special:true },
+      { id:'lost_expedition', title:'The Lost Expedition', destination:'Ivis · Abandoned Explorer Camp', description:'Someone may have been stranded out in the Ivis wilderness. Follow the old expedition trail.', objective:'Investigate the Lost Expedition.', reward:450, icon:'🧭', special:true },
+      { id:'silent_probe', title:'The Silent Probe', destination:'Cordelia · Crashed Probe', description:'A long-silent probe may still contain data worth recovering.', objective:'Investigate the Silent Probe.', reward:500, icon:'🛰️', special:true },
+    ]);
+    let conciergeQuestRotationKey = null;
+    let conciergeQuestOfferedIds = [];
+    let conciergeActiveQuestIds = [];
+    let conciergeQuestLastWorldKey = '';
+    let conciergeQuestUiTimer = 0;
+    // Every fresh game starts with three immediately available requests. Once the
+    // initial batch has been shown, the normal 30-minute rotation takes over.
+    let conciergeQuestInitialOffersReady = false;
+
+    function conciergeQuestWorldKey() {
+      return String((typeof MULTIPLAYER_WORLD_ID !== 'undefined' && MULTIPLAYER_WORLD_ID) || 'ivis-sector');
+    }
+
+    function conciergeQuestHash(value) {
+      let hash = 2166136261 >>> 0;
+      const source = String(value);
+      for (let i = 0; i < source.length; i++) {
+        hash ^= source.charCodeAt(i);
+        hash = Math.imul(hash, 16777619) >>> 0;
+      }
+      return hash >>> 0;
+    }
+
+    function conciergeQuestRng(seed) {
+      let state = seed >>> 0;
+      return function() {
+        state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+        return state / 4294967296;
+      };
+    }
+
+    function getConciergeQuestRotationKey(now = Date.now()) {
+      return Math.floor(Number(now) / CONCIERGE_QUEST_ROTATION_MS);
+    }
+
+    function getConciergeQuestById(id) {
+      return CONCIERGE_QUEST_TEMPLATES.find(quest => quest.id === id) || null;
+    }
+
+    function generateConciergeQuestOffers(rotationKey, worldKey) {
+      const rng = conciergeQuestRng(conciergeQuestHash(worldKey + '|' + rotationKey));
+      const pool = CONCIERGE_QUEST_TEMPLATES.filter(q => !(q.special && conciergeCompletedSpecialQuestIds.has(q.id))).map(q => q.id);
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+      return pool.slice(0, Math.min(CONCIERGE_QUEST_OFFER_COUNT, pool.length));
+    }
+
+    function ensureConciergeQuestRotation(force = false) {
+      const key = getConciergeQuestRotationKey();
+      const worldKey = conciergeQuestWorldKey();
+      const worldChanged = conciergeQuestLastWorldKey !== worldKey;
+      if (!conciergeQuestInitialOffersReady || !conciergeQuestOfferedIds.length) {
+        // Guarantee a full starter set immediately instead of making a fresh game
+        // wait for any rotation boundary. Keep it deterministic for the shared world.
+        const starterPool = CONCIERGE_QUEST_TEMPLATES
+          .filter(q => !(q.special && conciergeCompletedSpecialQuestIds.has(q.id)))
+          .slice(0, CONCIERGE_QUEST_OFFER_COUNT)
+          .map(q => q.id);
+        conciergeQuestLastWorldKey = worldKey;
+        conciergeQuestRotationKey = key;
+        conciergeQuestOfferedIds = starterPool;
+        conciergeQuestInitialOffersReady = true;
+      } else {
+        if (!force && !worldChanged && conciergeQuestRotationKey === key && conciergeQuestOfferedIds.length) return false;
+        conciergeQuestLastWorldKey = worldKey;
+        conciergeQuestRotationKey = key;
+        conciergeQuestOfferedIds = generateConciergeQuestOffers(key, worldKey);
+      }
+      // Rotation/state updates must not recursively re-render the quest board.
+      // The caller that owns the visible quest screen is responsible for rendering.
+      updateActiveQuestTracker();
+      return true;
+    }
+
+    function getConciergeQuestTimeUntilRotation(now = Date.now()) {
+      const next = (getConciergeQuestRotationKey(now) + 1) * CONCIERGE_QUEST_ROTATION_MS;
+      return Math.max(0, next - Number(now));
+    }
+
+    function formatConciergeQuestCountdown(ms) {
+      const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return minutes + ':' + String(seconds).padStart(2, '0');
+    }
+
+    const CONCIERGE_QUEST_CONFIG = Object.freeze({
+      sanctuary_survey: { kind:'landmark', target:'ivis_beobaka_sanctuary' },
+      ancient_forest_survey: { kind:'landmark', target:'ivis_ancient_forest' },
+      explorer_camp_search: { kind:'landmark', target:'ivis_abandoned_explorer_camp' },
+      probe_recovery: { kind:'landmark', target:'cordelia_crashed_probe' },
+      crystal_basin_survey: { kind:'landmark', target:'cordelia_desert_crystal_basin' },
+      buried_history: { kind:'landmark', target:'cordelia_buried_ruins' },
+      glowfish_census: { kind:'landmark', target:'aurora_giant_glowfish_lake' },
+      underwater_ruins: { kind:'landmark', target:'aurora_underwater_ruins' },
+      research_station_check: { kind:'landmark', target:'aurora_abandoned_research_station' },
+      iron_shipment: { kind:'item', target:'iron_ore', amount:20 },
+      iron_plate_order: { kind:'craft', target:'iron_plate', amount:10 },
+      copper_collection: { kind:'item', target:'copper_ore', amount:15 },
+      rare_mineral_request: { kind:'rare_mineral', amount:5 },
+      rainbow_opal_request: { kind:'item', target:'rainbow_opal', amount:3 },
+      syspo_methane_survey: { kind:'syspo_methane', amount:5 },
+      fresh_harvest: { kind:'crop_harvest', amount:15 },
+      fruit_delivery: { kind:'edible_fruit', amount:10 },
+      farmers_variety_box: { kind:'crop_variety', amount:5 },
+      freshly_grown: { kind:'self_crop_harvest', amount:5 },
+      beobaka_observation: { kind:'wildlife', bodyId:'ivis', amount:3, wildlifeType:'bunny' },
+      wildlife_survey: { kind:'wildlife_dynamic', amount:3 },
+      rare_wildlife_report: { kind:'landmark', target:'ivis_beobaka_sanctuary' },
+      cordelia_expedition: { kind:'visit', target:'cordelia' },
+      aurora_expedition: { kind:'visit', target:'aurora' },
+      system_explorer: { kind:'roundtrip', amount:1 },
+      unusual_signal: { kind:'investigate_landmark', target:'aurora_underwater_ruins' },
+      missing_supplies: { kind:'investigate_landmark', target:'ivis_abandoned_explorer_camp' },
+      lost_survey_data: { kind:'investigate_landmark', target:'cordelia_buried_ruins' },
+      unidentified_object: { kind:'investigate_landmark', target:'cordelia_crashed_probe' },
+      first_contact: { kind:'first_contact' },
+      lost_expedition: { kind:'lost_expedition', target:'ivis_abandoned_explorer_camp' },
+      silent_probe: { kind:'investigate_landmark', target:'cordelia_crashed_probe' }
+    });
+    let conciergeQuestStates = {};
+    let conciergeCompletedSpecialQuestIds = new Set();
+    let conciergeQuestPersistTimer = 0;
+    let conciergeQuestWildlifeTimer = 0;
+    let syspoMethaneQuestSampleAccumulator = 0;
+
+    function getConciergeQuestConfig(id) {
+      return CONCIERGE_QUEST_CONFIG[id] || null;
+    }
+
+    function getConciergeQuestCurrentUserKey() {
+      return String(currentAccountUser?.id || 'local-player');
+    }
+
+    function chooseConciergeQuestWildlifeBody(questId) {
+      const bodies = ['ivis', 'cordelia', 'aurora'];
+      const rotation = getConciergeQuestRotationKey();
+      return bodies[conciergeQuestHash(conciergeQuestWorldKey() + '|' + rotation + '|' + questId) % bodies.length];
+    }
+
+    function createConciergeQuestState(id) {
+      const quest = getConciergeQuestById(id);
+      const cfg = getConciergeQuestConfig(id) || {};
+      const origin = String(playerState.currentPlanetId || (typeof getPlanetMapBodyId === 'function' ? getPlanetMapBodyId() : 'ivis') || 'ivis');
+      const state = {
+        progress: 0,
+        stage: 0,
+        acceptedAtMs: Date.now(),
+        originBodyId: origin,
+        targetBodyId: cfg.bodyId || (cfg.kind === 'wildlife_dynamic' ? chooseConciergeQuestWildlifeBody(id) : (cfg.target && landmarkById[cfg.target]?.surfaceBodyId) || null),
+        target: cfg.target || null,
+        observedIds: [],
+        harvestedCropTypes: [],
+        investigatedAtMs: 0,
+        stageReadyAtMs: 0
+      };
+      if (cfg.kind === 'roundtrip') {
+        state.originBodyId = origin;
+        state.targetBodyId = null;
+      }
+      if (quest?.special && id === 'first_contact') state.stage = 0;
+      return state;
+    }
+
+    function sanitizeConciergeQuestState(id, raw) {
+      const base = createConciergeQuestState(id);
+      const cfg = getConciergeQuestConfig(id) || {};
+      const out = { ...base, ...(raw && typeof raw === 'object' ? raw : {}) };
+      out.progress = Math.max(0, Math.floor(Number(out.progress) || 0));
+      out.stage = Math.max(0, Math.floor(Number(out.stage) || 0));
+      out.acceptedAtMs = Math.max(0, Number(out.acceptedAtMs) || Date.now());
+      out.originBodyId = String(out.originBodyId || base.originBodyId || 'ivis');
+      out.targetBodyId = String(out.targetBodyId || base.targetBodyId || '');
+      out.target = String(out.target || cfg.target || '');
+      out.observedIds = Array.isArray(out.observedIds) ? [...new Set(out.observedIds.map(String))].slice(0, 64) : [];
+      out.harvestedCropTypes = Array.isArray(out.harvestedCropTypes) ? [...new Set(out.harvestedCropTypes.filter(id => cropById?.[id]))].slice(0, CROP_TYPES.length) : [];
+      out.investigatedAtMs = Math.max(0, Number(out.investigatedAtMs) || 0);
+      out.stageReadyAtMs = Math.max(0, Number(out.stageReadyAtMs) || 0);
+      if (cfg.kind === 'wildlife_dynamic' && !out.targetBodyId) out.targetBodyId = chooseConciergeQuestWildlifeBody(id);
+      return out;
+    }
+
+    function getConciergeQuestState(id) {
+      return conciergeQuestStates[id] || null;
+    }
+
+    // True when a quest is currently in the player's active quest slots.
+    // The quest board, acceptance flow, and completion checks all use this
+    // shared helper so the UI can render reliably.
+    function isConciergeQuestActive(id) {
+      return conciergeActiveQuestIds.includes(String(id));
+    }
+
+    function setConciergeQuestState(id, next) {
+      conciergeQuestStates[id] = sanitizeConciergeQuestState(id, next);
+      return conciergeQuestStates[id];
+    }
+
+    function serializeConciergeQuestState() {
+      return {
+        activeQuestIds: [...conciergeActiveQuestIds],
+        completedSpecialQuestIds: [...conciergeCompletedSpecialQuestIds],
+        questStates: Object.fromEntries(conciergeActiveQuestIds.map(id => [id, sanitizeConciergeQuestState(id, conciergeQuestStates[id] || null)])),
+        initialOffersReady: !!conciergeQuestInitialOffersReady
+      };
+    }
+
+    function persistConciergeQuestState(options = {}) {
+      persistLocalBackup();
+      if (options.secure === false) return;
+      if (conciergeQuestPersistTimer) clearTimeout(conciergeQuestPersistTimer);
+      if (multiplayerMode && secureAccountAuthorityEnabled && pocketSupabase && currentAccountUser) {
+        conciergeQuestPersistTimer = setTimeout(() => {
+          conciergeQuestPersistTimer = 0;
+          void saveMultiplayerCurrentState({ showToast:false });
+        }, 900);
+      }
+    }
+
+    function showConciergeQuestCompletion(quest, reward) {
+      const prompt = document.getElementById('crystalPrompt');
+      if (!prompt) return;
+      prompt.classList.remove('hidden');
+      prompt.innerHTML = '<span class="promptKey">QUEST COMPLETE</span> ' + quest.title + ' · +¢' + reward;
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 3000);
+    }
+
+    function completeConciergeQuest(id, options = {}) {
+      const quest = getConciergeQuestById(id);
+      if (!quest || !isConciergeQuestActive(id)) return false;
+      conciergeActiveQuestIds = conciergeActiveQuestIds.filter(activeId => activeId !== id);
+      delete conciergeQuestStates[id];
+      if (quest.special) conciergeCompletedSpecialQuestIds.add(id);
+      const reward = Math.max(0, Math.floor(Number(quest.reward) || 0));
+      economyState.credits = Math.max(0, Math.floor(Number(economyState.credits) || 0) + reward);
+      if (currentAccountUser && reward > 0) {
+        accountStatistics.totalCreditsEarned += reward;
+        renderAccountStatistics();
+        persistAchievementState();
+      }
+      updateCreditsUI();
+      updateActiveQuestTracker();
+      const questPanel = document.getElementById('telephoneConciergeQuestPanel');
+      if (telephoneDialogueContact === 'concierge' && questPanel && !questPanel.classList.contains('hidden')) renderConciergeQuestMenu();
+      if (options.showNotice !== false && state.gameState === 'playing') showConciergeQuestCompletion(quest, reward);
+      persistConciergeQuestState();
+      return true;
+    }
+
+    function getConciergeQuestTargetAmount(id) {
+      const cfg = getConciergeQuestConfig(id) || {};
+      return Math.max(0, Math.floor(Number(cfg.amount) || 0));
+    }
+
+    function getConciergeQuestProgressText(id, fallbackObjective = '') {
+      const quest = getConciergeQuestById(id);
+      const cfg = getConciergeQuestConfig(id) || {};
+      const state = getConciergeQuestState(id);
+      if (!quest || !state) return fallbackObjective;
+      const amount = getConciergeQuestTargetAmount(id);
+      switch (cfg.kind) {
+        case 'landmark': return journalDiscoveredLandmarks.has(cfg.target) ? 'DISCOVERED' : '0/1 discovered';
+        case 'item': return Math.min(amount, state.progress) + '/' + amount + ' collected';
+        case 'craft': return Math.min(amount, state.progress) + '/' + amount + ' crafted';
+        case 'rare_mineral': return Math.min(amount, state.progress) + '/' + amount + ' collected';
+        case 'syspo_methane': return Math.min(amount, state.progress) + '/' + amount + ' samples';
+        case 'crop_harvest': return Math.min(amount, state.progress) + '/' + amount + ' harvested';
+        case 'edible_fruit': return Math.min(amount, state.progress) + '/' + amount + ' fruits';
+        case 'crop_variety': return Math.min(amount, state.harvestedCropTypes.length) + '/' + amount + ' crop types';
+        case 'self_crop_harvest': return Math.min(amount, state.progress) + '/' + amount + ' self-grown crops';
+        case 'wildlife':
+        case 'wildlife_dynamic': return Math.min(amount, state.observedIds.length) + '/' + amount + (cfg.kind === 'wildlife_dynamic' ? ' observed on ' + (JOURNAL_BODY_INFO?.[state.targetBodyId]?.name || state.targetBodyId || 'requested planet') : ' observed');
+        case 'visit': return state.progress >= 1 ? 'ARRIVED' : '0/1 visit';
+        case 'roundtrip': return state.stage >= 1 ? '1/2 travel legs complete' : '0/2 travel legs complete';
+        case 'investigate_landmark': return state.stage >= 1 ? (state.stage >= 2 ? 'INVESTIGATED' : 'LOCATION FOUND · INVESTIGATE') : '0/1 investigation';
+        case 'lost_expedition': return state.stage >= 2 ? 'COMPLETE' : (state.stage >= 1 ? 'CAMP FOUND · RETURN TO TELEPHONE' : '0/2 stages');
+        case 'first_contact': return state.stage >= 1 ? 'COMPLETE' : 'READY';
+        default: return fallbackObjective;
+      }
+    }
+
+    function getConciergeQuestObjectiveText(id) {
+      const quest = getConciergeQuestById(id);
+      const cfg = getConciergeQuestConfig(id) || {};
+      if (!quest) return '';
+      const state = getConciergeQuestState(id);
+      if (cfg.kind === 'wildlife_dynamic') {
+        const bodyName = (state && JOURNAL_BODY_INFO?.[state.targetBodyId]?.name) || String(state?.targetBodyId || 'requested planet');
+        return 'Observe 3 wildlife on ' + bodyName + '.';
+      }
+      if (cfg.kind === 'roundtrip' && state) return 'Travel to another planet and return to ' + String(state.originBodyId || 'your starting world') + '.';
+      if (cfg.kind === 'lost_expedition' && state?.stage >= 1 && state?.stage < 2) return 'Return to the telephone booth.';
+      if (cfg.kind === 'investigate_landmark' && state?.stage >= 1 && state?.stage < 2) {
+        const name = landmarkById[cfg.target]?.name || quest.title;
+        return 'Stay near ' + name + ' until the investigation is complete.';
+      }
+      return quest.objective;
+    }
+
+    function isConciergeQuestObjectiveReady(id) {
+      const cfg = getConciergeQuestConfig(id) || {};
+      const state = getConciergeQuestState(id);
+      if (!state) return false;
+      const amount = getConciergeQuestTargetAmount(id);
+      switch (cfg.kind) {
+        case 'landmark': return journalDiscoveredLandmarks.has(cfg.target);
+        case 'item':
+        case 'craft':
+        case 'rare_mineral':
+        case 'syspo_methane':
+        case 'crop_harvest':
+        case 'edible_fruit': return state.progress >= amount;
+        case 'crop_variety': return state.harvestedCropTypes.length >= amount;
+        case 'self_crop_harvest': return state.progress >= amount;
+        case 'wildlife':
+        case 'wildlife_dynamic': return state.observedIds.length >= amount;
+        case 'visit': return state.progress >= 1;
+        case 'roundtrip': return state.stage >= 2;
+        case 'investigate_landmark': return state.stage >= 2;
+        case 'lost_expedition': return state.stage >= 2;
+        case 'first_contact': return state.stage >= 1;
+        default: return false;
+      }
+    }
+
+    function maybeCompleteConciergeQuest(id) {
+      if (!getConciergeQuestState(id) || !isConciergeQuestActive(id)) return false;
+      if (!isConciergeQuestObjectiveReady(id)) return false;
+      return completeConciergeQuest(id);
+    }
+
+    function evaluateAllConciergeQuestStates() {
+      for (const id of [...conciergeActiveQuestIds]) {
+        if (!getConciergeQuestState(id)) setConciergeQuestState(id, createConciergeQuestState(id));
+        maybeCompleteConciergeQuest(id);
+      }
+      updateActiveQuestTracker();
+      const panel = document.getElementById('telephoneConciergeQuestPanel');
+      if (telephoneDialogueContact === 'concierge' && panel && !panel.classList.contains('hidden')) renderConciergeQuestMenu();
+    }
+
+    function recordConciergeQuestLandmarkDiscovery(landmarkId) {
+      if (!landmarkId) return;
+      let changed = false;
+      for (const id of [...conciergeActiveQuestIds]) {
+        const cfg = getConciergeQuestConfig(id);
+        const state = getConciergeQuestState(id);
+        if (!cfg || !state) continue;
+        if (cfg.kind === 'landmark' && cfg.target === landmarkId) changed = true;
+        if ((cfg.kind === 'investigate_landmark' || cfg.kind === 'lost_expedition') && cfg.target === landmarkId && state.stage === 0) {
+          state.stage = 1;
+          state.investigatedAtMs = performance.now();
+          state.stageReadyAtMs = performance.now() + 1400;
+          changed = true;
+        }
+      }
+      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
+    }
+
+    function recordConciergeQuestItemCollected(typeId, amount = 1) {
+      const qty = Math.max(0, Math.floor(Number(amount) || 0));
+      if (!qty) return;
+      let changed = false;
+      for (const id of [...conciergeActiveQuestIds]) {
+        const cfg = getConciergeQuestConfig(id);
+        const state = getConciergeQuestState(id);
+        if (!cfg || !state) continue;
+        if (cfg.kind === 'item' && cfg.target === typeId) { state.progress += qty; changed = true; }
+        if (cfg.kind === 'rare_mineral' && typeId !== 'rainbow_opal' && crystalById?.[typeId]) { state.progress += qty; changed = true; }
+      }
+      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
+    }
+
+    function recordConciergeQuestCrafted(typeId, amount = 1) {
+      const qty = Math.max(0, Math.floor(Number(amount) || 0));
+      if (!qty) return;
+      let changed = false;
+      for (const id of [...conciergeActiveQuestIds]) {
+        const cfg = getConciergeQuestConfig(id);
+        const state = getConciergeQuestState(id);
+        if (cfg?.kind === 'craft' && cfg.target === typeId && state) { state.progress += qty; changed = true; }
+      }
+      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
+    }
+
+    function recordConciergeQuestCropHarvest(cropId, amount = 1, selfGrown = false) {
+      const qty = Math.max(0, Math.floor(Number(amount) || 0));
+      if (!qty) return;
+      let changed = false;
+      for (const id of [...conciergeActiveQuestIds]) {
+        const cfg = getConciergeQuestConfig(id);
+        const state = getConciergeQuestState(id);
+        if (!cfg || !state) continue;
+        if (cfg.kind === 'crop_harvest') { state.progress += qty; changed = true; }
+        if (cfg.kind === 'crop_variety' && cropById?.[cropId] && !state.harvestedCropTypes.includes(cropId)) { state.harvestedCropTypes.push(cropId); changed = true; }
+        if (cfg.kind === 'self_crop_harvest' && selfGrown) { state.progress += qty; changed = true; }
+      }
+      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
+    }
+
+    function recordConciergeQuestEdibleFruit(amount = 1) {
+      const qty = Math.max(0, Math.floor(Number(amount) || 0));
+      if (!qty) return;
+      let changed = false;
+      for (const id of [...conciergeActiveQuestIds]) {
+        const cfg = getConciergeQuestConfig(id);
+        const state = getConciergeQuestState(id);
+        if (cfg?.kind === 'edible_fruit' && state) { state.progress += qty; changed = true; }
+      }
+      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
+    }
+
+    function recordConciergeQuestVisit(bodyId) {
+      const visited = String(bodyId || '');
+      if (!visited) return;
+      let changed = false;
+      for (const id of [...conciergeActiveQuestIds]) {
+        const cfg = getConciergeQuestConfig(id);
+        const state = getConciergeQuestState(id);
+        if (!cfg || !state) continue;
+        if (cfg.kind === 'visit' && cfg.target === visited && state.progress < 1) { state.progress = 1; changed = true; }
+        if (cfg.kind === 'roundtrip') {
+          const origin = String(state.originBodyId || 'ivis');
+          if (state.stage === 0 && visited !== origin) { state.stage = 1; state.targetBodyId = visited; changed = true; }
+          else if (state.stage === 1 && visited === origin) { state.stage = 2; changed = true; }
+        }
+      }
+      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
+    }
+
+    function recordConciergeQuestWildlifeObservation(bodyId, wildlifeId, wildlifeType = '') {
+      const b = String(bodyId || '');
+      const w = String(wildlifeId || '');
+      if (!b || !w) return;
+      let changed = false;
+      for (const id of [...conciergeActiveQuestIds]) {
+        const cfg = getConciergeQuestConfig(id);
+        const state = getConciergeQuestState(id);
+        if (!cfg || !state) continue;
+        const key = b + ':' + w;
+        if (cfg.kind === 'wildlife' && cfg.bodyId === b && (!cfg.wildlifeType || cfg.wildlifeType === wildlifeType) && !state.observedIds.includes(key)) { state.observedIds.push(key); changed = true; }
+        if (cfg.kind === 'wildlife_dynamic' && state.targetBodyId === b && !state.observedIds.includes(key)) { state.observedIds.push(key); changed = true; }
+      }
+      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
+    }
+
+    function recordConciergeQuestSyspoMethaneSample(amount = 1) {
+      const qty = Math.max(0, Math.floor(Number(amount) || 0));
+      if (!qty) return;
+      let changed = false;
+      for (const id of [...conciergeActiveQuestIds]) {
+        const cfg = getConciergeQuestConfig(id);
+        const state = getConciergeQuestState(id);
+        if (cfg?.kind === 'syspo_methane' && state) { state.progress += qty; changed = true; }
+      }
+      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
+    }
+
+    function updateConciergeQuestInvestigationProximity() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket) return;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      const now = performance.now();
+      let changed = false;
+      for (const id of [...conciergeActiveQuestIds]) {
+        const cfg = getConciergeQuestConfig(id);
+        const stateForQuest = getConciergeQuestState(id);
+        if (!cfg || !stateForQuest || (cfg.kind !== 'investigate_landmark' && cfg.kind !== 'lost_expedition')) continue;
+        if (stateForQuest.stage !== 1) continue;
+        const target = landmarkSpawns.find(landmark => landmark?.id === cfg.target);
+        if (!target?.root?.visible) continue;
+        const targetWorld = target.root.getWorldPosition(new THREE.Vector3());
+        if (playerWorld.distanceTo(targetWorld) > 7.5) { stateForQuest.stageReadyAtMs = 0; continue; }
+        if (!stateForQuest.stageReadyAtMs) stateForQuest.stageReadyAtMs = now + 1400;
+        if (now >= stateForQuest.stageReadyAtMs) { stateForQuest.stage = 2; changed = true; }
+      }
+      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
+    }
+
+    function handleConciergeQuestPhoneInteraction() {
+      for (const id of [...conciergeActiveQuestIds]) {
+        const cfg = getConciergeQuestConfig(id);
+        const state = getConciergeQuestState(id);
+        if (cfg?.kind === 'lost_expedition' && state?.stage === 2) completeConciergeQuest(id);
+      }
+    }
+
+    function updateConciergeQuestWildlifeObservations(delta = 0) {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket) return;
+      conciergeQuestWildlifeTimer -= Math.max(0, Number(delta) || 0);
+      if (conciergeQuestWildlifeTimer > 0) return;
+      conciergeQuestWildlifeTimer = 0.45;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      const scan = (bodyId, entries, type) => {
+        if (!Array.isArray(entries)) return;
+        entries.forEach((entry, index) => {
+          if (!entry?.root?.visible) return;
+          const pos = entry.root.getWorldPosition(new THREE.Vector3());
+          if (playerWorld.distanceTo(pos) <= 12) recordConciergeQuestWildlifeObservation(bodyId, type + '-' + index, type);
+        });
+      };
+      scan('ivis', ivisBirds, 'bird');
+      scan('ivis', ivisButterflies, 'butterfly');
+      scan('ivis', ivisBunnies, 'bunny');
+      scan('cordelia', cordeliaSilverfish, 'silverfish');
+      scan('aurora', auroraGlowfish, 'glowfish');
+      scan('mileria', mileriaRockCrawlers, 'crawler');
+    }
+
+    function acceptConciergeQuest(id) {
+      ensureConciergeQuestRotation();
+      const quest = getConciergeQuestById(id);
+      if (!quest || !conciergeQuestOfferedIds.includes(id)) return false;
+      if (isConciergeQuestActive(id)) return false;
+      if (conciergeActiveQuestIds.length >= CONCIERGE_QUEST_MAX_ACTIVE) return false;
+      conciergeActiveQuestIds.push(id);
+      conciergeActiveQuestIds = [...new Set(conciergeActiveQuestIds)].slice(0, CONCIERGE_QUEST_MAX_ACTIVE);
+      setConciergeQuestState(id, createConciergeQuestState(id));
+      if (getConciergeQuestConfig(id)?.kind === 'first_contact') getConciergeQuestState(id).stage = 1;
+      evaluateAllConciergeQuestStates();
+      persistConciergeQuestState();
+      renderConciergeQuestMenu();
+      updateActiveQuestTracker();
+      return true;
+    }
+
+    function restoreConciergeQuestState(saved) {
+      conciergeActiveQuestIds = Array.isArray(saved?.activeQuestIds)
+        ? saved.activeQuestIds.filter(id => !!getConciergeQuestById(id)).slice(0, CONCIERGE_QUEST_MAX_ACTIVE)
+        : [];
+      conciergeCompletedSpecialQuestIds = new Set(Array.isArray(saved?.completedSpecialQuestIds)
+        ? saved.completedSpecialQuestIds.filter(id => !!getConciergeQuestById(id) && getConciergeQuestById(id).special)
+        : []);
+      conciergeQuestStates = {};
+      const rawStates = saved?.questStates && typeof saved.questStates === 'object' ? saved.questStates : {};
+      for (const id of conciergeActiveQuestIds) conciergeQuestStates[id] = sanitizeConciergeQuestState(id, rawStates[id] || null);
+      conciergeQuestRotationKey = null;
+      conciergeQuestOfferedIds = [];
+      conciergeQuestLastWorldKey = '';
+      conciergeQuestInitialOffersReady = !!saved?.initialOffersReady;
+      ensureConciergeQuestRotation(true);
+      evaluateAllConciergeQuestStates();
+      updateActiveQuestTracker();
+    }
+
+    function renderConciergeQuestMenu() {
+      const panel = document.getElementById('telephoneConciergeQuestPanel');
+      const list = document.getElementById('telephoneConciergeQuestList');
+      const status = document.getElementById('telephoneConciergeQuestStatus');
+      const counter = document.getElementById('telephoneQuestActiveCount');
+      const timer = document.getElementById('telephoneQuestRotationTimer');
+      if (!panel || !list) return;
+      ensureConciergeQuestRotation();
+      // Always have a visible starter set when the board opens. This guards against
+      // older saves that may have persisted the initial-offers flag without the offer IDs.
+      if (!Array.isArray(conciergeQuestOfferedIds) || conciergeQuestOfferedIds.length === 0) {
+        conciergeQuestOfferedIds = CONCIERGE_QUEST_TEMPLATES
+          .filter(q => !(q.special && conciergeCompletedSpecialQuestIds.has(q.id)))
+          .slice(0, CONCIERGE_QUEST_OFFER_COUNT)
+          .map(q => q.id);
+        conciergeQuestInitialOffersReady = true;
+        conciergeQuestRotationKey = getConciergeQuestRotationKey();
+        conciergeQuestLastWorldKey = conciergeQuestWorldKey();
+      }
+      list.replaceChildren();
+      if (counter) counter.textContent = conciergeActiveQuestIds.length + '/' + CONCIERGE_QUEST_MAX_ACTIVE + ' ACTIVE';
+      if (timer) timer.textContent = 'NEW REQUESTS IN ' + formatConciergeQuestCountdown(getConciergeQuestTimeUntilRotation());
+      for (const id of conciergeQuestOfferedIds) {
+        const quest = getConciergeQuestById(id);
+        if (!quest) continue;
+        const card = document.createElement('div');
+        card.className = 'telephoneQuestCard';
+        const icon = document.createElement('div'); icon.className = 'telephoneQuestIcon'; icon.textContent = quest.icon;
+        const copy = document.createElement('div'); copy.className = 'telephoneQuestCopy';
+        const title = document.createElement('strong'); title.textContent = quest.title;
+        const location = document.createElement('small'); location.textContent = quest.destination;
+        const description = document.createElement('p'); description.textContent = quest.description;
+        const objective = document.createElement('div'); objective.className = 'telephoneQuestObjective'; objective.textContent = getConciergeQuestObjectiveText(quest.id);
+        const progressLine = document.createElement('div'); progressLine.className = 'telephoneQuestProgress'; progressLine.textContent = getConciergeQuestProgressText(quest.id, quest.objective);
+        copy.append(title, location, description, objective, progressLine);
+        const side = document.createElement('div'); side.className = 'telephoneQuestSide';
+        const reward = document.createElement('div'); reward.className = 'telephoneQuestReward'; reward.textContent = '¢' + quest.reward;
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'telephoneQuestAccept';
+        if (isConciergeQuestActive(quest.id)) {
+          button.disabled = true; button.textContent = 'ACTIVE';
+        } else if (conciergeActiveQuestIds.length >= CONCIERGE_QUEST_MAX_ACTIVE) {
+          button.disabled = true; button.textContent = '3/3 ACTIVE';
+        } else {
+          button.textContent = 'ACCEPT';
+          button.addEventListener('click', (event) => {
+            event.preventDefault(); event.stopPropagation();
+            playAudio('telephoneButton', 0.62, 1.0, 1400);
+            if (acceptConciergeQuest(quest.id) && status) status.textContent = 'QUEST ACCEPTED · ' + quest.title;
+          });
+        }
+        side.append(reward, button);
+        card.append(icon, copy, side);
+        list.appendChild(card);
+      }
+      // Force the quest board visible. The telephone dialogue uses a generic
+      // `.hidden`/dialogue layout and those rules can otherwise win over the
+      // post-dialogue quest screen after quest offers are initialized.
+      panel.classList.remove('hidden');
+      panel.style.display = 'block';
+      panel.style.visibility = 'visible';
+      panel.style.opacity = '1';
+      panel.style.pointerEvents = 'auto';
+      if (status && !status.textContent) status.textContent = '';
+    }
+
+    function updateActiveQuestTracker() {
+      const tracker = document.getElementById('activeQuestTracker');
+      const list = document.getElementById('activeQuestTrackerList');
+      const count = document.getElementById('activeQuestTrackerCount');
+      if (!tracker || !list) return;
+      list.replaceChildren();
+      if (!conciergeActiveQuestIds.length) {
+        tracker.classList.add('hidden');
+        return;
+      }
+      tracker.classList.remove('hidden');
+      if (count) count.textContent = conciergeActiveQuestIds.length + '/' + CONCIERGE_QUEST_MAX_ACTIVE;
+      for (const id of conciergeActiveQuestIds) {
+        const quest = getConciergeQuestById(id);
+        if (!quest) continue;
+        const row = document.createElement('div'); row.className = 'activeQuestTrackerRow';
+        const icon = document.createElement('span'); icon.className = 'activeQuestTrackerIcon'; icon.textContent = quest.icon;
+        const text = document.createElement('div'); text.className = 'activeQuestTrackerText';
+        const title = document.createElement('strong'); title.textContent = quest.title;
+        const objective = document.createElement('span'); objective.textContent = getConciergeQuestProgressText(quest.id, getConciergeQuestObjectiveText(quest.id));
+        text.append(title, objective); row.append(icon, text); list.appendChild(row);
+      }
+    }
+
+    function closeConciergeQuestMenu() {
+      const panel = document.getElementById('telephoneConciergeQuestPanel');
+      const status = document.getElementById('telephoneConciergeQuestStatus');
+      panel?.classList.add('hidden');
+      if (panel) {
+        panel.style.display = '';
+        panel.style.visibility = '';
+        panel.style.opacity = '';
+        panel.style.pointerEvents = '';
+      }
+      if (telephoneDialoguePanel) telephoneDialoguePanel.classList.remove('quest-mode');
+      if (telephoneDialogueMain) telephoneDialogueMain.classList.remove('quest-mode-main');
+      if (status) status.textContent = '';
+    }
+
     const telephoneDialogueTrees = {
       concierge: {
         displayName: 'CONCIERGE',
@@ -10234,6 +11897,7 @@
           text: 'Galactic Concierge Network, how can I help?',
           choices: [
             { text: 'Ummm… Can you help me? Im stranded in the middle of no-where', next: 'help' },
+            { text: 'Do you have any work for me?', next: 'quests' },
             { text: 'Can I order something?', next: 'order' },
             { text: 'Can I sell something?', next: 'sell' },
             { text: 'Goodbye', next: 'end' },
@@ -10254,7 +11918,22 @@
         need_anything: {
           text: 'Need anything else?',
           choices: [
+            { text: 'Do you have any work for me?', next: 'quests' },
             { text: 'Can I order something?', next: 'order' },
+            { text: 'Goodbye', next: 'end' },
+          ]
+        },
+        quests: {
+          text: 'Actually, yes. A few remote requests just came through the network. You are far from the Galactic Centre, so most of the work I can route to you is local field work. I can hold up to three active requests for you at once.',
+          questMenu: true,
+          choices: []
+        },
+        quest_menu_exit: {
+          text: 'Back on the line. Anything else?',
+          choices: [
+            { text: 'Do you have any work for me?', next: 'quests' },
+            { text: 'Can I order something?', next: 'order' },
+            { text: 'Can I sell something?', next: 'sell' },
             { text: 'Goodbye', next: 'end' },
           ]
         },
@@ -10354,6 +12033,8 @@
       if (telephoneConciergeShopPanel) telephoneConciergeShopPanel.classList.add('hidden');
       if (telephoneConciergeSellPanel) telephoneConciergeSellPanel.classList.add('hidden');
       if (telephoneSeedShopPanel) telephoneSeedShopPanel.classList.add('hidden');
+      if (document.getElementById('telephoneConciergeQuestPanel')) document.getElementById('telephoneConciergeQuestPanel').classList.add('hidden');
+      if (document.getElementById('telephoneConciergeQuestStatus')) document.getElementById('telephoneConciergeQuestStatus').textContent = '';
       conciergePendingOrder = null;
       telephoneConciergeOrderConfirm?.classList.add('hidden');
       if (telephoneConciergeShopList) telephoneConciergeShopList.replaceChildren();
@@ -10374,6 +12055,7 @@
 
     function openTelephone() {
       if (!telephoneOverlay || !telephoneBooth || state.gameState !== 'playing' || uiState.telephoneOpen) return false;
+      if (typeof handleConciergeQuestPhoneInteraction === 'function') handleConciergeQuestPhoneInteraction();
       uiState.telephoneOpen = true;
       state.paused = true;
       clearPhysicalKeys();
@@ -10992,6 +12674,13 @@
     if (telephoneConciergeBuyGoodbye) telephoneConciergeBuyGoodbye.addEventListener('click',e=>{e.stopPropagation();endTelephoneCommerceFromTopButton();});
     if (telephoneConciergeSellGoodbye) telephoneConciergeSellGoodbye.addEventListener('click',e=>{e.stopPropagation();endTelephoneCommerceFromTopButton();});
     if (telephoneSeedShopGoodbye) telephoneSeedShopGoodbye.addEventListener('click',e=>{e.stopPropagation();endTelephoneCommerceFromTopButton();});
+    const telephoneConciergeQuestBack = document.getElementById('telephoneConciergeQuestBack');
+    if (telephoneConciergeQuestBack) telephoneConciergeQuestBack.addEventListener('click', async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      playAudio('telephoneButton', 0.52, 0.94, 1200);
+      closeConciergeQuestMenu();
+      await showTelephoneDialogueNode('concierge', 'quest_menu_exit');
+    });
     if (telephoneConciergeSellQuantity) telephoneConciergeSellQuantity.addEventListener('input',updateTelephoneConciergeSellSelection);
     if (telephoneConciergeSellButton) telephoneConciergeSellButton.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();playAudio('telephoneButton',0.62,1.0,1400);sellSelectedConciergeItem();});
 
@@ -11021,6 +12710,32 @@
       if (node.shop) { openConciergeShop(); return; }
       if (node.sell) { openConciergeSell(); return; }
       if (node.seedShop) { openTelephoneSeedShop(); return; }
+      if (node.questMenu) {
+        // The quest board is a distinct post-dialogue screen. The typewriter above
+        // has fully completed before this branch is reached; hide the speech UI
+        // and expand the conversation column so the board is always visible.
+        await new Promise(resolve => setTimeout(resolve, 180));
+        const questPanel = document.getElementById('telephoneConciergeQuestPanel');
+        telephoneDialoguePanel?.classList.add('quest-mode');
+        telephoneDialogueMain?.classList.add('quest-mode-main');
+        // This is the explicit transition point from the completed typewriter
+        // dialogue into the quest board. Force visibility here as well so the
+        // panel cannot be hidden behind dialogue/combat UI styling.
+        questPanel?.classList.remove('hidden');
+        if (questPanel) {
+          questPanel.style.display = 'block';
+          questPanel.style.visibility = 'visible';
+          questPanel.style.opacity = '1';
+          questPanel.style.pointerEvents = 'auto';
+        }
+        renderConciergeQuestMenu();
+        requestAnimationFrame(() => {
+          const firstAccept = document.querySelector('#telephoneConciergeQuestPanel .telephoneQuestAccept:not(:disabled)');
+          const questBack = document.getElementById('telephoneConciergeQuestBack');
+          (firstAccept || questBack)?.focus({ preventScroll: true });
+        });
+        return;
+      }
       if (node.cosmeticShop) {
         openCosmeticShop(true);
       }
@@ -13289,7 +15004,8 @@
             growthProgressSec: Math.max(0, Number(plot.crop.growthProgressSec) || 0),
             growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())),
             wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)),
-            wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0))
+            wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0)),
+            plantedByUserId: String(plot.crop.plantedByUserId || 'local-player')
           } : null
         };
       });
@@ -13478,7 +15194,7 @@
           const existing = findTilledPlotByKey(plotKey);
           if (existing && saved.crop && cropById[String(saved.crop.cropId || '')]) {
             existing.cropGeneration = Math.max(0, Math.floor(Number(saved.cropGeneration) || Number(saved.crop.generation) || 0));
-            existing.crop = { cropId: String(saved.crop.cropId), plantedAtMs: Math.max(0, Number(saved.crop.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(saved.crop.stage) || 0))), cropKey: String(saved.crop.cropKey || getFarmPlotCropKey(existing)), growthProgressSec: Math.max(0, Number(saved.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(saved.crop.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(saved.crop.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(saved.crop.wateredUntilMs) || 0) };
+            existing.crop = { cropId: String(saved.crop.cropId), plantedAtMs: Math.max(0, Number(saved.crop.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(saved.crop.stage) || 0))), cropKey: String(saved.crop.cropKey || getFarmPlotCropKey(existing)), growthProgressSec: Math.max(0, Number(saved.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(saved.crop.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(saved.crop.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(saved.crop.wateredUntilMs) || 0), plantedByUserId: String(saved.crop.plantedByUserId || 'local-player') };
             hydrateCropGrowthState(existing.crop);
             updateTilledPlotCropVisual(existing);
           }
@@ -13487,7 +15203,7 @@
         const created = createTilledPlot({ ctx, dir, forward: projected }, plotKey);
         if (created && saved.crop && cropById[String(saved.crop.cropId || '')]) {
           created.cropGeneration = Math.max(0, Math.floor(Number(saved.cropGeneration) || Number(saved.crop.generation) || 0));
-          created.crop = { cropId: String(saved.crop.cropId), plantedAtMs: Math.max(0, Number(saved.crop.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(saved.crop.stage) || 0))), cropKey: String(saved.crop.cropKey || getFarmPlotCropKey(created)), growthProgressSec: Math.max(0, Number(saved.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(saved.crop.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(saved.crop.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(saved.crop.wateredUntilMs) || 0) };
+          created.crop = { cropId: String(saved.crop.cropId), plantedAtMs: Math.max(0, Number(saved.crop.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(saved.crop.stage) || 0))), cropKey: String(saved.crop.cropKey || getFarmPlotCropKey(created)), growthProgressSec: Math.max(0, Number(saved.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(saved.crop.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(saved.crop.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(saved.crop.wateredUntilMs) || 0), plantedByUserId: String(saved.crop.plantedByUserId || 'local-player') };
           hydrateCropGrowthState(created.crop);
           updateTilledPlotCropVisual(created);
         }
@@ -16094,7 +17810,7 @@
       if (!removeItemsFromInventory(crop.seedId, 1)) return true;
       plot.cropGeneration = Math.max(1, Math.floor(Number(plot.cropGeneration || 0)) + 1);
       const plantedAtMs = Date.now();
-      plot.crop = { cropId: crop.id, plantedAtMs, stage: 0, cropKey: getFarmPlotCropKey(plot), growthProgressSec: 0, growthUpdatedAtMs: plantedAtMs, wateredAtMs: 0, wateredUntilMs: 0 };
+      plot.crop = { cropId: crop.id, plantedAtMs, stage: 0, cropKey: getFarmPlotCropKey(plot), growthProgressSec: 0, growthUpdatedAtMs: plantedAtMs, wateredAtMs: 0, wateredUntilMs: 0, plantedByUserId: String(currentAccountUser?.id || 'local-player') };
       updateTilledPlotCropVisual(plot);
       updateHotbarUI(); updateInventoryUI(); refreshEquippedItem();
       markJournalItemDiscovered(crop.seedId);
@@ -16208,8 +17924,10 @@
       const cropKey = String(plot.crop.cropKey || getFarmPlotCropKey(plot));
       if (!addItemToInventory(crop.id, crop.harvestCount, null, true)) return true;
       markJournalItemDiscovered(crop.id);
+      const selfGrownHarvest = String(plot.crop.plantedByUserId || 'local-player') === getConciergeQuestCurrentUserKey();
       recordCropGrown(crop.id);
       recordCropHarvested(crop.id);
+      if (typeof recordConciergeQuestCropHarvest === 'function') recordConciergeQuestCropHarvest(crop.id, crop.harvestCount, selfGrownHarvest);
       plot.crop = null;
       updateTilledPlotCropVisual(plot);
       if (multiplayerMode) broadcastMultiplayerCropHarvested(plot, cropKey, crop.id, crop.harvestCount);
@@ -16235,6 +17953,7 @@
         growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())),
         wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)),
         wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0)),
+        plantedByUserId: String(plot.crop.plantedByUserId || 'local-player'),
         stage: Math.max(0, Math.min(3, Math.floor(Number(plot.crop.stage) || 0))),
         generation: Math.max(1, Math.floor(Number(plot.cropGeneration) || 1)), sentAt: Date.now()
       };
@@ -16295,7 +18014,7 @@
       const generation = Math.max(1, Math.floor(Number(payload.generation) || 1));
       if (generation <= Math.floor(Number(plot.cropGeneration || 0))) return;
       plot.cropGeneration = generation;
-      plot.crop = { cropId, plantedAtMs: Math.max(0, Number(payload.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(payload.stage) || 0))), cropKey: String(payload.cropKey || (String(plot.plotKey || '') + ':crop:g' + generation)), growthProgressSec: Math.max(0, Number(payload.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(payload.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(payload.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(payload.wateredUntilMs) || 0) };
+      plot.crop = { cropId, plantedAtMs: Math.max(0, Number(payload.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(payload.stage) || 0))), cropKey: String(payload.cropKey || (String(plot.plotKey || '') + ':crop:g' + generation)), growthProgressSec: Math.max(0, Number(payload.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(payload.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(payload.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(payload.wateredUntilMs) || 0), plantedByUserId: String(payload.plantedByUserId || 'local-player') };
       hydrateCropGrowthState(plot.crop);
       updateTilledPlotCropVisual(plot);
       markMultiplayerWorldDirty('remote-crop-planted');
@@ -17152,6 +18871,11 @@
       const success = remaining === 0;
       if (success && journalWasNew) markJournalItemDiscovered(typeId);
       if (success && pickupFeedback) showInventoryPickupPopup(typeId, amount);
+      if (success && typeof recordConciergeQuestItemCollected === 'function') {
+        recordConciergeQuestItemCollected(typeId, amount);
+        const isEdibleFruit = typeId === 'veyra_fruit' || CROP_TYPES.some(crop => crop.id === typeId);
+        if (isEdibleFruit) recordConciergeQuestEdibleFruit(amount);
+      }
       return success;
     }
 
@@ -17751,6 +19475,8 @@
       inventorySlots[INVENTORY_MAIN_SLOTS + 1] = { typeId: 'journal', count: 1 };
       if (includeStarterSeedPack) inventorySlots[INVENTORY_MAIN_SLOTS + 2] = { typeId: 'starter_seed_pack', count: 1 };
       journalDiscoveredItems = new Set(['journal', 'axe']);
+      journalDiscoveredLandmarks.clear();
+      for (const landmark of landmarkSpawns) landmark.discovered = false;
       if (includeStarterSeedPack) journalDiscoveredItems.add('starter_seed_pack');
       uiState.selectedHotbarSlot = 0;
       refreshEquippedItem();
@@ -18303,6 +20029,7 @@
       addItemToInventory(recipe.output.typeId, recipe.output.count, craftedItem.tool ? getToolMaxDurability(craftedItem) : null);
 
       const outputName = itemById[recipe.output.typeId].name;
+      if (typeof recordConciergeQuestCrafted === 'function') recordConciergeQuestCrafted(recipe.output.typeId, recipe.output.count);
       if (itemById[recipe.output.typeId] && itemById[recipe.output.typeId].tool) awardAchievement('first_tool');
       if (recipe.output.typeId === 'rocket') awardAchievement('first_rocket');
       if (/^stone_/.test(recipe.output.typeId) && itemById[recipe.output.typeId] && itemById[recipe.output.typeId].tool) awardAchievement('first_stone_tool');
@@ -20835,6 +22562,7 @@
         if (profile?.user_id) applySecureProfileSnapshot(profile, { mergeLocalInventoryChanges: false });
         const crafted = data?.crafted || { typeId: recipe.output.typeId, count: recipe.output.count };
         const craftedItem = itemById[crafted.typeId] || itemById[recipe.output.typeId];
+        if (typeof recordConciergeQuestCrafted === 'function') recordConciergeQuestCrafted(crafted.typeId, Math.max(1, Number(crafted.count) || recipe.output.count));
         if (craftedItem?.tool) awardAchievement('first_tool');
         if (craftedItem?.id === 'rocket') awardAchievement('first_rocket');
         if (craftedItem?.id && /^stone_/.test(craftedItem.id) && craftedItem.tool) awardAchievement('first_stone_tool');
@@ -21008,6 +22736,7 @@
         selectedHotbarSlot: Math.max(0, Math.min(HOTBAR_SLOT_COUNT - 1, uiState.selectedHotbarSlot | 0)),
         mode: state.gameMode === 'survival' ? 'survival' : 'freeplay',
         surfaceBodyId: bodyId,
+        quests: serializeConciergeQuestState(),
         planetSpinAngle: Number(state.planetSpinAngle) || 0,
         ivisSolarOrbitAngle: Number(ivisSolarOrbitAngle) || 0,
         moonOrbitAngle: Number(moonOrbitAngle) || 0,
@@ -21063,6 +22792,7 @@
       // The world directory is authoritative for the current mode. Older checkpoints
       // were always written as Freeplay, so legacy data must not flip a Survival world.
       state.gameMode = multiplayerWorldMeta?.mode === 'survival' ? 'survival' : (checkpoint.mode === 'survival' ? 'survival' : 'freeplay');
+      restoreConciergeQuestState(checkpoint.quests || null);
       playerState.currentPlanetId = bodyId;
       setFlashlight(playerState.flashlightOn);
       camera.rotation.set(playerState.pitch, 0, 0);
@@ -21094,6 +22824,7 @@
         if (checkpoint) {
           return applyMultiplayerPlayerCheckpoint(checkpoint);
         }
+        restoreConciergeQuestState(null);
 
         // Legacy Ivis Freeplay can still use the old account profile until it gets its
         // first world-scoped checkpoint. Every other world must start from a clean state.
@@ -21884,6 +23615,7 @@
 
     function recordCelestialBodyVisit(bodyId) {
       markJournalBodyVisited(bodyId);
+      if (typeof recordConciergeQuestVisit === 'function') recordConciergeQuestVisit(bodyId);
       if (!currentAccountUser || state.gameMode !== 'survival') return;
       if (!accountAchievementProgress.celestialBodies.includes(bodyId)) {
         accountAchievementProgress.celestialBodies.push(bodyId);
@@ -23597,7 +25329,8 @@
         const angularStep = (speed * delta) / CORDELIA_PLAYER_GROUND_RADIUS;
         const newDir = localDir.clone().addScaledVector(tmpWorldMove, angularStep).normalize();
         const newSurfaceRadius = CORDELIA_RADIUS + cordeliaHeightAt(newDir) + EYE_HEIGHT + playerState.heightOffset;
-        player.position.copy(newDir).multiplyScalar(newSurfaceRadius);
+        const candidateCordeliaPosition = newDir.clone().multiplyScalar(newSurfaceRadius);
+        if (!isWorldPositionBlocked(candidateCordeliaPosition)) player.position.copy(candidateCordeliaPosition);
       }
       const grounded = playerState.heightOffset <= 0;
       if (grounded && !crouching && isActionDown('jump') && playerState.verticalVelocity <= 0 && getHungerBand() === 'low') playerState.verticalVelocity = CORDELIA_JUMP_SPEED;
@@ -25219,11 +26952,13 @@
         journal: {
           discoveredItems: [...journalDiscoveredItems],
           visitedBodies: [...journalVisitedBodies],
-          metPeople: [...journalMetPeople]
+          metPeople: [...journalMetPeople],
+          discoveredLandmarks: [...journalDiscoveredLandmarks]
         },
         telephone: {
           conciergeHelpCompleted: !!conciergeHelpCompleted
         },
+        quests: serializeConciergeQuestState(),
         // Crystal positions are saved too. The world uses random placement, so storing the
         // directions makes sure a loaded save restores the SAME crystal locations.
         crystals: crystalSpawns.map(spawn => ({
@@ -25233,6 +26968,12 @@
           respawnAtSpin: spawn.respawnAtSpin
         })),
         grass: grassSpawns.map(grass => ({ direction: grass.root.position.clone().normalize().toArray(), size: grass.size, yaw: grass.yaw, cut: grass.cut })),
+        landmarks: landmarkSpawns.map(landmark => ({
+          id: landmark.id,
+          surfaceBodyId: landmark.surfaceBodyId || landmarkById[landmark.id]?.surfaceBodyId || 'ivis',
+          direction: landmark.direction?.toArray?.() || landmark.root?.position?.clone?.().normalize?.().toArray?.() || [0, 1, 0],
+          discovered: !!landmark.discovered
+        })),
         trees: treeSpawns.map(tree => ({
           direction: tree.direction.toArray(),
           size: tree.size,
@@ -25308,7 +27049,7 @@
             direction: plot.direction.toArray(),
             forward: plot.forward?.toArray?.() || [1,0,0],
             cropGeneration: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)),
-            crop: plot.crop ? { cropKey: String(plot.crop.cropKey || getFarmPlotCropKey(plot)), cropId: String(plot.crop.cropId || ''), plantedAtMs: Math.max(0, Math.floor(Number(plot.crop.plantedAtMs) || Date.now())), stage: Math.max(0, Math.min(3, Math.floor(Number(plot.crop.stage) || 0))), generation: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)), growthProgressSec: Math.max(0, Number(plot.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())), wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)), wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0)) } : null
+            crop: plot.crop ? { cropKey: String(plot.crop.cropKey || getFarmPlotCropKey(plot)), cropId: String(plot.crop.cropId || ''), plantedAtMs: Math.max(0, Math.floor(Number(plot.crop.plantedAtMs) || Date.now())), stage: Math.max(0, Math.min(3, Math.floor(Number(plot.crop.stage) || 0))), generation: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)), growthProgressSec: Math.max(0, Number(plot.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())), wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)), wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0)), plantedByUserId: String(plot.crop.plantedByUserId || 'local-player') } : null
           };
         }),
         cordeliaFlowers: cordeliaFlowers.map(flower => ({ cactusIndex: flower.cactusIndex, picked: !!flower.picked, regrowAtMs: Math.max(0, Number(flower.regrowAtMs) || 0), generation: Math.max(0, Math.floor(Number(flower.generation) || 0)) })),
@@ -25405,7 +27146,12 @@
       journalVisitedBodies = journalSafeIds(savedJournal && savedJournal.visitedBodies, validJournalBodies);
       journalVisitedBodies.add('ivis');
       journalMetPeople = journalSafeIds(savedJournal && savedJournal.metPeople, validJournalPeople);
+      journalDiscoveredLandmarks.clear();
+      if (savedJournal && Array.isArray(savedJournal.discoveredLandmarks)) {
+        for (const id of savedJournal.discoveredLandmarks) if (landmarkById[id]) journalDiscoveredLandmarks.add(id);
+      }
       conciergeHelpCompleted = !!(data.telephone && data.telephone.conciergeHelpCompleted);
+      restoreConciergeQuestState(data.quests || null);
 
       // Legacy v1 saves predate the axe/plank system. Give those worlds the starter axe too
       // when possible, so loading an older world does not strand the player without tools.
@@ -25462,6 +27208,34 @@
           grass.root.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
           grass.root.rotateY(grass.yaw);
           grass.root.visible = !grass.cut;
+        }
+      }
+
+      // The Hidden Ice Cavern was retired before this snapshot. Clean its old saved state if present.
+      if (Array.isArray(data.landmarks)) {
+        data.landmarks = data.landmarks.filter(saved => saved?.id !== 'aurora_hidden_ice_cavern');
+      }
+      if (savedJournal && Array.isArray(savedJournal.discoveredLandmarks)) {
+        savedJournal.discoveredLandmarks = savedJournal.discoveredLandmarks.filter(id => id !== 'aurora_hidden_ice_cavern');
+      }
+
+      // Restore planetary landmark locations and discovery state. Older saves simply keep
+      // the deterministic Day 19A landmarks generated when the world started.
+      if (Array.isArray(data.landmarks)) {
+        for (const saved of data.landmarks) {
+          const landmark = landmarkSpawns.find(item => item.id === saved?.id);
+          if (!landmark) continue;
+          const def = landmarkById[landmark.id];
+          landmark.surfaceBodyId = saved.surfaceBodyId || landmark.surfaceBodyId || def?.surfaceBodyId || 'ivis';
+          if (Array.isArray(saved.direction) && saved.direction.length >= 3) {
+            const dir = new THREE.Vector3().fromArray(saved.direction).normalize();
+            if (dir.lengthSq() > 0.5) {
+              landmark.direction.copy(dir);
+              setLandmarkTransform(landmark.root, dir, 0.03, landmark.surfaceBodyId);
+            }
+          }
+          // Landmark discovery is player/journal state, not a shared world-state switch.
+          landmark.discovered = journalDiscoveredLandmarks.has(landmark.id);
         }
       }
 
@@ -27185,6 +28959,7 @@
           prompt.textContent = error?.message || 'Resource claim failed';
           return;
         }
+        if (typeof recordConciergeQuestItemCollected === 'function') recordConciergeQuestItemCollected(minedItemId, miningYield);
       } else if (!canAddItemToInventory(minedItemId, miningYield) || !addItemToInventory(minedItemId, miningYield, null, true)) {
         prompt.classList.remove('hidden');
         prompt.textContent = 'Inventory full — ' + minedItemName + ' was not collected';
@@ -27813,6 +29588,7 @@
       // Every genuinely NEW singleplayer game starts with the same farming starter pack
       // as a fresh multiplayer world. Loading a save does not call this path.
       resetPlayerState({ starterSeedPack: true });
+      restoreConciergeQuestState(null);
       // Freeplay is a sandbox, so the Journal opens as a complete encyclopedia.
       // Survival keeps the normal discovery-based progression.
       if (state.gameMode === 'freeplay') {
@@ -28600,6 +30376,7 @@
     const collisionMeteorOffset = new THREE.Vector3();
     const collisionMeteorInverse = new THREE.Quaternion();
     const collisionMeteorLocal = new THREE.Vector3();
+    const auroraCavernCandidateDir = new THREE.Vector3();
     const flightGravityCenter = new THREE.Vector3();
 
     // The player uses a small circular footprint on the planet surface.
@@ -28607,6 +30384,68 @@
     // checks are intentionally performed in planetSystem-local coordinates. Mixing those
     // with getWorldPosition()/worldToLocal() was the reason the previous collisions failed.
     const PLAYER_COLLISION_RADIUS = 0.45;
+
+    function getActiveCollisionBodyObject() {
+      if (moonWalking) return moonMesh;
+      if (cordeliaWalking) return cordeliaMesh;
+      if (omegaWalkingBodyId) return getOmegaMesh(omegaWalkingBodyId);
+      return planetSystem;
+    }
+
+    function getActiveCollisionBodyId() {
+      if (moonWalking) return 'moon';
+      if (cordeliaWalking) return 'cordelia';
+      if (omegaWalkingBodyId) return omegaWalkingBodyId;
+      return 'ivis';
+    }
+
+    function testLandmarkCollision(candidateLocal, landmark, bodyObject, bodyId) {
+      if (!landmark?.root?.visible || landmark.surfaceBodyId !== bodyId || !bodyObject) return false;
+      const candidateWorld = bodyObject.localToWorld(candidateLocal.clone());
+      let blocked = false;
+      landmark.root.traverse((node) => {
+        if (blocked || !node.visible || !node.userData?.playerCollision) return;
+        const c = node.userData.playerCollision;
+        const centerWorld = node.getWorldPosition(new THREE.Vector3());
+        const padding = Number.isFinite(c.padding) ? c.padding : 0.12;
+        if (c.type === 'sphere') {
+          const radius = Math.max(0.1, Number(c.radius) || 0.6);
+          const worldScale = node.getWorldScale(new THREE.Vector3());
+          const scale = Math.max(worldScale.x, worldScale.y, worldScale.z);
+          blocked = candidateWorld.distanceTo(centerWorld) <= radius * scale + PLAYER_COLLISION_RADIUS + padding;
+          return;
+        }
+        const local = node.worldToLocal(candidateWorld.clone());
+        if (c.type === 'cylinder') {
+          const radial = Math.hypot(local.x, local.z);
+          const minY = Number.isFinite(c.minY) ? c.minY : -1e9;
+          const maxY = Number.isFinite(c.maxY) ? c.maxY : 1e9;
+          blocked = radial <= (Number(c.radius) || 0.6) + PLAYER_COLLISION_RADIUS + padding &&
+            local.y >= minY - PLAYER_COLLISION_RADIUS && local.y <= maxY + PLAYER_COLLISION_RADIUS;
+          return;
+        }
+        if (c.type === 'box') {
+          const halfX = Math.max(0.05, Number(c.halfX) || 0.5);
+          const halfY = Math.max(0.05, Number(c.halfY) || 0.5);
+          const halfZ = Math.max(0.05, Number(c.halfZ) || 0.5);
+          const center = c.center || { x: 0, y: 0, z: 0 };
+          blocked = Math.abs(local.x - (Number(center.x) || 0)) <= halfX + PLAYER_COLLISION_RADIUS + padding &&
+            Math.abs(local.y - (Number(center.y) || 0)) <= halfY + PLAYER_COLLISION_RADIUS + padding &&
+            Math.abs(local.z - (Number(center.z) || 0)) <= halfZ + PLAYER_COLLISION_RADIUS + padding;
+        }
+      });
+      return blocked;
+    }
+
+    function isLandmarkPositionBlocked(localPosition) {
+      const bodyObject = getActiveCollisionBodyObject();
+      const bodyId = getActiveCollisionBodyId();
+      if (!bodyObject) return false;
+      for (const landmark of landmarkSpawns) {
+        if (testLandmarkCollision(localPosition, landmark, bodyObject, bodyId)) return true;
+      }
+      return false;
+    }
 
     function isWorldPositionBlocked(localPosition) {
       // localPosition is already in planetSystem coordinates.
@@ -28672,6 +30511,11 @@
           return true;
         }
       }
+
+      // Day 19A landmark structures that are meant to be solid. Natural/soft landmarks
+      // such as lakes, grass clearings, sleeping bags, resource piles, and wildlife remain
+      // walkable; only the explicitly registered structural colliders block the player.
+      if (isLandmarkPositionBlocked(localPosition)) return true;
 
       return false;
     }
@@ -29080,7 +30924,8 @@
         const angularStep = (speed * delta) / Math.max(1, bodyRadius + omegaHeightForPlayer(omegaWalkingBodyId, localDir));
         const newDir = localDir.clone().addScaledVector(tmpWorldMove, angularStep).normalize();
         const newSurfaceRadius = bodyRadius + omegaHeightForPlayer(omegaWalkingBodyId, newDir) + EYE_HEIGHT + playerState.heightOffset;
-        player.position.copy(newDir).multiplyScalar(newSurfaceRadius);
+        const candidateOmegaPosition = newDir.clone().multiplyScalar(newSurfaceRadius);
+        if (!isWorldPositionBlocked(candidateOmegaPosition)) player.position.copy(candidateOmegaPosition);
       }
 
       const grounded = playerState.heightOffset <= 0;
@@ -29267,6 +31112,20 @@
       const simulationDelta = sleepingWasActive ? sleepGameStep : delta;
       updateParticles(delta);
       updateSpecialParticles(delta);
+      updatePlanetaryLandmarkDiscoveries();
+      if (state.gameState === 'playing') {
+        updateConciergeQuestInvestigationProximity();
+        updateConciergeQuestWildlifeObservations(delta);
+      }
+      conciergeQuestUiTimer -= delta;
+      if (conciergeQuestUiTimer <= 0) {
+        conciergeQuestUiTimer = 1;
+        ensureConciergeQuestRotation();
+        const questPanel = document.getElementById('telephoneConciergeQuestPanel');
+        if (uiState.telephoneOpen && telephoneDialogueContact === 'concierge' && questPanel && !questPanel.classList.contains('hidden')) {
+          renderConciergeQuestMenu();
+        }
+      }
       updateFinalParticles(delta);
       updateRainParticles(delta);
       updateLightning(delta);

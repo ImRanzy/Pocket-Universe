@@ -103,6 +103,10 @@
     </div>
   </div>
 </div>
+<div id="activeQuestTracker" class="activeQuestTracker hidden" aria-live="polite">
+  <div class="activeQuestTrackerHeader"><span>ACTIVE QUESTS</span><strong id="activeQuestTrackerCount">0/3</strong></div>
+  <div id="activeQuestTrackerList" class="activeQuestTrackerList"></div>
+</div>
 <div id="telephoneOverlay" class="hidden" aria-hidden="true">
   <div id="telephonePanel" role="dialog" aria-modal="true" aria-labelledby="telephoneTitle">
     <div id="telephoneHeader">
@@ -119,6 +123,7 @@
         <div class="stickyTitle">IMPORTANT NUMBERS</div>
         <div class="stickyLine"><span>HELNA</span><strong>482-0193</strong></div>
         <div class="stickyLine"><span>CONCIERGE</span><strong>900-0001</strong></div>
+        <div class="stickyLine"><span>PIPPA</span><strong>733-0174</strong></div>
       </div>
 
       <div id="telephoneDialSection">
@@ -161,6 +166,21 @@
             <div id="telephoneDialogueSpeakerName">CONTACT</div>
             <div id="telephoneDialogueText" aria-live="polite"></div>
             <div id="telephoneDialogueChoices" aria-label="Dialogue choices"></div>
+            <div id="telephoneConciergeQuestPanel" class="telephoneQuestPanel hidden" aria-label="Concierge quests">
+              <div class="telephoneQuestHeader">
+                <div>
+                  <div class="telephoneQuestEyebrow">GALACTIC CONCIERGE · REMOTE REQUESTS</div>
+                  <h2>AVAILABLE QUESTS</h2>
+                </div>
+                <div class="telephoneQuestHeaderMeta">
+                  <div id="telephoneQuestActiveCount" class="telephoneQuestActiveCount">0/3 ACTIVE</div>
+                  <div id="telephoneQuestRotationTimer" class="telephoneQuestRotationTimer">NEW REQUESTS IN 30:00</div>
+                </div>
+              </div>
+              <div id="telephoneConciergeQuestList" class="telephoneQuestList"></div>
+              <div id="telephoneConciergeQuestStatus" class="telephoneQuestStatus" aria-live="polite"></div>
+              <button type="button" id="telephoneConciergeQuestBack" class="telephoneQuestBack">BACK TO CONVERSATION</button>
+            </div>
             <div id="telephoneConciergeShopPanel" class="hidden" aria-label="Concierge shop">
               <button type="button" id="telephoneConciergeBuyGoodbye" class="telephoneCommerceGoodbye">GOODBYE</button>
               <div class="telephoneShopHeader">
@@ -265,6 +285,7 @@
     <div id="journalTabs">
       <button type="button" data-section="items">ITEM</button>
       <button type="button" data-section="bodies">CELESTIAL BODIES</button>
+      <button type="button" data-section="landmarks">LANDMARKS</button>
       <button type="button" data-section="people">PEOPLE</button>
     </div>
     <div id="journalList"></div>
@@ -554,6 +575,15 @@
   <div class="achievementToastText">
     <div class="achievementToastLabel">ACHIEVEMENT UNLOCKED</div>
     <div id="achievementToastName" class="achievementToastName"></div>
+  </div>
+</div>
+
+<!-- Landmark discovery toast shown when an unexplored planetary landmark is approached. -->
+<div id="landmarkDiscoveryToast" class="achievementToast landmarkDiscoveryToast" aria-live="polite" aria-atomic="true">
+  <div id="landmarkDiscoveryToastIcon" class="achievementToastIcon">📍</div>
+  <div class="achievementToastText">
+    <div class="achievementToastLabel landmarkDiscoveryToastLabel">NEW DISCOVERY!</div>
+    <div id="landmarkDiscoveryToastName" class="achievementToastName"></div>
   </div>
 </div>
 
@@ -926,8 +956,28 @@
       <div id="settingsUpdateLogContent">
         <section class="updateLogDay updateLogLatest">
           <div class="updateLogBadge">LATEST</div>
-          <h2>Version 2.2A</h2>
-          <p class="updateLogIntro">Day 18: crop care, edible harvests, and a full set of farming achievements.</p>
+          <h2>Version 2.3B</h2>
+          <p class="updateLogIntro">Day 19: planetary landmarks, exploration discoveries, and the new Galactic Concierge quest system.</p>
+          <ul class="updateLogBullets">
+            <li>Added <strong>planetary landmarks</strong> across Ivis, Cordelia, and Aurora, including the Beobaka Sanctuary, Ancient Forest, Abandoned Explorer Camp, Buried Ruins, Desert Crystal Basin, Crashed Probe, Giant Glowfish Lake, Underwater Ruins, and Abandoned Research Station.</li>
+            <li>Added <strong>landmark rarity</strong> and persistent discovery tracking so landmarks can be discovered while exploring and recorded in the player's journal.</li>
+            <li>Added the <strong>NEW DISCOVERY!</strong> popup, triggered when the player gets within 20 units of a landmark.</li>
+            <li>Added proper <strong>landmark collisions</strong> for structures that should physically block the player, while leaving decorative and non-solid elements walkable.</li>
+            <li>Fixed the <strong>planetary map position</strong> so the player's location remains correct after changing the time of day through the in-game world control panel.</li>
+            <li>Added the <strong>Galactic Concierge quest system</strong> to the existing telephone booth, keeping the booth's existing calls, merchants, contacts, and services intact.</li>
+            <li>Added the <strong>quest dialogue branch</strong> for requesting remote work from the Concierge, followed by a dedicated quest menu after the dialogue finishes.</li>
+            <li>Added a rotating pool of <strong>32 non-multiplayer quests</strong> covering landmark discoveries, exploration, resources, crafting, farming, wildlife, travel, and investigation, plus special quest entries.</li>
+            <li>Added support for <strong>up to 3 active quests</strong> at once, with active objectives shown in a small left-middle quest tracker.</li>
+            <li>Quest offers now <strong>refresh every 30 minutes</strong>, while accepted quests remain active until completed.</li>
+            <li>Added <strong>3 starter quest offers immediately</strong> so a fresh game never starts with an empty quest board.</li>
+            <li>Added actual <strong>quest objective, completion, and reward logic</strong>, including landmark, resource, farming, wildlife, travel, and multi-step investigation objectives.</li>
+            <li>Added <strong>quest progress persistence</strong> through saves and multiplayer world state, with completed quests awarding their listed Credits and completion notifications.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
+          <h2>Version 2.2B</h2>
+          <p class="updateLogIntro">Day 18: crop care, edible harvests, a full set of farming achievements, multiplayer chat, and emotes.</p>
           <ul class="updateLogBullets">
             <li>Added the <strong>Watering Can</strong>, craftable with 3 Iron Plates and 1 Iron Ingot.</li>
             <li>Added <strong>river water collection</strong> so the watering can can be refilled from nearby rivers.</li>

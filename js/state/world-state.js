@@ -18,6 +18,7 @@
     launchPads: [],
     containers: [],
     sleepingBags: [],
-    droppedItems: []
+    droppedItems: [],
+    landmarks: []
   };
 })();
