@@ -16,8 +16,11 @@
     freeplayInventoryOpen: false,
     backpackOpen: false,
     furnaceOpen: false,
+    fuelSynthOpen: false,
     shipInventoryOpen: false,
     containerOpen: false,
-    telephoneOpen: false
+    telephoneOpen: false,
+    baseCoreOpen: false,
+    baseBuildOpen: false
   });
 })();

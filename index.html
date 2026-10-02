@@ -11,6 +11,19 @@
 <div id="crosshair"></div>
 <div id="creditsDisplay">¢ 0</div>
 
+<div id="performanceProfiler" class="performanceProfiler hidden" aria-label="Performance profiler">
+  <div class="performanceProfilerHeader"><span>PERFORMANCE</span><strong>Alt+P</strong></div>
+  <div class="performanceProfilerGrid">
+    <span>FPS</span><strong id="perfFps">—</strong>
+    <span>FRAME</span><strong id="perfFrame">—</strong>
+    <span>1% LOW</span><strong id="perfLow">—</strong>
+    <span>CALLS</span><strong id="perfCalls">—</strong>
+    <span>TRIS</span><strong id="perfTriangles">—</strong>
+    <span>GEOMETRIES</span><strong id="perfGeometries">—</strong>
+    <span>TEXTURES</span><strong id="perfTextures">—</strong>
+  </div>
+</div>
+
 <div id="survivalHud" aria-label="Survival status">
   <div class="survivalHudMeter healthMeter">
     <div class="survivalHudHeader"><span>HEALTH</span><strong id="healthValue">100</strong></div>
@@ -66,7 +79,7 @@
 
 <div id="emoteWheel" class="hidden" aria-label="Emote wheel">
   <div class="emoteWheelTitle">EMOTES</div>
-  <div class="emoteWheelHint">Choose an emote · B to open · Esc to close</div>
+  <div class="emoteWheelHint">HOLD B · HOVER TO SELECT · CLICK TO EMOTE</div>
   <div id="emoteWheelButtons"></div>
 </div>
 
@@ -279,6 +292,43 @@
   </div>
 </div>
 
+<div id="baseCoreOverlay" class="hidden" aria-hidden="true">
+  <div id="baseCorePanel" role="dialog" aria-modal="true" aria-labelledby="baseCoreTitle">
+    <div id="baseCoreHeader">
+      <div>
+        <div class="baseCoreEyebrow">BASE COMMAND</div>
+        <h1 id="baseCoreTitle">New Base</h1>
+      </div>
+      <button id="baseCoreClose" class="baseCoreClose" type="button" title="Close">×</button>
+    </div>
+    <div id="baseCoreMeta">
+      <div><span>PLANET</span><strong id="baseCorePlanet">IVIS</strong></div>
+      <div><span>OWNER</span><strong id="baseCoreOwner">Explorer</strong></div>
+      <div><span>YOUR ROLE</span><strong id="baseCoreYourRole">OWNER</strong></div>
+      <div><span>ZONE</span><strong id="baseCoreZone">40m LOCAL CONSTRUCTION ZONE</strong></div>
+    </div>
+    <section class="baseCoreSection">
+      <div class="baseCoreSectionTitle">BASE NAME</div>
+      <div class="baseCoreNameRow">
+        <input id="baseCoreNameInput" maxlength="32" autocomplete="off" spellcheck="false" aria-label="Base name">
+        <button id="baseCoreSaveName" type="button">SAVE</button>
+      </div>
+    </section>
+    <section class="baseCoreSection">
+      <div class="baseCoreSectionTitle">PERMISSIONS</div>
+      <div class="baseCoreSectionHint">Choose what each known player can do in this base.</div>
+      <div id="baseCorePermissionList"></div>
+    </section>
+    <div id="baseCoreBottom">
+      <div id="baseCoreBottomActions">
+        <button id="baseCoreBuildButton" type="button">BUILD BASE</button>
+        <button id="baseCoreHomeButton" type="button">SET AS HOME BASE</button>
+      </div>
+      <div id="baseCoreStatus" class="hidden" aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+
 <div id="journalOverlay" class="hidden" aria-hidden="true">
   <div id="journalPanel" role="dialog" aria-modal="true" aria-labelledby="journalTitle">
     <div id="journalHeader"><h1 id="journalTitle">Explorer's Journal</h1><button id="journalClose" type="button" title="Close">×</button></div>
@@ -355,6 +405,28 @@
     <div id="furnaceInventoryGrid"></div>
   </div>
 </div>
+<div id="fuelSynthesizerOverlay" class="hidden" aria-hidden="true">
+  <div id="fuelSynthesizerPanel" role="dialog" aria-modal="true" aria-labelledby="fuelSynthesizerTitle">
+    <div id="fuelSynthesizerHeader">
+      <div>
+        <div id="fuelSynthesizerEyebrow">PROPULSION FABRICATION</div>
+        <h1 id="fuelSynthesizerTitle">Fuel Synthesizer</h1>
+      </div>
+      <button id="fuelSynthesizerClose" title="Close">×</button>
+    </div>
+    <div id="fuelSynthesizerSubtitle">10 L METHANE PER JERRYCAN · ADD 1 RAINBOW OPAL FOR ADVANCED WARP FUEL</div>
+    <div id="fuelSynthesizerTop">
+      <div class="furnaceSlot" id="fuelSynthMethaneSlot"><div class="furnaceSlotLabel">Methane</div></div>
+      <div class="furnaceSlot" id="fuelSynthOpalSlot"><div class="furnaceSlotLabel">Rainbow Opal</div></div>
+      <div class="furnaceArrow">→</div>
+      <div class="furnaceSlot output" id="fuelSynthOutputSlot"><div class="furnaceSlotLabel">Fuel</div></div>
+    </div>
+    <button type="button" id="fuelSynthSynthesizeButton">SYNTHESIZE</button>
+    <div id="fuelSynthStatus" aria-live="polite">Insert a Methane Container. Rainbow Opal is optional.</div>
+    <div class="furnaceInventoryTitle">Inventory · drag items between slots to move them</div>
+    <div id="fuelSynthInventoryGrid"></div>
+  </div>
+</div>
 <div id="craftingOverlay" class="hidden">
   <div id="craftingPanel">
     <div id="craftingHeader">
@@ -364,11 +436,22 @@
     <div id="craftingRecipes"></div>
     <div id="craftingFooter">
       <div id="craftingStatus"></div>
+      <button id="craftingPrevPage" title="Previous page">‹</button>
       <button id="craftingNextPage" title="Next page">›</button>
     </div>
   </div>
 </div>
 
+<div id="researchOverlay" class="hidden" aria-hidden="true">
+  <div id="researchPanel">
+    <div id="researchHeader">
+      <div><div class="researchEyebrow">FACILITY SCIENCE</div><h1>Research Station</h1></div>
+      <button id="researchClose" title="Close">×</button>
+    </div>
+    <div id="researchDescription">Research discovered landmarks to unlock deeper field notes in your Journal.</div>
+    <div id="researchLandmarkList"></div>
+  </div>
+</div>
 <div id="freeplayInventoryOverlay" class="hidden">
   <div id="freeplayInventoryPanel">
     <div id="freeplayInventoryHeader">
@@ -378,6 +461,7 @@
     <div id="freeplayInventoryItems"></div>
     <div id="freeplayInventoryFooter">
       <div id="freeplayInventoryStatus"></div>
+      <button id="freeplayInventoryPrevPage" title="Previous page">‹</button>
       <button id="freeplayInventoryNextPage" title="Next page">›</button>
     </div>
   </div>
@@ -956,6 +1040,31 @@
       <div id="settingsUpdateLogContent">
         <section class="updateLogDay updateLogLatest">
           <div class="updateLogBadge">LATEST</div>
+          <h2>Version 2.4B</h2>
+          <p class="updateLogIntro">Day 22: the Base Building Update — modular construction, interiors, furniture, elevated bases, multiplayer synchronization, and a new set of construction tools.</p>
+          <ul class="updateLogBullets">
+            <li>Added the <strong>Base Core</strong>, which claims a construction area, establishes base ownership and permissions, and adds a home/base marker to the planet map.</li>
+            <li>Added <strong>modular base construction</strong> with build mode, connection-point snapping, 90° rotation, placement validation, foundations, collisions, and persistent structure data.</li>
+            <li>Expanded the base module lineup with <strong>Habitat, Corridor, Junction, T-Junction, Stairwell, Docking, Observation, Storage, Hydroponics, Workshop, Research, Fuel Synthesizer, and L-Junction</strong> modules.</li>
+            <li>Added the <strong>L-Junction</strong> as a 90° corner module, including a dedicated mirror control so both corner orientations can be built.</li>
+            <li>Added the <strong>Stairwell</strong>, including a walkable double-height staircase, upper doorway, elevated connection point, and support for chaining additional modules onto upper levels.</li>
+            <li>Added <strong>three interior material choices</strong> — Wood, Iron, and Copper — with different appearances and construction costs.</li>
+            <li>Added <strong>furniture placement</strong> with Bed, Chair, Desk, Lamp, and Wardrobe models, furniture collisions, persistent placement, and invalid-position preview feedback.</li>
+            <li>Added <strong>furniture interactions</strong>: sleep in beds, sit in chairs, open the Explorer's Journal at desks, toggle lamps, and use wardrobes for owned cosmetic customization.</li>
+            <li>Added the <strong>Hammer</strong>, crafted with 2 Iron Ingots and 1 Stick, for removing placed furniture and returning it to the inventory.</li>
+            <li>Added <strong>module dismantling and full material refunds</strong> in Build Mode, with refund previews and protection against unsafe removal of occupied or active structures.</li>
+            <li>Added <strong>furniture dismantling effects</strong>, including refund feedback and particle effects, plus a dedicated inventory model for the Hammer.</li>
+            <li>Improved <strong>furniture placement controls</strong> with scroll-wheel distance adjustment, red invalid-position previews, rotation support, and connection-aware placement.</li>
+            <li>Added <strong>connection animations</strong> when modules successfully snap into place.</li>
+            <li>Added <strong>multiplayer base synchronization</strong> for newly built modules, elevated structures, furniture placement/removal, lamp state, and module doors, with join-in-progress persistence support.</li>
+            <li>Added <strong>door opening/closing synchronization</strong> so players in the same multiplayer world see module door animations in real time.</li>
+            <li>Improved <strong>upper-level floor and stairwell collision handling</strong>, including seamless transitions between stairwells and attached second-floor modules.</li>
+            <li>Added and refined <strong>base save/load persistence</strong> for module position, rotation, material choice, furniture, door state, lamp state, permissions, and elevated module placement.</li>
+            <li>Added additional <strong>construction and collision polish</strong> across corners, doorways, foundations, module seams, and L-Junction geometry.</li>
+          </ul>
+        </section>
+
+        <section class="updateLogDay">
           <h2>Version 2.3B</h2>
           <p class="updateLogIntro">Day 19: planetary landmarks, exploration discoveries, and the new Galactic Concierge quest system.</p>
           <ul class="updateLogBullets">
@@ -1214,6 +1323,7 @@
 <script src="js/tool-model-data.js"></script>
 <script src="js/hoe-model-data.js"></script>
 <script src="js/watering-can-model-data.js"></script>
+<script src="js/hydroponics-tube-model-data.js"></script>
 <script src="js/rocket-asset-data.js"></script>
 <script src="js/furnace-asset-data.js"></script>
 <script src="js/jerrycan-asset-data.js"></script>
@@ -1227,6 +1337,7 @@
 <script src="js/player-model-data.js"></script>
 <script src="js/shirt-model-data.js"></script>
 <script src="js/tree-model-data.js"></script>
+<script src="js/furniture-model-data.js"></script>
   <script src="js/state/player-state.js"></script>
 <script src="js/state/inventory-state.js"></script>
 <script src="js/state/ui-state.js"></script>
@@ -1237,6 +1348,122 @@
   <script src="js/state/index.js"></script>
 <script src="js/main.js"></script>
 
+
+
+<div id="baseBuildHud" class="hidden" aria-hidden="true">
+  <div id="baseBuildTopHint">
+    <strong>BASE BUILD MODE</strong>
+    <span>WASD PAN · R ROTATE 90° · LMB DRAG · DRAG NEAR BLUE SOCKETS TO SNAP · ENTER BUILD · RMB DISMANTLE / CANCEL · ESC CANCEL</span>
+  </div>
+  <div id="baseBuildMaterialPicker" class="hidden" aria-label="Module interior material">
+    <div class="baseBuildMaterialHeader">
+      <div class="baseBuildMaterialLabel">INTERIOR MATERIAL</div>
+      <div class="baseBuildMaterialSubLabel">Wood, iron, or copper changes the interior and construction cost.</div>
+    </div>
+    <div class="baseBuildMaterialButtons">
+      <button type="button" data-base-interior-material="wood" aria-pressed="true">WOOD</button>
+      <button type="button" data-base-interior-material="iron" aria-pressed="false">IRON</button>
+      <button type="button" data-base-interior-material="copper" aria-pressed="false">COPPER</button>
+    </div>
+  </div>
+  <div id="baseBuildMirrorControl" class="hidden" aria-label="L-junction mirror control">
+    <span class="baseBuildMirrorLabel">L-JUNCTION ORIENTATION</span>
+    <button id="baseBuildMirrorButton" type="button" aria-pressed="false">NORMAL L</button>
+  </div>
+  <div id="baseBuildDoorPicker" class="hidden" aria-label="Room doorway sides">
+    <div class="baseBuildDoorHeader">
+      <div class="baseBuildDoorLabel">MODULE DOORWAYS</div>
+      <div class="baseBuildDoorSubLabel">Choose the side(s) where corridors can connect. Door 2 is optional.</div>
+    </div>
+    <div class="baseBuildDoorCards">
+      <div class="baseBuildDoorCard" data-base-door-card="0">
+        <div class="baseBuildDoorCardTitle">DOOR 1</div>
+        <div class="baseBuildDoorGrid">
+          <button type="button" data-base-door="north" data-base-door-slot="0">NORTH</button>
+          <button type="button" data-base-door="south" data-base-door-slot="0">SOUTH</button>
+          <button type="button" data-base-door="east" data-base-door-slot="0">EAST</button>
+          <button type="button" data-base-door="west" data-base-door-slot="0">WEST</button>
+        </div>
+      </div>
+      <div class="baseBuildDoorCard optional" data-base-door-card="1">
+        <div class="baseBuildDoorCardTitle">DOOR 2 <span>(OPTIONAL)</span><button type="button" class="baseBuildDoorToggle" data-base-door-toggle="1" aria-pressed="true">ON</button></div>
+        <div class="baseBuildDoorGrid">
+          <button type="button" data-base-door="north" data-base-door-slot="1">NORTH</button>
+          <button type="button" data-base-door="south" data-base-door-slot="1">SOUTH</button>
+          <button type="button" data-base-door="east" data-base-door-slot="1">EAST</button>
+          <button type="button" data-base-door="west" data-base-door-slot="1">WEST</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="baseBuildHotbar" aria-label="Base structures">
+    <button type="button" class="baseBuildCard" data-base-structure="habitat_room">
+      <span class="baseBuildCardIcon room">⌂</span>
+      <span class="baseBuildCardName">HABITAT</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>HABITAT ROOM</strong><span class="baseBuildCardInfo">A standard living module with a habitat interior and room for your base essentials.</span><small class="baseBuildCost">16 Iron Plates · 8 Iron Ingots · 8 Copper Ingots · 6 Glass · 2 Electronics · 6 Planks</small><em>FOUNDATION INCLUDED</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="straight_corridor">
+      <span class="baseBuildCardIcon corridor">▭</span>
+      <span class="baseBuildCardName">CORRIDOR</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>STRAIGHT CORRIDOR</strong><span class="baseBuildCardInfo">A compact passage module that links rooms and keeps your base connected.</span><small class="baseBuildCost">10 Iron Plates · 5 Iron Ingots</small><em>FOUNDATION INCLUDED</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="junction">
+      <span class="baseBuildCardIcon junction">┼</span>
+      <span class="baseBuildCardName">JUNCTION</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>JUNCTION MODULE</strong><span class="baseBuildCardInfo">Two corridors crossing into a four-way hub with four connection exits.</span><small class="baseBuildCost">28 Iron Plates · 14 Iron Ingots</small><em>FOUNDATION INCLUDED · 4 CONNECTIONS</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="t_junction">
+      <span class="baseBuildCardIcon junction">┬</span>
+      <span class="baseBuildCardName">T-JUNCTION</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>T-JUNCTION MODULE</strong><span class="baseBuildCardInfo">A three-way corridor hub with north, east, and south connection exits.</span><small class="baseBuildCost">22 Iron Plates · 11 Iron Ingots</small><em>FOUNDATION INCLUDED · 3 CONNECTIONS</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="l_junction">
+      <span class="baseBuildCardIcon junction">└</span>
+      <span class="baseBuildCardName">L-JUNCTION</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>L-JUNCTION MODULE</strong><span class="baseBuildCardInfo">A 90-degree corner module that turns a corridor left or right with two connection exits.</span><small class="baseBuildCost">18 Iron Plates · 9 Iron Ingots · 5 Planks (wood interior)</small><em>FOUNDATION INCLUDED · 2 CONNECTIONS · 90° CORNER</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="stairwell">
+      <span class="baseBuildCardIcon stairwell">↕</span>
+      <span class="baseBuildCardName">STAIRWELL</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>STAIRWELL MODULE</strong><span class="baseBuildCardInfo">A compact double-height stairwell with a full-width walkable stair flight and upper module connection.</span><small class="baseBuildCost">24 Iron Plates · 12 Iron Ingots · 8 Planks</small><em>FOUNDATION INCLUDED · DOUBLE HEIGHT · WALKABLE STAIRS · 2 CONNECTIONS</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="docking_module">
+      <span class="baseBuildCardIcon docking">⌂</span>
+      <span class="baseBuildCardName">DOCKING</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>DOCKING MODULE</strong><span class="baseBuildCardInfo">A spaceship docking bay with a preinstalled launch pad and retractable glass roof.</span><small class="baseBuildCost">26 Iron Plates · 13 Iron Ingots · 12 Copper Ingots · 6 Electronics · 2 Advanced Electronics · 18 Glass · 8 Planks · 1 Launch Pad</small><em>FOUNDATION INCLUDED · PREINSTALLED LAUNCH PAD · RETRACTABLE GLASS ROOF · 1 CONNECTION</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="observation_module">
+      <span class="baseBuildCardIcon observation">⌾</span>
+      <span class="baseBuildCardName">OBSERVATION</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>OBSERVATION MODULE</strong><span class="baseBuildCardInfo">A taller habitat-sized module with a glass roof, glass viewing wall, and retractable roof.</span><small class="baseBuildCost">22 Iron Plates · 11 Iron Ingots · 10 Copper Ingots · 22 Glass · 3 Electronics · 6 Planks</small><em>FOUNDATION INCLUDED · RETRACTABLE GLASS ROOF · 1-2 CONNECTIONS</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="storage_module">
+      <span class="baseBuildCardIcon storage">▤</span>
+      <span class="baseBuildCardName">STORAGE</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>STORAGE MODULE</strong><span class="baseBuildCardInfo">A habitat-sized storage room with three built-in functional containers and decorative boxes.</span><small class="baseBuildCost">16 Iron Plates · 8 Iron Ingots · 8 Copper Ingots · 6 Glass · 2 Electronics · 6 Planks · 3 Containers</small><em>FOUNDATION INCLUDED · 3 BUILT-IN CONTAINERS</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="hydroponics_module">
+      <span class="baseBuildCardIcon hydroponics">♒</span>
+      <span class="baseBuildCardName">HYDROPONICS</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>HYDROPONICS MODULE</strong><span class="baseBuildCardInfo">A self-watering grow room with eight planting beds, four on each side of a central walking aisle.</span><small class="baseBuildCost">24 Iron Plates · 12 Iron Ingots · 12 Copper Ingots · 6 Electronics · 8 Glass · 8 Planks</small><em>FOUNDATION INCLUDED · 8 PLANTING BEDS · AUTO-WATERING · 1 CONNECTION</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="workshop_module">
+      <span class="baseBuildCardIcon workshop">⚒</span>
+      <span class="baseBuildCardName">WORKSHOP</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>WORKSHOP MODULE</strong><span class="baseBuildCardInfo">A fabrication room with a workbench for crafting more complex components such as Advanced Electronics.</span><small class="baseBuildCost">22 Iron Plates · 11 Iron Ingots · 10 Copper Ingots · 4 Electronics · 6 Planks</small><em>FOUNDATION INCLUDED · WORKBENCH · 1-2 CONNECTIONS</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="research_module">
+      <span class="baseBuildCardIcon research">⌁</span>
+      <span class="baseBuildCardName">RESEARCH</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>RESEARCH MODULE</strong><span class="baseBuildCardInfo">A scientific room with a research station for studying discovered landmarks and unlocking deeper field notes.</span><small class="baseBuildCost">24 Iron Plates · 12 Iron Ingots · 10 Copper Ingots · 4 Electronics · 2 Advanced Electronics · 6 Glass · 6 Planks</small><em>FOUNDATION INCLUDED · RESEARCH STATION · 1-2 CONNECTIONS</em></span>
+    </button>
+    <button type="button" class="baseBuildCard" data-base-structure="fuel_synthesizer_module">
+      <span class="baseBuildCardIcon fuelSynth">⚗</span>
+      <span class="baseBuildCardName">FUEL SYNTH</span>
+      <span class="baseBuildCardTooltip" role="tooltip"><strong>FUEL SYNTHESIZER MODULE</strong><span class="baseBuildCardInfo">A propulsion lab with a special machine that turns harvested Syspo methane into rocket fuel or advanced warp fuel.</span><small class="baseBuildCost">28 Iron Plates · 14 Iron Ingots · 14 Copper Ingots · 6 Electronics · 4 Advanced Electronics · 2 Rainbow Opals · 8 Glass · 8 Planks</small><em>FOUNDATION INCLUDED · FUEL SYNTHESIZER · 1-2 CONNECTIONS</em></span>
+    </button>
+  </div>
+</div>
 <div id="inventoryPickupStack" class="inventoryPickupStack" aria-live="polite" aria-atomic="false"></div>
 </body>
 </html>

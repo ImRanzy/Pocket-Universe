@@ -16,9 +16,13 @@
     furnaces: [],
     campfires: [],
     launchPads: [],
+    gasCollectionSystems: [],
     containers: [],
     sleepingBags: [],
     droppedItems: [],
-    landmarks: []
+    landmarks: [],
+    baseCores: [],
+    baseStructures: [],
+    baseHomeByUserId: {}
   };
 })();

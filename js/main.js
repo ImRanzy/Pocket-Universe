@@ -41,6 +41,7 @@
   let scytheModelTemplate = null;
   let hoeModelTemplate = null;
   let wateringCanModelTemplate = null;
+  let hydroponicsTubeModelTemplate = null;
   let wrenchModelTemplate = null;
   let blueprintModelTemplate = null;
   let containerModelTemplate = null;
@@ -51,6 +52,7 @@
   let shirtModelTemplate = null;
   let treeEvergreenModelTemplate = null;
   let treeFruitModelTemplate = null;
+  let furnitureModelTemplates = { bed: null, chair: null, desk: null, lamp: null, wardrobe: null };
   let playerModelParts = null;
   let playerShirtParts = null;
 
@@ -77,6 +79,9 @@
   const SUPABASE_URL = "https://ktzhvnpbksngleegdikd.supabase.co";
   const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hrbbTSn2zhmFaejsrJd_ig_6RMF4k7G";
   let pocketSupabase = null;
+  // Must be initialized before any startup-time functions can reference it.
+  // Keeping this near the other top-level account/network state avoids a temporal dead zone.
+  let currentAccountUser = null;
 
   // ---------- Day 15 multiplayer (first milestone: shared Ivis session) ----------
   let multiplayerMode = false;
@@ -1131,6 +1136,70 @@
     });
   }
 
+  async function buildEmbeddedHydroponicsTubeModel() {
+    const source = window.PocketUniverseHydroponicsTubeModelGLB;
+    if (typeof source !== 'string' || !source.trim() || !window.THREE?.GLTFLoader) return null;
+    const arrayBuffer = decodeBase64ArrayBuffer(source);
+    return await new Promise((resolve, reject) => {
+      try {
+        const loader = new THREE.GLTFLoader();
+        loader.parse(arrayBuffer, '', (gltf) => {
+          const root = gltf?.scene || gltf?.scenes?.[0];
+          if (!root) { reject(new Error('Hydroponics Tube.glb contained no scene')); return; }
+          root.name = 'HydroponicsTubeModel';
+          root.traverse((node) => {
+            if (!node.isMesh) return;
+            node.castShadow = true;
+            node.receiveShadow = true;
+            node.frustumCulled = false;
+            if (Array.isArray(node.material)) {
+              node.material = node.material.map((mat) => mat && mat.clone ? mat.clone() : mat);
+            } else if (node.material && node.material.clone) {
+              node.material = node.material.clone();
+            }
+            const isSphere = String(node.name || '').toLowerCase() === 'sphere';
+            const mats = Array.isArray(node.material) ? node.material : [node.material];
+            for (const mat of mats) {
+              if (!mat) continue;
+              mat.color?.set(isSphere ? 0x8eeaff : 0x414a50);
+              mat.roughness = isSphere ? 0.24 : 0.68;
+              mat.metalness = isSphere ? 0.08 : 0.42;
+              if (isSphere) {
+                mat.emissive?.set(0x1a6f91);
+                if (mat.emissiveIntensity !== undefined) mat.emissiveIntensity = 0.70;
+              }
+              mat.side = THREE.DoubleSide;
+            }
+          });
+          root.updateMatrixWorld(true);
+          const box = new THREE.Box3().setFromObject(root);
+          if (box.isEmpty()) { reject(new Error('Hydroponics Tube.glb has empty bounds')); return; }
+          const center = box.getCenter(new THREE.Vector3());
+          root.position.x -= center.x;
+          root.position.z -= center.z;
+          root.position.y -= box.min.y;
+          root.updateMatrixWorld(true);
+
+          let sphereNode = null;
+          root.traverse((node) => {
+            if (!sphereNode && node.isMesh && String(node.name || '').toLowerCase() === 'sphere') sphereNode = node;
+          });
+          if (!sphereNode) {
+            reject(new Error('Hydroponics Tube.glb is missing the required sphere emitter mesh'));
+            return;
+          }
+          const sphereWorld = sphereNode.getWorldPosition(new THREE.Vector3());
+          root.userData.hydroEmitterLocalPosition = root.worldToLocal(sphereWorld);
+          root.userData.hydroModelHeight = Math.max(0.1, box.max.y - box.min.y);
+          root.userData.hydroModelReady = true;
+          resolve(root);
+        }, (error) => reject(error instanceof Error ? error : new Error('Hydroponics Tube.glb parse failed')));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
   async function buildEmbeddedPlayerModel() {
     const source = window.PocketUniversePlayerModelGLB;
     if (typeof source !== 'string' || !source.trim() || !window.THREE?.GLTFLoader) return null;
@@ -1208,7 +1277,8 @@
             if (!node.isMesh) return;
             node.castShadow = true;
             node.receiveShadow = true;
-            node.frustumCulled = false;
+            if (node.geometry?.computeBoundingSphere && !node.geometry.boundingSphere) node.geometry.computeBoundingSphere();
+            node.frustumCulled = true;
             if (Array.isArray(node.material)) {
               node.material = node.material.map((mat) => mat && mat.clone ? mat.clone() : mat);
             } else if (node.material && node.material.clone) {
@@ -1236,6 +1306,148 @@
     });
   }
 
+
+  async function buildEmbeddedFurnitureModel(source, label) {
+    if (typeof source !== 'string' || !source.trim() || !window.THREE?.GLTFLoader) return null;
+    const arrayBuffer = decodeBase64ArrayBuffer(source);
+    return await new Promise((resolve, reject) => {
+      try {
+        const loader = new THREE.GLTFLoader();
+        loader.parse(arrayBuffer, '', (gltf) => {
+          const root = gltf?.scene || gltf?.scenes?.[0];
+          if (!root) { reject(new Error(label + '.glb contained no scene')); return; }
+          root.name = label;
+          root.traverse((node) => {
+            if (!node.isMesh) return;
+            node.castShadow = true;
+            node.receiveShadow = true;
+            node.frustumCulled = false;
+            if (Array.isArray(node.material)) node.material = node.material.map((mat) => mat && mat.clone ? mat.clone() : mat);
+            else if (node.material && node.material.clone) node.material = node.material.clone();
+            if (node.geometry?.computeBoundingBox) node.geometry.computeBoundingBox();
+          });
+          root.updateMatrixWorld(true);
+          const box = new THREE.Box3().setFromObject(root);
+          if (box.isEmpty()) { reject(new Error(label + '.glb has empty bounds')); return; }
+          const center = box.getCenter(new THREE.Vector3());
+          root.position.x -= center.x;
+          root.position.z -= center.z;
+          root.position.y -= box.min.y;
+          root.updateMatrixWorld(true);
+          resolve(root);
+        }, (error) => reject(error instanceof Error ? error : new Error(label + '.glb parse failed')));
+      } catch (error) { reject(error); }
+    });
+  }
+
+  function cloneFurnitureModelTemplate(typeId) {
+    const key = ({ furniture_bed:'bed', furniture_chair:'chair', furniture_desk:'desk', furniture_light:'lamp', furniture_wardrobe:'wardrobe' })[String(typeId || '')];
+    const template = key ? furnitureModelTemplates[key] : null;
+    if (!template) return null;
+    const clone = template.clone(true);
+    clone.traverse((node) => {
+      if (!node.isMesh) return;
+      if (Array.isArray(node.material)) node.material = node.material.map((mat) => mat && mat.clone ? mat.clone() : mat);
+      else if (node.material && node.material.clone) node.material = node.material.clone();
+      node.castShadow = true;
+      node.receiveShadow = true;
+      node.frustumCulled = false;
+    });
+    return clone;
+  }
+
+  function applyFurnitureGhostMaterials(root) {
+    if (!root) return;
+    root.traverse((node) => {
+      if (!node.isMesh) return;
+      node.material = new THREE.MeshStandardMaterial({
+        color: 0x78f0b0,
+        transparent: true,
+        opacity: 0.34,
+        roughness: 0.48,
+        metalness: 0.16,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      });
+      node.userData.furnitureGhost = true;
+      node.castShadow = false;
+      node.receiveShadow = false;
+    });
+  }
+
+  function getFurnitureMeshLocalSize(node) {
+    if (!node?.isMesh || !node.geometry) return null;
+    if (!node.geometry.boundingBox && node.geometry.computeBoundingBox) node.geometry.computeBoundingBox();
+    return node.geometry.boundingBox ? node.geometry.boundingBox.getSize(new THREE.Vector3()) : null;
+  }
+
+  function applyFurniturePlacedMaterials(root, typeId) {
+    if (!root) return;
+    // Furniture gets its own warm wood tone instead of reusing the wood color used
+    // by base/module construction pieces.
+    const furnitureWood = 0x6f472f;
+    const lightGreen = 0xc0ffcc;
+    const warmWhite = 0xfff5c4;
+    const black = 0x080a0b;
+    const yellow = 0xffe15a;
+
+    root.traverse((node) => {
+      if (!node.isMesh) return;
+      const name = String(node.name || '').toLowerCase();
+      const size = getFurnitureMeshLocalSize(node);
+      let color = furnitureWood, roughness = 0.78, metalness = 0.05, emissive = 0x000000, emissiveIntensity = 0;
+
+      if (typeId === 'furniture_bed') {
+        // Invert the previous Bed.glb palette: the two meshes that were green are now
+        // furniture wood, and every other bed mesh is light green.
+        if (name === 'beveled_cuboid') {
+          const isLongBeveled = !!size && Math.max(size.x, size.z) >= 1.0;
+          color = isLongBeveled ? furnitureWood : lightGreen;
+        } else if (name === 'mesh') {
+          const isHigherLongCuboid = !!size && size.y > 0.5 && Math.max(size.x, size.z) >= 1.5;
+          color = isHigherLongCuboid ? furnitureWood : lightGreen;
+        } else {
+          color = lightGreen;
+        }
+      } else if (typeId === 'furniture_light' && name === 'tube') {
+        color = yellow;
+        roughness = 0.28;
+        metalness = 0.04;
+        emissive = 0xffc928;
+        emissiveIntensity = 2.2;
+        node.userData.furnitureLampTube = true;
+      } else if (typeId === 'furniture_wardrobe' && name === 'cylinder') {
+        color = black;
+      }
+
+      node.material = new THREE.MeshStandardMaterial({
+        color, roughness, metalness, emissive, emissiveIntensity, side: THREE.DoubleSide
+      });
+      node.userData.isFurniture = true;
+      node.userData.furnitureTypeId = typeId;
+      node.userData.furnitureGhost = false;
+    });
+
+    root.userData.isFurniture = true;
+    root.userData.furnitureTypeId = typeId;
+
+    if (typeId === 'furniture_light') {
+      let tubeNode = null;
+      root.traverse((node) => {
+        if (!tubeNode && node.isMesh && String(node.name || '').toLowerCase() === 'tube') tubeNode = node;
+      });
+      if (tubeNode) {
+        root.updateMatrixWorld(true);
+        const lightPos = root.worldToLocal(tubeNode.getWorldPosition(new THREE.Vector3()));
+        const pointLight = new THREE.PointLight(0xffdf70, 0.9, 5.5, 2);
+        pointLight.position.copy(lightPos);
+        pointLight.userData.furnitureLampLight = true;
+        pointLight.userData.baseIntensity = pointLight.intensity;
+        root.add(pointLight);
+      }
+    }
+  }
+
   async function loadToolModels() {
     // The supplied OBJ files are now embedded as geometry data and become the
     // authoritative tool meshes. This avoids the unreliable external OBJ/MTL
@@ -1244,6 +1456,25 @@
     pickaxeModelTemplate = buildEmbeddedToolModel('pickaxe');
     hoeModelTemplate = await buildEmbeddedHoeModel();
     wateringCanModelTemplate = await buildEmbeddedWateringCanModel();
+    try { hydroponicsTubeModelTemplate = await withTimeout(buildEmbeddedHydroponicsTubeModel(), 8000, "Hydroponics tube model"); } catch (hydroTubeError) { console.warn('Hydroponics Tube.glb unavailable; procedural tube fallback will be used.', hydroTubeError); hydroponicsTubeModelTemplate = null; }
+    if (window.PocketUniverseFurnitureModelsGLB && window.THREE?.GLTFLoader) {
+      const furnitureEntries = [['bed','Bed'],['chair','Chair'],['desk','Desk'],['lamp','Lamp'],['wardrobe','Wardrobe']];
+      await Promise.all(furnitureEntries.map(async ([key,label]) => {
+        try {
+          furnitureModelTemplates[key] = await withTimeout(
+            buildEmbeddedFurnitureModel(window.PocketUniverseFurnitureModelsGLB[key], label + ' furniture'),
+            8000,
+            label + ' furniture model'
+          );
+        } catch (furnitureError) {
+          console.warn(label + ' furniture GLB unavailable; procedural furniture fallback will be used.', furnitureError);
+          furnitureModelTemplates[key] = null;
+        }
+      }));
+    }
+    for (const key of Object.keys(furnitureModelTemplates)) {
+      if (!furnitureModelTemplates[key]) console.warn('Embedded furniture model unavailable for', key, '; procedural fallback will be used.');
+    }
     wrenchModelTemplate = buildEmbeddedWrenchModel();
     blueprintModelTemplate = buildEmbeddedBlueprintModel();
     containerModelTemplate = await buildEmbeddedContainerFromObj();
@@ -1253,6 +1484,7 @@
     if (!pickaxeModelTemplate) console.warn('Embedded pickaxe model unavailable; using procedural fallback.');
     if (!hoeModelTemplate) console.warn('Embedded hoe model unavailable; using procedural fallback.');
     if (!wateringCanModelTemplate) console.warn('Embedded watering can model unavailable; using procedural fallback.');
+    if (!hydroponicsTubeModelTemplate) console.warn('Embedded hydroponics tube model unavailable; using procedural fallback.');
     if (!wrenchModelTemplate) console.warn('Embedded wrench model unavailable; using procedural fallback.');
     if (!blueprintModelTemplate) console.warn('Embedded blueprint model unavailable; using procedural fallback.');
     if (!containerModelTemplate) console.warn('Embedded container model unavailable; using procedural fallback.');
@@ -1618,6 +1850,72 @@
     document.body.appendChild(renderer.domElement);
     const canvas = renderer.domElement;
 
+    // ---------- performance profiler ----------
+    // OPT-A: lightweight frame/render telemetry. It records real frame intervals so
+    // spikes are visible even though the gameplay simulation delta is intentionally capped.
+    const performanceProfilerEl = document.getElementById('performanceProfiler');
+    const perfFpsEl = document.getElementById('perfFps');
+    const perfFrameEl = document.getElementById('perfFrame');
+    const perfLowEl = document.getElementById('perfLow');
+    const perfCallsEl = document.getElementById('perfCalls');
+    const perfTrianglesEl = document.getElementById('perfTriangles');
+    const perfGeometriesEl = document.getElementById('perfGeometries');
+    const perfTexturesEl = document.getElementById('perfTextures');
+    const performanceProfilerSamples = new Float32Array(120);
+    let performanceProfilerSampleCount = 0;
+    let performanceProfilerSampleIndex = 0;
+    let performanceProfilerLastFrameAt = performance.now();
+    let performanceProfilerUiTimer = 0;
+
+    function recordPerformanceProfilerFrame() {
+      const now = performance.now();
+      const frameMs = performanceProfilerLastFrameAt > 0
+        ? Math.min(250, Math.max(0.01, now - performanceProfilerLastFrameAt))
+        : 16.67;
+      performanceProfilerLastFrameAt = now;
+      performanceProfilerSamples[performanceProfilerSampleIndex] = frameMs;
+      performanceProfilerSampleIndex = (performanceProfilerSampleIndex + 1) % performanceProfilerSamples.length;
+      performanceProfilerSampleCount = Math.min(performanceProfilerSampleCount + 1, performanceProfilerSamples.length);
+      return frameMs;
+    }
+
+    function updatePerformanceProfilerUi(frameMs) {
+      if (!performanceProfilerEl || performanceProfilerEl.classList.contains('hidden')) return;
+      performanceProfilerUiTimer += frameMs / 1000;
+      if (performanceProfilerUiTimer < 0.25) return;
+      performanceProfilerUiTimer = 0;
+
+      let total = 0;
+      let slowest = 0;
+      let secondSlowest = 0;
+      for (let i = 0; i < performanceProfilerSampleCount; i++) {
+        const sample = performanceProfilerSamples[i];
+        total += sample;
+        if (sample >= slowest) {
+          secondSlowest = slowest;
+          slowest = sample;
+        } else if (sample > secondSlowest) {
+          secondSlowest = sample;
+        }
+      }
+      const average = performanceProfilerSampleCount ? total / performanceProfilerSampleCount : frameMs;
+      const fps = 1000 / Math.max(0.01, average);
+      const onePercentSampleCount = Math.max(1, Math.ceil(performanceProfilerSampleCount * 0.01));
+      const lowFrameMs = onePercentSampleCount >= 2 && performanceProfilerSampleCount >= 2
+        ? (slowest + secondSlowest) / 2
+        : (slowest || frameMs);
+      const lowFps = 1000 / Math.max(0.01, lowFrameMs);
+      const info = renderer.info;
+
+      perfFpsEl.textContent = fps.toFixed(0);
+      perfFrameEl.textContent = frameMs.toFixed(1) + ' ms';
+      perfLowEl.textContent = lowFps.toFixed(0);
+      perfCallsEl.textContent = String(info.render.calls);
+      perfTrianglesEl.textContent = info.render.triangles.toLocaleString();
+      perfGeometriesEl.textContent = String(info.memory.geometries);
+      perfTexturesEl.textContent = String(info.memory.textures);
+    }
+
     // ---------- planetary map renderer ----------
     // The map is a second lightweight Three.js view so it can show the same procedural
     // planet style as the main-menu preview without disturbing the gameplay camera.
@@ -1708,6 +2006,11 @@
       } else if (bodyId === 'mileria') {
         entries.push({ cls: 'titanium', label: 'TITANIUM', color: '#77c7df' });
       }
+      if ((baseCores || []).some(base => base?.surfaceBodyId === bodyId)) {
+        entries.push({ cls: 'base', label: 'BASE', color: '#66e7ff' });
+        const homeId = String(baseHomeByUserId[getBaseLocalUserId()] || '');
+        if (homeId && (baseCores || []).some(base => String(base?.baseId || '') === homeId && base.surfaceBodyId === bodyId)) entries.push({ cls: 'homeBase', label: 'HOME BASE', color: '#ffd66d' });
+      }
       legendEl.innerHTML = '<div class="mapLegendTitle">LEGEND</div>' + entries.map(e => '<div class="mapLegendItem"><span class="mapLegendDot ' + e.cls + '" style="background:' + e.color + ';color:' + e.color + '"></span> ' + e.label + '</div>').join('');
     }
 
@@ -1726,6 +2029,7 @@
       clone.quaternion.identity();
       clone.scale.set(1, 1, 1);
       clone.traverse(obj => {
+        if (obj.userData?.isBaseCore) obj.visible = false;
         if (obj.isMesh) {
           obj.castShadow = false;
           obj.receiveShadow = false;
@@ -1769,6 +2073,28 @@
       } else if (bodyId === 'mileria') {
         addMarkers(omegaTitaniumSpawns, 0x77c7df, 1.15, 1.8);
       }
+      const localHomeBaseId = String(baseHomeByUserId[getBaseLocalUserId()] || '');
+      for (const base of baseCores) {
+        if (!base || base.surfaceBodyId !== bodyId) continue;
+        const dir = base.direction?.clone?.().normalize();
+        if (!dir) continue;
+        const h = ctx.getHeight(dir) || 0;
+        const markerGroup = new THREE.Group();
+        const isHome = String(base.baseId || '') === localHomeBaseId;
+        markerGroup.position.copy(dir).multiplyScalar(ctx.radius + h + (isHome ? 8.0 : 6.0));
+        markerGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+        const markerColor = isHome ? 0xffd66d : 0x66e7ff;
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(isHome ? 4.6 : 4.0, isHome ? 0.44 : 0.34, 8, 28), new THREE.MeshBasicMaterial({ color: markerColor }));
+        ring.rotation.x = Math.PI / 2;
+        markerGroup.add(ring);
+        const core = new THREE.Mesh(new THREE.SphereGeometry(isHome ? 1.55 : 1.35, 14, 10), new THREE.MeshBasicMaterial({ color: markerColor }));
+        markerGroup.add(core);
+        const beam = new THREE.Mesh(new THREE.CylinderGeometry(isHome ? 0.22 : 0.16, isHome ? 0.32 : 0.23, isHome ? 5.6 : 4.4, 8), new THREE.MeshBasicMaterial({ color: markerColor, transparent: true, opacity: 0.42, depthWrite: false }));
+        beam.position.y = isHome ? 2.5 : 2.0;
+        markerGroup.add(beam);
+        mapMarkerGroup.add(markerGroup);
+      }
+
       for (const m of markerSpecs) {
         const pin = new THREE.Mesh(new THREE.SphereGeometry(m.radius, 10, 10), new THREE.MeshBasicMaterial({ color: m.color }));
         pin.position.copy(m.dir).multiplyScalar(m.surfaceRadius);
@@ -2262,6 +2588,11 @@
     let weatherClearTimer = 0;
     let weatherForced = false;
 
+    // OPT-B: reuse these vectors during the hot rain loop. Creating several thousand
+    // Vector3 objects per frame caused avoidable garbage-collection pressure during storms.
+    const rainCenterTemp = new THREE.Vector3();
+    const rainDownTemp = new THREE.Vector3();
+
     const weatherControlToggle = document.getElementById('weatherControlToggle');
     const weatherControlOverlay = document.getElementById('weatherControlOverlay');
     const weatherControlClose = document.getElementById('weatherControlClose');
@@ -2298,20 +2629,19 @@
       rainPositions[i * 6 + 3] = end.x; rainPositions[i * 6 + 4] = end.y; rainPositions[i * 6 + 5] = end.z;
     }
 
-    function getIvisLocalWeatherCenter() {
+    function getIvisLocalWeatherCenter(out = rainCenterTemp) {
       const activeCamera = playerState.inRocket ? flightCamera : camera;
-      const center = new THREE.Vector3();
-      activeCamera.getWorldPosition(center);
+      activeCamera.getWorldPosition(out);
       // weatherRainGroup is parented to planetSystem, so its particle positions must be
       // expressed in Ivis-local space. This became important once Ivis started orbiting
       // the Sun; using raw world coordinates made the rain volume miss the player entirely.
-      return planetSystem.worldToLocal(center);
+      return planetSystem.worldToLocal(out);
     }
 
     function rebuildRainDrops() {
-      const center = getIvisLocalWeatherCenter();
-      const down = center.clone().normalize().multiplyScalar(-1);
-      for (let i = 0; i < rainDropCount; i++) setRainParticle(i, center, down);
+      const center = getIvisLocalWeatherCenter(rainCenterTemp);
+      rainDownTemp.copy(center).normalize().multiplyScalar(-1);
+      for (let i = 0; i < rainDropCount; i++) setRainParticle(i, center, rainDownTemp);
       rainGeo.attributes.position.needsUpdate = true;
     }
 
@@ -2321,24 +2651,27 @@
       if (!visible) return;
       // The particle volume follows the current player/ship position, so rain does not
       // remain anchored to the place where the storm originally began.
-      const center = getIvisLocalWeatherCenter();
+      const center = getIvisLocalWeatherCenter(rainCenterTemp);
+      rainDownTemp.copy(center).normalize().multiplyScalar(-1);
+      const cx = center.x, cy = center.y, cz = center.z;
       for (let i = 0; i < rainDropCount; i++) {
         const idx = i * 6;
-        const sx = rainPositions[idx], sy = rainPositions[idx + 1], sz = rainPositions[idx + 2];
-        const ex = rainPositions[idx + 3], ey = rainPositions[idx + 4], ez = rainPositions[idx + 5];
-        const start = new THREE.Vector3(sx, sy, sz);
-        const end = new THREE.Vector3(ex, ey, ez);
-        const radialDownStart = start.clone().normalize().multiplyScalar(-1);
+        let sx = rainPositions[idx], sy = rainPositions[idx + 1], sz = rainPositions[idx + 2];
+        let ex = rainPositions[idx + 3], ey = rainPositions[idx + 4], ez = rainPositions[idx + 5];
+        const startLenSq = sx * sx + sy * sy + sz * sz;
+        const startLen = Math.sqrt(startLenSq) || 1;
         const move = rainSpeeds[i] * delta;
-        start.addScaledVector(radialDownStart, move);
-        end.addScaledVector(radialDownStart, move);
-        const radial = end.length();
-        if (radial < PLANET_RADIUS + 2 || start.distanceTo(center) > 76) {
-          const down = center.clone().normalize().multiplyScalar(-1);
-          setRainParticle(i, center, down);
+        const downX = -sx / startLen, downY = -sy / startLen, downZ = -sz / startLen;
+        sx += downX * move; sy += downY * move; sz += downZ * move;
+        ex += downX * move; ey += downY * move; ez += downZ * move;
+
+        const endRadiusSq = ex * ex + ey * ey + ez * ez;
+        const distanceFromCenterSq = (sx - cx) * (sx - cx) + (sy - cy) * (sy - cy) + (sz - cz) * (sz - cz);
+        if (endRadiusSq < (PLANET_RADIUS + 2) * (PLANET_RADIUS + 2) || distanceFromCenterSq > 76 * 76) {
+          setRainParticle(i, center, rainDownTemp);
         } else {
-          rainPositions[idx] = start.x; rainPositions[idx + 1] = start.y; rainPositions[idx + 2] = start.z;
-          rainPositions[idx + 3] = end.x; rainPositions[idx + 4] = end.y; rainPositions[idx + 5] = end.z;
+          rainPositions[idx] = sx; rainPositions[idx + 1] = sy; rainPositions[idx + 2] = sz;
+          rainPositions[idx + 3] = ex; rainPositions[idx + 4] = ey; rainPositions[idx + 5] = ez;
         }
       }
       rainGeo.attributes.position.needsUpdate = true;
@@ -2833,6 +3166,10 @@
     const ivisSolarOrbitPosition = new THREE.Vector3();
     sunLight.target = sunLightTarget;
     const initialSunDirection = new THREE.Vector3(520, 120, 150).normalize();
+    // Fresh Ivis sessions now begin in a temperate mid-latitude home area on the sun-facing
+    // side of the planet. Using the initial solar direction keeps a fresh spawn in daytime
+    // at spin angle 0, while avoiding the old north-pole spawn that effectively never saw sunset.
+    const IVIS_HOME_DIR = new THREE.Vector3(0.938, 0.220, 0.269).normalize();
     sunMesh.position.copy(initialSunDirection).multiplyScalar(SUN_DISTANCE);
     sunLight.position.copy(sunMesh.position);
     sunLightTarget.position.copy(ivisSolarOrbitPosition);
@@ -3286,14 +3623,6 @@
         return true;
       }
       if (distance <= SYSP0_CORE_WARNING_DISTANCE) {
-        if (playerState.inRocket) {
-          syspoMethaneQuestSampleAccumulator += Math.max(0, Number(delta) || 0);
-          if (syspoMethaneQuestSampleAccumulator >= 1) {
-            const samples = Math.min(3, Math.floor(syspoMethaneQuestSampleAccumulator));
-            syspoMethaneQuestSampleAccumulator -= samples;
-            if (typeof recordConciergeQuestSyspoMethaneSample === 'function') recordConciergeQuestSyspoMethaneSample(samples);
-          }
-        }
         // Warning only: do NOT lock flight movement here. The player must be able to
         // continue through the final 50 units and actually reach the core so the
         // Syspo recovery sequence can trigger. This mirrors the Sun hazard behavior.
@@ -3576,6 +3905,10 @@
     const SYSP0_CORE_WARNING_DISTANCE = 750; // 50 above the core surface
     const SYSP0_CORE_DEATH_DISTANCE = SYSP0_RADIUS;
     const SYSP0_CLOUD_RADII = [780, 840, 900];
+    const SYSP0_METHANE_COLLECTION_RADIUS = SYSP0_CLOUD_RADII[2];
+    const METHANE_CONTAINER_CAPACITY = 50;
+    const METHANE_COLLECTION_RATE_LPS = 2.0;
+    const METHANE_PER_JERRYCAN = 10; 
 
     const AURORA_RADIUS = 120;
     const AURORA_ORBIT_RADIUS = 2300;
@@ -4277,7 +4610,8 @@
       root.traverse((node) => {
         if (!node.isMesh) return;
         meshNodes.push(node);
-        node.frustumCulled = false;
+        if (node.geometry?.computeBoundingSphere && !node.geometry.boundingSphere) node.geometry.computeBoundingSphere();
+        node.frustumCulled = true;
         replaceTreeMaterial(node, treeLeafMat);
         node.userData.treePart = 'canopy';
       });
@@ -4497,16 +4831,16 @@
     // Small grass and flowers are spread across the grassy parts of the planet to make
     // otherwise empty areas feel alive. They are deliberately kept short so they don't
     // compete visually with the much larger trees and mountains.
-    const grassGeo = new THREE.ConeGeometry(0.055, 0.42, 4);
+    // OPT-D: repeated vegetation is rendered through InstancedMesh. Gameplay roots remain
+    // lightweight Object3Ds so harvesting and persistence keep their existing data model.
+    const grassGeo = new THREE.ConeGeometry(0.055, 0.42, 3, 1, true);
     const grassMat = new THREE.MeshStandardMaterial({ color: 0x3f9b45, roughness: 1 });
-
-    // A tiny flower is made from a short stem plus a simple blossom. We use several
-    // blossom materials so the planet gets little patches of different flower colors.
-    const flowerStemGeo = new THREE.CylinderGeometry(0.025, 0.035, 0.34, 5);
-    const flowerBloomGeo = new THREE.SphereGeometry(0.12, 6, 6);
+    const flowerStemGeo = new THREE.CylinderGeometry(0.025, 0.035, 0.34, 4, 1, true);
+    const flowerBloomGeo = new THREE.SphereGeometry(0.12, 5, 4);
     const flowerStemMat = new THREE.MeshStandardMaterial({ color: 0x3f8f43, roughness: 1 });
     const grassSpawns = [];
     const tilledPlots = [];
+    const hydroponicsPlots = [];
 
     const flowerMats = [
       new THREE.MeshStandardMaterial({ color: 0xffd166, roughness: 0.9 }),
@@ -4514,6 +4848,64 @@
       new THREE.MeshStandardMaterial({ color: 0xc9b6ff, roughness: 0.9 }),
       new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 })
     ];
+
+    const ivisGrassInstanceMesh = new THREE.InstancedMesh(grassGeo, grassMat, 1300);
+    const ivisFlowerStemInstanceMesh = new THREE.InstancedMesh(flowerStemGeo, flowerStemMat, 480);
+    const ivisFlowerBloomInstanceMeshes = flowerMats.map((mat) => new THREE.InstancedMesh(flowerBloomGeo, mat, 480));
+    ivisGrassInstanceMesh.frustumCulled = true;
+    ivisFlowerStemInstanceMesh.frustumCulled = true;
+    for (const mesh of ivisFlowerBloomInstanceMeshes) mesh.frustumCulled = true;
+    planetSystem.add(ivisGrassInstanceMesh);
+    planetSystem.add(ivisFlowerStemInstanceMesh);
+    for (const mesh of ivisFlowerBloomInstanceMeshes) planetSystem.add(mesh);
+
+    const vegetationDummy = new THREE.Object3D();
+    const vegetationRootUp = new THREE.Vector3(0, 1, 0);
+
+    function writeVegetationInstanceMatrix(mesh, index, dir, radius, yaw, scaleX, scaleY = scaleX, scaleZ = scaleX, localYOffset = 0) {
+      vegetationDummy.position.copy(dir).multiplyScalar(radius).addScaledVector(dir, localYOffset);
+      vegetationDummy.quaternion.setFromUnitVectors(vegetationRootUp, dir);
+      vegetationDummy.rotateY(yaw);
+      vegetationDummy.scale.set(scaleX, scaleY, scaleZ);
+      vegetationDummy.updateMatrix();
+      mesh.setMatrixAt(index, vegetationDummy.matrix);
+    }
+
+    const vegetationTempDir = new THREE.Vector3();
+    function rebuildIvisInstancedVegetation() {
+      let grassCount = 0;
+      for (const grass of grassSpawns) {
+        if (grass.cut || !grass.root.visible) continue;
+        const dir = grass.direction;
+        const h = heightAt(dir);
+        const radius = PLANET_RADIUS + h + 0.18 * grass.size;
+        writeVegetationInstanceMatrix(ivisGrassInstanceMesh, grassCount++, dir, radius, grass.yaw, grass.size, grass.heightScale, grass.size);
+      }
+      ivisGrassInstanceMesh.count = grassCount;
+      ivisGrassInstanceMesh.instanceMatrix.needsUpdate = true;
+
+      let stemCount = 0;
+      const bloomCounts = [0, 0, 0, 0];
+      for (const flower of ivisFlowerRoots) {
+        if (!flower?.visible) continue;
+        vegetationTempDir.copy(flower.position).normalize();
+        const dir = vegetationTempDir;
+        const size = Number(flower.userData.vegetationSize) || 1;
+        const yaw = Number(flower.userData.vegetationYaw) || 0;
+        const h = heightAt(dir);
+        const radius = PLANET_RADIUS + h + 0.02;
+        writeVegetationInstanceMatrix(ivisFlowerStemInstanceMesh, stemCount++, dir, radius, yaw, size, size, size, 0.17 * size);
+        const bloomType = Math.max(0, Math.min(3, Number(flower.userData.vegetationBloomIndex) || 0));
+        const bloomIndex = bloomCounts[bloomType]++;
+        writeVegetationInstanceMatrix(ivisFlowerBloomInstanceMeshes[bloomType], bloomIndex, dir, radius, yaw, size * 0.72, size * 0.72, size * 0.72, 0.36 * size);
+      }
+      ivisFlowerStemInstanceMesh.count = stemCount;
+      ivisFlowerStemInstanceMesh.instanceMatrix.needsUpdate = true;
+      for (let i = 0; i < ivisFlowerBloomInstanceMeshes.length; i++) {
+        ivisFlowerBloomInstanceMeshes[i].count = bloomCounts[i];
+        ivisFlowerBloomInstanceMeshes[i].instanceMatrix.needsUpdate = true;
+      }
+    }
 
     function scatterGrass(count) {
       let placed = 0, attempts = 0;
@@ -4524,22 +4916,24 @@
         ).normalize();
         if (isWater(dir)) continue;
         const h = heightAt(dir);
-        // Keep the grass on terrain that is still naturally grassy, including gentle hills.
         if (h > ROCK_LEVEL) continue;
 
-        const grass = new THREE.Mesh(grassGeo, grassMat);
         const size = 0.65 + Math.random() * 0.85;
-        grass.scale.set(size, size * (0.75 + Math.random() * 0.35), size);
+        const heightScale = size * (0.75 + Math.random() * 0.35);
+        const yaw = Math.random() * Math.PI * 2;
+        const grass = new THREE.Object3D();
+        grass.scale.set(size, heightScale, size);
         grass.position.copy(dir).multiplyScalar(PLANET_RADIUS + h + 0.18 * size);
         grass.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-        grass.rotateY(Math.random() * Math.PI * 2);
+        grass.rotateY(yaw);
         planetSystem.add(grass);
-        grassSpawns.push({ root: grass, direction: dir.clone(), size, yaw: grass.rotation.y, cut: false, generation: 0 });
+        grassSpawns.push({ root: grass, direction: dir.clone(), size, heightScale, yaw, cut: false, generation: 0 });
         placed++;
       }
     }
 
     const ivisFlowerDirs = [];
+    const ivisFlowerRoots = [];
 
     function scatterFlowers(count) {
       let placed = 0, attempts = 0;
@@ -4553,22 +4947,17 @@
         if (h > ROCK_LEVEL) continue;
         ivisFlowerDirs.push(dir.clone());
 
-        const flower = new THREE.Group();
-        const stem = new THREE.Mesh(flowerStemGeo, flowerStemMat);
-        const bloom = new THREE.Mesh(flowerBloomGeo, flowerMats[Math.floor(Math.random() * flowerMats.length)]);
+        const flower = new THREE.Object3D();
         const size = 0.75 + Math.random() * 0.65;
-
-        stem.position.y = 0.17 * size;
-        bloom.position.y = 0.36 * size;
-        stem.scale.setScalar(size);
-        bloom.scale.setScalar(size * (0.8 + Math.random() * 0.25));
-        flower.add(stem);
-        flower.add(bloom);
-
         flower.position.copy(dir).multiplyScalar(PLANET_RADIUS + h + 0.02);
         flower.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-        flower.rotateY(Math.random() * Math.PI * 2);
+        const yaw = Math.random() * Math.PI * 2;
+        flower.rotateY(yaw);
+        flower.userData.vegetationSize = size;
+        flower.userData.vegetationYaw = yaw;
+        flower.userData.vegetationBloomIndex = Math.floor(Math.random() * flowerMats.length);
         planetSystem.add(flower);
+        ivisFlowerRoots.push(flower);
         placed++;
       }
     }
@@ -4577,6 +4966,7 @@
     // They are intentionally much more numerous than the large trees, but remain tiny.
     scatterGrass(1300);
     scatterFlowers(480);
+    rebuildIvisInstancedVegetation();
 
     // ---------- Day 13 Phase 1: Ivis birds ----------
     // Birds are intentionally implemented as ordinary 3D meshes rather than camera-facing
@@ -5052,7 +5442,7 @@
 
     const BUTTERFLY_COUNT = 30;
     const BUTTERFLY_PATCH_COUNT = 20;
-    const BUTTERFLY_SPAWN_DIR = new THREE.Vector3(0, 1, 0);
+    const BUTTERFLY_SPAWN_DIR = IVIS_HOME_DIR.clone();
     const ivisButterflyPatches = [];
 
     // Build 20 real flower anchors, with several guaranteed around the actual spawn pole.
@@ -5696,7 +6086,7 @@
       ivisBunnyGroup.clear();
       ivisBunnies.length = 0;
       const spawnDirs = [];
-      const startDir = new THREE.Vector3(0, 1, 0);
+      const startDir = IVIS_HOME_DIR.clone();
       const starterDirs = [];
 
       // Keep two bunnies discoverable near the player's normal Ivis starting area,
@@ -6305,7 +6695,11 @@
     const furnaces = worldState.furnaces;
     const campfires = worldState.campfires;
     const launchPads = worldState.launchPads;
+    const gasCollectionSystems = worldState.gasCollectionSystems || (worldState.gasCollectionSystems = []);
     const containers = worldState.containers;
+    const baseCores = worldState.baseCores;
+    const baseStructures = worldState.baseStructures;
+    const baseHomeByUserId = worldState.baseHomeByUserId;
     const sleepingBags = worldState.sleepingBags;
     const droppedItems = worldState.droppedItems;
     const landmarkSpawns = worldState.landmarks;
@@ -6313,6 +6707,7 @@
     let nextContainerId = 1;
     const placedDrills = [];
     let activeFurnace = null;
+    let activeFuelSynth = null;
 
     let furnaceSelectedSlot = 'fuel';
     let furnaceSmeltStartedAt = 0;
@@ -6349,7 +6744,7 @@
       tangent.normalize();
       const distance = 2.7;
       const dir = playerLocal.clone().add(tangent.multiplyScalar(distance / Math.max(1, ctx.radius))).normalize();
-      return { ctx, dir };
+      return { ctx, dir, forward: tangent.clone() };
     }
 
     function getHoeTillingPlacement() {
@@ -6379,7 +6774,7 @@
     function findNearbyTilledPlot(dir, ctx, threshold = TILLED_PLOT_SPACING) {
       let nearest = null;
       let best = Infinity;
-      for (const plot of tilledPlots) {
+      for (const plot of tilledPlots.concat(hydroponicsPlots)) {
         if (!plot.root?.visible || plot.surfaceBodyId !== ctx.id) continue;
         const d = ctx.radius * dir.angleTo(plot.direction);
         if (d <= threshold && d < best) { best = d; nearest = plot; }
@@ -6394,7 +6789,7 @@
 
     function findTilledPlotByKey(plotKey) {
       const wanted = String(plotKey || '');
-      return tilledPlots.find(plot => String(plot.plotKey || '') === wanted) || null;
+      return tilledPlots.find(plot => String(plot.plotKey || '') === wanted) || hydroponicsPlots.find(plot => String(plot.plotKey || '') === wanted) || null;
     }
 
     function createTilledPlot(placement, plotKeyOverride = null) {
@@ -6469,6 +6864,148 @@
       return plot;
     }
 
+    const HYDROPONICS_AUTO_WATER_MS = 1000 * 60 * 60 * 24 * 365 * 10;
+
+    function createHydroponicPlotVisual(plot, slotIndex = 0) {
+      const tray = new THREE.Group();
+      tray.name = 'HydroponicPlantingBed';
+      const frameMat = new THREE.MeshStandardMaterial({ color: 0x45545b, roughness: 0.48, metalness: 0.72 });
+      const soil = new THREE.MeshStandardMaterial({ color: 0x5b3a28, roughness: 0.98, metalness: 0.0 });
+      const innerSoil = new THREE.MeshStandardMaterial({ color: 0x6b432b, roughness: 0.98, metalness: 0.0 });
+      const trayBase = new THREE.Mesh(new THREE.BoxGeometry(2.55, 0.18, 1.15), frameMat);
+      trayBase.position.y = 0.10; trayBase.castShadow = true; trayBase.receiveShadow = true;
+      tray.add(trayBase);
+      const soilBed = new THREE.Mesh(new THREE.BoxGeometry(2.22, 0.13, 0.86), soil);
+      soilBed.position.y = 0.22; soilBed.castShadow = true; soilBed.receiveShadow = true;
+      tray.add(soilBed);
+      const inner = new THREE.Mesh(new THREE.BoxGeometry(2.02, 0.035, 0.66), innerSoil);
+      inner.position.y = 0.296;
+      tray.add(inner);
+      for (let i = -3; i <= 3; i++) {
+        const groove = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.008, 0.56), new THREE.MeshStandardMaterial({ color: 0x482d20, roughness: 1.0 }));
+        groove.position.set(i * 0.28, 0.318, 0);
+        tray.add(groove);
+      }
+      // Use the player's supplied GLB as the watering assembly when available.
+      // The model is authored as a complete tube/nozzle unit; its named `sphere` mesh
+      // is recoloured light blue and is also the exact origin for the animated droplets.
+      let emitterLocal = new THREE.Vector3(0, 1.70, 0.25);
+      if (hydroponicsTubeModelTemplate) {
+        const model = hydroponicsTubeModelTemplate.clone(true);
+        model.scale.setScalar(0.72);
+        model.position.set(0, 0.16, 0);
+        model.traverse((node) => { if (node.isMesh) { node.castShadow = true; node.receiveShadow = true; node.frustumCulled = false; } });
+        tray.add(model);
+        const baseEmitter = hydroponicsTubeModelTemplate.userData?.hydroEmitterLocalPosition;
+        if (baseEmitter) emitterLocal.copy(baseEmitter).multiplyScalar(0.72).add(new THREE.Vector3(0, 0.16, 0));
+        tray.userData.hydroTubeModel = model;
+      } else {
+        // Keep the known-working procedural assembly as a fallback if the browser's
+        // GLTFLoader cannot parse the embedded GLB.
+        const tubeMat = new THREE.MeshStandardMaterial({ color: 0x3a4b51, roughness: 0.42, metalness: 0.78 });
+        const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.18, 10), tubeMat);
+        tube.position.set(0, 1.15, -0.34);
+        tube.castShadow = true; tray.add(tube);
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.07, 0.07), tubeMat);
+        arm.position.set(0, 1.72, -0.10);
+        arm.castShadow = true; tray.add(arm);
+        const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.075, 0.12, 8), new THREE.MeshStandardMaterial({ color: 0x72d8ff, emissive: 0x1a6f91, emissiveIntensity: 1.3, roughness: 0.18, metalness: 0.34 }));
+        nozzle.rotation.z = Math.PI / 2;
+        nozzle.position.set(0, 1.72, 0.25);
+        tray.add(nozzle);
+        emitterLocal.set(0, 1.72, 0.25);
+      }
+
+      const particles = [];
+      const particleMat = new THREE.MeshBasicMaterial({ color: 0x63dfff, transparent: true, opacity: 0.78, depthWrite: false });
+      for (let i = 0; i < 3; i++) {
+        const drop = new THREE.Mesh(new THREE.SphereGeometry(0.035, 7, 6), particleMat);
+        drop.position.copy(emitterLocal);
+        drop.position.y -= i * 0.23;
+        drop.scale.setScalar(0.9 - i * 0.08);
+        tray.add(drop);
+        particles.push({ mesh: drop, phase: (i / 3) * 0.9 + slotIndex * 0.11 });
+      }
+      tray.userData.hydroEmitterParticles = particles;
+      tray.userData.hydroEmitterLocalPosition = emitterLocal.clone();
+      return { tray, soil, innerSoil };
+    }
+
+    function createHydroponicPlot(structure, slotIndex, localPosition, savedCrop = null) {
+      if (!structure?.root || structure.typeId !== 'hydroponics_module') return null;
+      const index = Math.max(0, Math.min(7, Math.floor(Number(slotIndex) || 0)));
+      const existing = hydroponicsPlots.find(p => String(p.embeddedStructureId || '') === String(structure.structureId || '') && Number(p.hydroSlotIndex) === index);
+      if (existing) return existing;
+      const pos = Array.isArray(localPosition) && localPosition.length >= 3
+        ? new THREE.Vector3().fromArray(localPosition)
+        : new THREE.Vector3((index % 2 === 0 ? -2.25 : 2.25), 0.0, [-2.55, -0.85, 0.85, 2.55][Math.floor(index / 2)] || 0);
+      const visual = createHydroponicPlotVisual(null, index);
+      const group = visual.tray;
+      group.position.copy(pos);
+      structure.root.add(group);
+      const plotKey = 'hydro:' + String(structure.structureId || 'structure') + ':slot:' + index;
+      const plot = {
+        root: group, direction: new THREE.Vector3(0, 1, 0), forward: new THREE.Vector3(0, 0, 1),
+        surfaceBodyId: 'hydroponics', plotKey, crop: null, cropGeneration: 0, cropVisual: null,
+        soilMaterial: visual.soil, innerSoilMaterial: visual.innerSoil,
+        wetSheenMaterial: null, wetSheen: null, hydroponic: true,
+        embeddedStructureId: String(structure.structureId || ''), hydroSlotIndex: index
+      };
+      group.userData.hydroponicPlot = true;
+      group.userData.hydroSlotIndex = index;
+      hydroponicsPlots.push(plot);
+      if (!Array.isArray(structure.hydroponicPlots)) structure.hydroponicPlots = [];
+      structure.hydroponicPlots.push(plot);
+      if (savedCrop && cropById[String(savedCrop.cropId || '')]) {
+        const plantedAtMs = Math.max(0, Number(savedCrop.plantedAtMs) || Date.now());
+        plot.cropGeneration = Math.max(0, Math.floor(Number(savedCrop.generation) || Number(savedCrop.cropGeneration) || 0));
+        plot.crop = {
+          cropId: String(savedCrop.cropId), plantedAtMs, stage: Math.max(0, Math.min(3, Math.floor(Number(savedCrop.stage) || 0))),
+          cropKey: String(savedCrop.cropKey || getFarmPlotCropKey(plot)),
+          growthProgressSec: Number.isFinite(Number(savedCrop.growthProgressSec)) ? Math.max(0, Number(savedCrop.growthProgressSec)) : 0,
+          growthUpdatedAtMs: Number.isFinite(Number(savedCrop.growthUpdatedAtMs)) ? Math.max(0, Number(savedCrop.growthUpdatedAtMs)) : plantedAtMs,
+          wateredAtMs: Math.max(0, Number(savedCrop.wateredAtMs) || plantedAtMs),
+          wateredUntilMs: Math.max(Date.now() + HYDROPONICS_AUTO_WATER_MS, Number(savedCrop.wateredUntilMs) || 0)
+        };
+        hydrateCropGrowthState(plot.crop);
+        updateTilledPlotCropVisual(plot);
+      }
+      return plot;
+    }
+
+    function createHydroponicPlotsForStructure(structure, savedPlots = null) {
+      if (!structure?.root || structure.typeId !== 'hydroponics_module') return [];
+      for (const plot of hydroponicsPlots.filter(p => String(p.embeddedStructureId || '') === String(structure.structureId || ''))) {
+        if (plot.root?.parent) plot.root.parent.remove(plot.root);
+      }
+      for (let i = hydroponicsPlots.length - 1; i >= 0; i--) {
+        if (String(hydroponicsPlots[i]?.embeddedStructureId || '') === String(structure.structureId || '')) hydroponicsPlots.splice(i, 1);
+      }
+      structure.hydroponicPlots = [];
+      const savedBySlot = new Map((Array.isArray(savedPlots) ? savedPlots : []).map((rec) => [Math.max(0, Math.min(7, Math.floor(Number(rec?.slotIndex) || 0))), rec]));
+      const zPositions = [-2.55, -0.85, 0.85, 2.55];
+      for (let side = 0; side < 2; side++) {
+        for (let row = 0; row < 4; row++) {
+          const index = side * 4 + row;
+          const x = side === 0 ? -2.25 : 2.25;
+          const rec = savedBySlot.get(index);
+          createHydroponicPlot(structure, index, [x, 0, zPositions[row]], rec?.crop || null);
+          const latest = structure.hydroponicPlots[structure.hydroponicPlots.length - 1];
+          if (latest && rec) latest.cropGeneration = Math.max(latest.cropGeneration, Math.floor(Number(rec.cropGeneration) || Number(rec.crop?.generation) || 0));
+        }
+      }
+      return structure.hydroponicPlots;
+    }
+
+    function removeHydroponicsPlotsForStructure(structureId) {
+      const wanted = String(structureId || '');
+      for (let i = hydroponicsPlots.length - 1; i >= 0; i--) {
+        if (String(hydroponicsPlots[i]?.embeddedStructureId || '') !== wanted) continue;
+        if (hydroponicsPlots[i].root?.parent) hydroponicsPlots[i].root.parent.remove(hydroponicsPlots[i].root);
+        hydroponicsPlots.splice(i, 1);
+      }
+    }
+
     function tillNearbySoil() {
       if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen) return false;
       if (!isHoe(uiState.equippedItemType)) return false;
@@ -6506,6 +7043,4515 @@
         if (plot.root?.parent) plot.root.parent.remove(plot.root);
       }
       tilledPlots.length = 0;
+      for (const plot of hydroponicsPlots) {
+        if (plot.root?.parent) plot.root.parent.remove(plot.root);
+      }
+      hydroponicsPlots.length = 0;
+    }
+
+
+    // ---------- 2.4B-A Base Core ----------
+    const BASE_CONSTRUCTION_RADIUS = 40;
+    const BASE_CORE_INTERACTION_RANGE = 6.4;
+    const BASE_CORE_DEFAULT_NAME = 'New Base';
+    const BASE_PERMISSION_ROLES = ['owner', 'builder', 'member', 'visitor'];
+    const BASE_PERMISSION_LABELS = { owner: 'OWNER', builder: 'BUILDER', member: 'MEMBER', visitor: 'VISITOR' };
+
+    function getBaseLocalUserId() {
+      return String(currentAccountUser?.id || 'local-player');
+    }
+
+    function getBaseLocalUsername() {
+      return String(currentAccountUser ? multiplayerUsername(currentAccountUser) : 'Explorer').slice(0, 24) || 'Explorer';
+    }
+
+    function normalizeBaseRole(role, fallback = 'visitor') {
+      const value = String(role || '').toLowerCase();
+      return BASE_PERMISSION_ROLES.includes(value) ? value : fallback;
+    }
+
+    function normalizeBasePermissions(raw, ownerUserId, ownerName, rawNames = {}) {
+      const ownerId = String(ownerUserId || 'local-player');
+      const permissions = {};
+      const permissionNames = {};
+      if (raw && typeof raw === 'object') {
+        for (const [userId, role] of Object.entries(raw)) {
+          const id = String(userId || '');
+          if (!id) continue;
+          permissions[id] = normalizeBaseRole(role);
+        }
+      }
+      permissions[ownerId] = 'owner';
+      if (rawNames && typeof rawNames === 'object') {
+        for (const [userId, name] of Object.entries(rawNames)) {
+          const id = String(userId || '');
+          if (!id) continue;
+          const safe = String(name || '').trim().slice(0, 24);
+          if (safe) permissionNames[id] = safe;
+        }
+      }
+      permissionNames[ownerId] = String(ownerName || permissionNames[ownerId] || 'Explorer').slice(0, 24);
+      return { permissions, permissionNames };
+    }
+
+    function getBasePermission(base, userId = getBaseLocalUserId()) {
+      if (!base) return 'visitor';
+      const id = String(userId || '');
+      if (String(base.ownerUserId || '') === id) return 'owner';
+      return normalizeBaseRole(base.permissions?.[id], 'visitor');
+    }
+
+    function playerCanEditBase(base) {
+      return !!base && String(base.ownerUserId || '') === getBaseLocalUserId();
+    }
+
+    function playerCanBuildBase(base) {
+      const role = getBasePermission(base);
+      return role === 'owner' || role === 'builder';
+    }
+
+    function sanitizeBaseName(value) {
+      const trimmed = String(value ?? '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 32);
+      return trimmed || BASE_CORE_DEFAULT_NAME;
+    }
+
+    function createBaseCoreVisual(scale = 1) {
+      const group = new THREE.Group();
+      const darkMetal = new THREE.MeshStandardMaterial({ color: 0x28333b, roughness: 0.34, metalness: 0.84 });
+      const silver = new THREE.MeshStandardMaterial({ color: 0xb9c8d0, roughness: 0.25, metalness: 0.9 });
+      const cyan = new THREE.MeshStandardMaterial({ color: 0x76ecff, emissive: 0x169dbb, emissiveIntensity: 1.7, roughness: 0.18, metalness: 0.25 });
+      const bright = new THREE.MeshBasicMaterial({ color: 0xaef8ff, transparent: true, opacity: 0.64, depthWrite: false });
+      const glass = new THREE.MeshPhysicalMaterial({ color: 0x8eefff, emissive: 0x1b92b3, emissiveIntensity: 1.1, roughness: 0.06, metalness: 0.1, transparent: true, opacity: 0.86 });
+      const accent = new THREE.MeshStandardMaterial({ color: 0x4a9db0, emissive: 0x155966, emissiveIntensity: 0.9, roughness: 0.28, metalness: 0.56 });
+
+      const basePlate = new THREE.Mesh(new THREE.CylinderGeometry(1.55, 1.7, 0.22, 12), darkMetal);
+      basePlate.position.y = 0.11;
+      group.add(basePlate);
+
+      const silverPlate = new THREE.Mesh(new THREE.CylinderGeometry(1.25, 1.33, 0.10, 12), silver);
+      silverPlate.position.y = 0.25;
+      group.add(silverPlate);
+
+      const lowerCore = new THREE.Mesh(new THREE.CylinderGeometry(0.94, 1.08, 0.72, 12), darkMetal);
+      lowerCore.position.y = 0.66;
+      group.add(lowerCore);
+
+      const accentBand = new THREE.Mesh(new THREE.CylinderGeometry(0.99, 0.99, 0.10, 24), accent);
+      accentBand.position.y = 0.87;
+      group.add(accentBand);
+
+      const energyChamber = new THREE.Mesh(new THREE.SphereGeometry(0.52, 20, 14), glass);
+      energyChamber.position.y = 1.32;
+      group.add(energyChamber);
+
+      const chamberRing = new THREE.Mesh(new THREE.TorusGeometry(0.67, 0.055, 10, 28), silver);
+      chamberRing.rotation.x = Math.PI / 2;
+      chamberRing.position.y = 1.32;
+      group.add(chamberRing);
+
+      const glowRingA = new THREE.Mesh(new THREE.TorusGeometry(1.15, 0.055, 8, 32), bright);
+      glowRingA.rotation.x = Math.PI / 2;
+      glowRingA.position.y = 0.46;
+      group.add(glowRingA);
+
+      const glowRingB = new THREE.Mesh(new THREE.TorusGeometry(1.42, 0.032, 8, 32), new THREE.MeshBasicMaterial({ color: 0x7ceeff, transparent: true, opacity: 0.4, depthWrite: false }));
+      glowRingB.rotation.x = Math.PI / 2;
+      glowRingB.position.y = 0.32;
+      group.add(glowRingB);
+
+      for (const side of [-1, 1]) {
+        const fin = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.58, 0.76), silver);
+        fin.position.set(side * 0.96, 0.62, 0);
+        fin.rotation.z = side * 0.18;
+        group.add(fin);
+        const tip = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.42, 0.22), accent);
+        tip.position.set(side * 0.98, 1.15, 0);
+        group.add(tip);
+      }
+
+      const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.72, 10), silver);
+      antenna.position.y = 1.92;
+      group.add(antenna);
+      const antennaGlow = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 8), cyan);
+      antennaGlow.position.y = 2.28;
+      group.add(antennaGlow);
+
+      const beacon = attachLocalPointLight(group, 0x64e7ff, 0.95, 8.5);
+      if (beacon) beacon.position.set(0, 1.25, 0);
+      group.userData.localLight = beacon;
+      group.__baseCoreVisual = { chamberRing, glowRingA, glowRingB, energyChamber, antennaGlow };
+      group.scale.setScalar(scale);
+      return group;
+    }
+
+    function createBaseCoreId() {
+      return multiplayerMode && currentAccountUser?.id
+        ? createMultiplayerPlaceableId('base_core')
+        : 'base:local:' + Date.now() + ':' + Math.random().toString(36).slice(2, 9);
+    }
+
+    function createBaseCoreObject(dir, forward = null, yaw = 0, surfaceBodyId = 'ivis', baseId = null, data = {}) {
+      const ctx = getPlaceableSurfaceContext(surfaceBodyId);
+      const direction = (dir?.clone?.() || new THREE.Vector3(0, 1, 0)).normalize();
+      let constructionForward = forward?.clone?.() || new THREE.Vector3(0, 0, 1);
+      constructionForward = constructionForward.sub(direction.clone().multiplyScalar(constructionForward.dot(direction)));
+      if (constructionForward.lengthSq() < 0.0001) {
+        constructionForward.set(1, 0, 0).sub(direction.clone().multiplyScalar(direction.x));
+        if (constructionForward.lengthSq() < 0.0001) constructionForward.set(0, 0, 1).sub(direction.clone().multiplyScalar(direction.z));
+      }
+      constructionForward.normalize();
+
+      const group = createBaseCoreVisual(1.0);
+      const h = ctx.getHeight(direction) || 0;
+      group.position.copy(direction).multiplyScalar(ctx.radius + h + 0.05);
+      const up = direction.clone();
+      const z = constructionForward.clone();
+      const x = new THREE.Vector3().crossVectors(up, z).normalize();
+      z.copy(new THREE.Vector3().crossVectors(x, up).normalize());
+      group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, up, z));
+      group.rotateY(Number(yaw) || 0);
+      ctx.parent.add(group);
+
+      const ownerUserId = String(data.ownerUserId || getBaseLocalUserId());
+      const ownerName = String(data.ownerName || (ownerUserId === getBaseLocalUserId() ? getBaseLocalUsername() : 'Explorer')).slice(0, 24);
+      const normalized = normalizeBasePermissions(data.permissions, ownerUserId, ownerName, data.permissionNames);
+      const base = {
+        root: group,
+        baseId: String(baseId || data.baseId || createBaseCoreId()),
+        networkId: String(data.networkId || baseId || data.baseId || ''),
+        direction,
+        constructionForward,
+        yaw: Number(yaw) || 0,
+        surfaceBodyId: ctx.id,
+        name: sanitizeBaseName(data.name || BASE_CORE_DEFAULT_NAME),
+        ownerUserId,
+        ownerName,
+        permissions: normalized.permissions,
+        permissionNames: normalized.permissionNames,
+        constructionRadius: BASE_CONSTRUCTION_RADIUS
+      };
+      group.userData.isBaseCore = true;
+      group.userData.baseCoreId = base.baseId;
+      base.visual = group.__baseCoreVisual || null;
+      baseCores.push(base);
+      return base;
+    }
+
+    function removeBaseCoreById(baseId) {
+      const id = String(baseId || '');
+      if (!id) return false;
+      let removed = false;
+      for (let i = baseCores.length - 1; i >= 0; i--) {
+        const base = baseCores[i];
+        if (String(base?.baseId || base?.networkId || '') !== id && String(base?.networkId || '') !== id) continue;
+        for (let si = baseStructures.length - 1; si >= 0; si--) {
+          const structure = baseStructures[si];
+          if (String(structure?.baseId || '') !== id) continue;
+          if (Array.isArray(structure.storageContainers)) {
+            for (const container of structure.storageContainers) {
+              const ci = containers.indexOf(container);
+              if (ci >= 0) containers.splice(ci, 1);
+            }
+          }
+          if (structure.typeId === 'hydroponics_module') removeHydroponicsPlotsForStructure(structure.structureId);
+          if (structure.typeId === 'docking_module' && structure.dockingLaunchPad) {
+            const padIndex = launchPads.indexOf(structure.dockingLaunchPad);
+            if (padIndex >= 0) launchPads.splice(padIndex, 1);
+            if (structure.dockingLaunchPad.root?.parent) structure.dockingLaunchPad.root.parent.remove(structure.dockingLaunchPad.root);
+            structure.dockingLaunchPad = null;
+          }
+          if (structure.root?.parent) structure.root.parent.remove(structure.root);
+          baseStructures.splice(si, 1);
+        }
+        if (base.root?.parent) base.root.parent.remove(base.root);
+        baseCores.splice(i, 1);
+        if (String(baseHomeByUserId[getBaseLocalUserId()] || '') === id) delete baseHomeByUserId[getBaseLocalUserId()];
+        removed = true;
+      }
+      return removed;
+    }
+
+    function findNearbyBaseCore() {
+      if (state.gameState !== 'playing' || playerState.inRocket) return null;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      let best = null;
+      let bestDistance = Infinity;
+      for (const base of baseCores) {
+        if (!base?.root?.visible) continue;
+        const pos = base.root.getWorldPosition(new THREE.Vector3());
+        const distance = pos.distanceTo(playerWorld);
+        if (distance <= BASE_CORE_INTERACTION_RANGE && distance < bestDistance) {
+          best = base;
+          bestDistance = distance;
+        }
+      }
+      return best;
+    }
+
+    function setBaseCoreHome(base, notify = true) {
+      if (!base) return false;
+      const userId = getBaseLocalUserId();
+      baseHomeByUserId[userId] = String(base.baseId);
+      renderBaseCoreMenu();
+      if (notify) {
+        showBaseCoreStatus('HOME BASE SET · ' + base.name);
+        if (multiplayerMode) broadcastMultiplayerPlaceableInteraction('base_core', base.networkId || base.baseId, 'base_home', { homeBaseId: String(base.baseId) });
+      }
+      markMultiplayerWorldDirty('base-home-updated');
+      return true;
+    }
+
+    function syncBaseCorePermissions(base, userId, role, username = '') {
+      if (!base || !playerCanEditBase(base)) return false;
+      const id = String(userId || '');
+      if (!id || id === String(base.ownerUserId || '')) return false;
+      const normalizedRole = normalizeBaseRole(role);
+      base.permissions[id] = normalizedRole;
+      const safeName = String(username || base.permissionNames?.[id] || 'Explorer').trim().slice(0, 24);
+      if (safeName) base.permissionNames[id] = safeName;
+      renderBaseCoreMenu();
+      if (multiplayerMode) broadcastMultiplayerPlaceableInteraction('base_core', base.networkId || base.baseId, 'base_update', {
+        name: base.name,
+        ownerUserId: base.ownerUserId,
+        ownerName: base.ownerName,
+        permissions: base.permissions,
+        permissionNames: base.permissionNames
+      });
+      markMultiplayerWorldDirty('base-permission-updated');
+      showBaseCoreStatus('PERMISSION UPDATED · ' + safeName + ' → ' + BASE_PERMISSION_LABELS[normalizedRole]);
+      return true;
+    }
+
+    function saveBaseCoreName() {
+      const base = window.__puActiveBaseCore;
+      if (!base || !playerCanEditBase(base)) return false;
+      const input = document.getElementById('baseCoreNameInput');
+      base.name = sanitizeBaseName(input?.value || base.name);
+      if (input) input.value = base.name;
+      renderBaseCoreMenu();
+      if (multiplayerMode) broadcastMultiplayerPlaceableInteraction('base_core', base.networkId || base.baseId, 'base_update', {
+        name: base.name,
+        ownerUserId: base.ownerUserId,
+        ownerName: base.ownerName,
+        permissions: base.permissions,
+        permissionNames: base.permissionNames
+      });
+      markMultiplayerWorldDirty('base-renamed');
+      showBaseCoreStatus('BASE RENAMED · ' + base.name);
+      return true;
+    }
+
+    function getKnownBasePlayers(base) {
+      const players = [];
+      const seen = new Set();
+      const add = (id, username) => {
+        const key = String(id || '');
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        players.push({ id: key, username: String(username || 'Explorer').slice(0, 24) });
+      };
+      add(getBaseLocalUserId(), getBaseLocalUsername());
+      for (const remote of multiplayerRemotePlayers.values()) {
+        if (!multiplayerRemoteIsRecentlyOnline(remote)) continue;
+        add(remote.id, remote.username);
+      }
+      if (base?.permissions) {
+        for (const id of Object.keys(base.permissions)) add(id, base.permissionNames?.[id] || 'Explorer');
+      }
+      return players;
+    }
+
+    function showBaseCoreStatus(message) {
+      const status = document.getElementById('baseCoreStatus');
+      if (!status) return;
+      status.textContent = String(message || '');
+      status.classList.remove('hidden');
+      clearTimeout(showBaseCoreStatus._timer);
+      showBaseCoreStatus._timer = setTimeout(() => status.classList.add('hidden'), 2200);
+    }
+
+    function renderBaseCoreMenu() {
+      const base = window.__puActiveBaseCore;
+      if (!base) return;
+      const title = document.getElementById('baseCoreTitle');
+      const nameInput = document.getElementById('baseCoreNameInput');
+      const planetEl = document.getElementById('baseCorePlanet');
+      const ownerEl = document.getElementById('baseCoreOwner');
+      const roleEl = document.getElementById('baseCoreYourRole');
+      const zoneEl = document.getElementById('baseCoreZone');
+      const permissionList = document.getElementById('baseCorePermissionList');
+      const saveName = document.getElementById('baseCoreSaveName');
+      const homeButton = document.getElementById('baseCoreHomeButton');
+      const buildButton = document.getElementById('baseCoreBuildButton');
+      if (title) title.textContent = base.name;
+      if (nameInput) { nameInput.value = base.name; nameInput.disabled = !playerCanEditBase(base); }
+      if (planetEl) planetEl.textContent = String((({ivis:'IVIS', moon:'MOON', cordelia:'CORDELIA', aurora:'AURORA', mileria:'MILERIA'})[base.surfaceBodyId] || base.surfaceBodyId || 'IVIS')); 
+      if (ownerEl) ownerEl.textContent = base.ownerName || 'Explorer';
+      if (roleEl) roleEl.textContent = BASE_PERMISSION_LABELS[getBasePermission(base)];
+      if (zoneEl) zoneEl.textContent = BASE_CONSTRUCTION_RADIUS + 'm LOCAL CONSTRUCTION ZONE';
+      if (saveName) saveName.disabled = !playerCanEditBase(base);
+      const isHome = String(baseHomeByUserId[getBaseLocalUserId()] || '') === String(base.baseId);
+      if (homeButton) {
+        homeButton.textContent = isHome ? '✓ HOME BASE SET' : 'SET AS HOME BASE';
+        homeButton.classList.toggle('active', isHome);
+      }
+      if (buildButton) buildButton.disabled = !playerCanBuildBase(base);
+      if (!permissionList) return;
+      permissionList.replaceChildren();
+      const canEdit = playerCanEditBase(base);
+      for (const playerInfo of getKnownBasePlayers(base)) {
+        const row = document.createElement('div');
+        row.className = 'baseCorePermissionRow';
+        const identity = document.createElement('div');
+        identity.className = 'baseCorePermissionIdentity';
+        const dot = document.createElement('span');
+        dot.className = 'baseCorePermissionDot' + (playerInfo.id === getBaseLocalUserId() ? ' you' : '');
+        const name = document.createElement('strong');
+        name.textContent = playerInfo.username + (playerInfo.id === getBaseLocalUserId() ? ' (YOU)' : '');
+        identity.append(dot, name);
+        const select = document.createElement('select');
+        select.className = 'baseCorePermissionSelect';
+        for (const role of BASE_PERMISSION_ROLES) {
+          const option = document.createElement('option');
+          option.value = role;
+          option.textContent = BASE_PERMISSION_LABELS[role];
+          select.appendChild(option);
+        }
+        select.value = getBasePermission(base, playerInfo.id);
+        const isOwner = playerInfo.id === String(base.ownerUserId || '');
+        select.disabled = isOwner || !canEdit;
+        select.addEventListener('change', () => syncBaseCorePermissions(base, playerInfo.id, select.value, playerInfo.username));
+        row.append(identity, select);
+        permissionList.appendChild(row);
+      }
+      if (!permissionList.children.length) {
+        const empty = document.createElement('div');
+        empty.className = 'baseCoreEmptyPlayers';
+        empty.textContent = 'No other players are currently known.';
+        permissionList.appendChild(empty);
+      }
+    }
+
+    function openBaseCoreMenu(base) {
+      if (!base || uiState.baseCoreOpen) return false;
+      window.__puActiveBaseCore = base;
+      uiState.baseCoreOpen = true;
+      state.paused = true;
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      renderBaseCoreMenu();
+      const overlay = document.getElementById('baseCoreOverlay');
+      overlay?.classList.remove('hidden');
+      overlay?.setAttribute('aria-hidden', 'false');
+      document.body.classList.add('base-core-open');
+      setTimeout(() => { const input = document.getElementById('baseCoreNameInput'); if (input && !input.disabled) { input.focus(); input.select(); } }, 0);
+      return true;
+    }
+
+    function closeBaseCoreMenu() {
+      if (!uiState.baseCoreOpen) return;
+      uiState.baseCoreOpen = false;
+      window.__puActiveBaseCore = null;
+      const overlay = document.getElementById('baseCoreOverlay');
+      overlay?.classList.add('hidden');
+      overlay?.setAttribute('aria-hidden', 'true');
+      document.body.classList.remove('base-core-open');
+      if (state.gameState === 'playing') {
+        state.paused = false;
+        attemptPointerLock();
+      }
+    }
+
+    function tryPlaceBaseCore() {
+      if (uiState.equippedItemType !== 'base_core' || state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || uiState.containerOpen) return false;
+      const idx = getSelectedHotbarInventoryIndex();
+      const slot = inventorySlots[idx];
+      if (!slot || slot.typeId !== 'base_core') return false;
+      const placement = getActivePlaceablePlacement();
+      if (!placement?.ctx || !['ivis', 'aurora', 'cordelia', 'moon', 'mileria'].includes(placement.ctx.id)) {
+        showBaseCoreStatus('BASE CORES CAN ONLY BE PLACED ON A PLANET SURFACE');
+        return true;
+      }
+      const tooClose = baseCores.some(other => other?.surfaceBodyId === placement.ctx.id && other.direction?.angleTo(placement.dir) * placement.ctx.radius < 12);
+      if (tooClose) {
+        const prompt = document.getElementById('crystalPrompt');
+        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">BLOCKED</span> Another Base Core is too close'; }
+        return true;
+      }
+      const baseId = createBaseCoreId();
+      const ownerUserId = getBaseLocalUserId();
+      const ownerName = getBaseLocalUsername();
+      const base = createBaseCoreObject(placement.dir, placement.forward, 0, placement.ctx.id, baseId, {
+        baseId,
+        networkId: multiplayerMode ? baseId : '',
+        ownerUserId,
+        ownerName,
+        name: BASE_CORE_DEFAULT_NAME
+      });
+      inventorySlots[idx] = null;
+      refreshEquippedItem();
+      updateHotbarUI();
+      updateInventoryUI();
+      markJournalItemDiscovered('base_core');
+      if (multiplayerMode) broadcastMultiplayerPlaceablePlaced('base_core', base);
+      markMultiplayerWorldDirty('base-core-placed');
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">PLACED</span> Base Core placed · RMB to manage'; }
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 800);
+      return true;
+    }
+
+    function updateBaseCoreVisuals(delta) {
+      for (const base of baseCores) {
+        const visual = base?.visual || base?.root?.__baseCoreVisual;
+        if (!visual) continue;
+        visual.chamberRing.rotation.y += delta * 0.9;
+        visual.glowRingA.rotation.y -= delta * 0.55;
+        visual.glowRingB.rotation.y += delta * 0.34;
+        const pulse = 1 + Math.sin(performance.now() * 0.004 + String(base.baseId).length) * 0.035;
+        visual.energyChamber.scale.setScalar(pulse);
+        visual.antennaGlow.scale.setScalar(0.92 + Math.sin(performance.now() * 0.006) * 0.08);
+      }
+    }
+
+
+
+    // ---------- Day 22 furniture placement — clean isolated entry state ----------
+    // This intentionally starts small: selecting a furniture item never changes camera
+    // state, never mutates the inventory from inside the frame loop, and never touches the
+    // base-build state. Placement only becomes active after the player is actually inside a
+    // valid enclosed room. The visible ghost is a simple, low-risk procedural preview; the
+    // real furniture object/persistence layer can be added independently afterward.
+    const FURNITURE_TYPE_IDS = new Set([
+      'furniture_bed',
+      'furniture_wardrobe',
+      'furniture_desk',
+      'furniture_chair',
+      'furniture_light'
+    ]);
+    const FURNITURE_VALID_ROOM_TYPES = new Set([
+      'habitat_room',
+      'observation_module',
+      'storage_module',
+      'workshop_module',
+      'research_module',
+      'hydroponics_module',
+      'fuel_synthesizer_module',
+      'docking_module'
+    ]);
+    const furniturePlacementState = {
+      active: false,
+      typeId: null,
+      structureId: '',
+      bodyId: '',
+      ghost: null,
+      yaw: 0,
+      distance: 1.65,
+      valid: false,
+      invalidReason: ''
+    };
+    let sittingFurniture = null;
+    let cosmeticWardrobeMode = false;
+
+    const FURNITURE_INTERACT_DISTANCE = 4.25;
+    const FURNITURE_INTERACT_DOT = 0.955;
+
+    function isFurnitureType(typeId) {
+      return FURNITURE_TYPE_IDS.has(String(typeId || ''));
+    }
+
+    function makeFurnitureGhostMaterial() {
+      return new THREE.MeshStandardMaterial({
+        color: 0x78f0b0,
+        transparent: true,
+        opacity: 0.34,
+        roughness: 0.48,
+        metalness: 0.18,
+        depthWrite: false
+      });
+    }
+
+    function setFurnitureGhostValidity(valid) {
+      const ghost = furniturePlacementState.ghost;
+      if (!ghost) return;
+      const validState = !!valid;
+      ghost.traverse((node) => {
+        if (!node.isMesh || !node.material) return;
+        const mats = Array.isArray(node.material) ? node.material : [node.material];
+        for (const mat of mats) {
+          if (!mat) continue;
+          mat.color?.setHex(validState ? 0x78f0b0 : 0xff4e4e);
+          if (mat.emissive) mat.emissive.setHex(validState ? 0x000000 : 0x5a0000);
+          if (mat.emissiveIntensity !== undefined) mat.emissiveIntensity = validState ? 0 : 0.55;
+          mat.opacity = validState ? 0.34 : 0.46;
+          mat.transparent = true;
+        }
+      });
+      ghost.userData.furniturePlacementValid = validState;
+    }
+
+    function getNodeBoundsInParent(node, parent) {
+      if (!node || !parent) return null;
+      node.updateMatrixWorld(true);
+      parent.updateMatrixWorld(true);
+      const inverseParent = parent.matrixWorld.clone().invert();
+      const bounds = new THREE.Box3();
+      let found = false;
+      node.traverse((mesh) => {
+        if (!mesh.isMesh || !mesh.geometry) return;
+        if (!mesh.geometry.boundingBox && mesh.geometry.computeBoundingBox) mesh.geometry.computeBoundingBox();
+        const box = mesh.geometry.boundingBox;
+        if (!box) return;
+        const corners = [
+          [box.min.x, box.min.y, box.min.z], [box.max.x, box.min.y, box.min.z],
+          [box.min.x, box.max.y, box.min.z], [box.max.x, box.max.y, box.min.z],
+          [box.min.x, box.min.y, box.max.z], [box.max.x, box.min.y, box.max.z],
+          [box.min.x, box.max.y, box.max.z], [box.max.x, box.max.y, box.max.z]
+        ];
+        for (const [x, y, z] of corners) {
+          bounds.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(mesh.matrixWorld).applyMatrix4(inverseParent));
+          found = true;
+        }
+      });
+      return found && !bounds.isEmpty() ? bounds : null;
+    }
+
+    function furniturePlacementBoxesOverlap(a, b, padding = 0) {
+      if (!a || !b) return false;
+      return a.min.x <= b.max.x + padding && a.max.x >= b.min.x - padding &&
+        a.min.y <= b.max.y + padding && a.max.y >= b.min.y - padding &&
+        a.min.z <= b.max.z + padding && a.max.z >= b.min.z - padding;
+    }
+
+    function furniturePlacementPlayerOverlaps(bounds, structure) {
+      if (!bounds || !structure?.root) return false;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      const playerLocal = structure.root.worldToLocal(playerWorld.clone());
+      const dx = Math.max(bounds.min.x - playerLocal.x, 0, playerLocal.x - bounds.max.x);
+      const dz = Math.max(bounds.min.z - playerLocal.z, 0, playerLocal.z - bounds.max.z);
+      return Math.hypot(dx, dz) <= PLAYER_COLLISION_RADIUS + 0.18;
+    }
+
+    function getFurniturePlacementValidity(roomInfo) {
+      const structure = roomInfo?.support?.structure;
+      const ghost = furniturePlacementState.ghost;
+      if (!structure?.root || !ghost) return { valid: false, reason: 'room' };
+
+      const bounds = getNodeBoundsInParent(ghost, structure.root);
+      if (!bounds) return { valid: false, reason: 'model' };
+      const floorBounds = structure.root.userData.floorBounds || { halfX: 3.68, halfZ: 3.68, topY: 0.20, ceilingY: 4.8 };
+      const floorTop = Number(floorBounds.topY) || 0.20;
+      const ceilingY = Number(floorBounds.ceilingY) || 4.8;
+
+      if (bounds.min.y < floorTop - 0.10 || bounds.max.y > ceilingY + 0.10) {
+        return { valid: false, reason: 'floor' };
+      }
+
+      const floorRects = Array.isArray(structure.root.userData.floorRects) ? structure.root.userData.floorRects : null;
+      let fitsFloor = false;
+      if (floorRects?.length) {
+        fitsFloor = floorRects.some(rect =>
+          bounds.min.x >= Number(rect.minX) - 0.02 && bounds.max.x <= Number(rect.maxX) + 0.02 &&
+          bounds.min.z >= Number(rect.minZ) - 0.02 && bounds.max.z <= Number(rect.maxZ) + 0.02
+        );
+      } else {
+        const halfX = Number(floorBounds.halfX) || 3.68;
+        const halfZ = Number(floorBounds.halfZ) || 3.68;
+        fitsFloor = bounds.min.x >= -halfX + 0.02 && bounds.max.x <= halfX - 0.02 &&
+          bounds.min.z >= -halfZ + 0.02 && bounds.max.z <= halfZ - 0.02;
+      }
+      if (!fitsFloor) return { valid: false, reason: 'floor' };
+
+      // Furniture cannot overlap module walls, closed doors, or other structural colliders.
+      for (const c of (structure.collisionBoxes || [])) {
+        if (!c || c.isFloor) continue;
+        if (c.isDoor && Array.isArray(structure.doorStates) && structure.doorStates[c.doorIndex]) continue;
+        if (c.isDoor && !Array.isArray(structure.doorStates) && structure.doorOpen) continue;
+        const center = c.center || { x: 0, y: 0, z: 0 };
+        const hx = Number(c.halfX) || 0, hy = Number(c.halfY) || 0, hz = Number(c.halfZ) || 0;
+        const cbox = new THREE.Box3(
+          new THREE.Vector3((Number(center.x) || 0) - hx, (Number(center.y) || 0) - hy, (Number(center.z) || 0) - hz),
+          new THREE.Vector3((Number(center.x) || 0) + hx, (Number(center.y) || 0) + hy, (Number(center.z) || 0) + hz)
+        );
+        if (furniturePlacementBoxesOverlap(bounds, cbox, 0.03)) return { valid: false, reason: 'wall' };
+      }
+
+      // Existing furniture is checked in structure-local space, including its yaw rotation.
+      for (const furniture of (structure.furniture || [])) {
+        if (!furniture?.root?.visible || furniture.root === ghost) continue;
+        const otherBounds = getNodeBoundsInParent(furniture.root, structure.root);
+        if (otherBounds && furniturePlacementBoxesOverlap(bounds, otherBounds, 0.04)) return { valid: false, reason: 'furniture' };
+      }
+
+      if (furniturePlacementPlayerOverlaps(bounds, structure)) return { valid: false, reason: 'player' };
+      return { valid: true, reason: '' };
+    }
+
+    function updateFurniturePlacementValidity(roomInfo) {
+      const result = getFurniturePlacementValidity(roomInfo);
+      furniturePlacementState.valid = !!result.valid;
+      furniturePlacementState.invalidReason = result.reason || '';
+      setFurnitureGhostValidity(furniturePlacementState.valid);
+      return furniturePlacementState.valid;
+    }
+
+    function createFurniturePlacementGhost(typeId) {
+      const model = cloneFurnitureModelTemplate(typeId);
+      if (model) {
+        model.name = 'FurniturePlacementGhost_' + typeId;
+        model.renderOrder = 50;
+        applyFurnitureGhostMaterials(model);
+        model.userData.isFurniturePlacementGhost = true;
+        return model;
+      }
+
+      const group = new THREE.Group();
+      group.name = 'FurniturePlacementGhost_' + typeId;
+      group.renderOrder = 50;
+      const mat = makeFurnitureGhostMaterial();
+      const addBox = (sx, sy, sz, x, y, z) => {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
+        mesh.position.set(x, y, z);
+        mesh.userData.furnitureGhost = true;
+        group.add(mesh);
+      };
+      switch (typeId) {
+        case 'furniture_bed':
+          addBox(1.9,0.30,3.25,0,0.15,0.10); addBox(1.9,0.62,0.26,0,0.46,-1.43); addBox(1.9,0.16,0.48,0,0.51,1.22); break;
+        case 'furniture_wardrobe':
+          addBox(1.55,2.85,0.72,0,1.425,0); break;
+        case 'furniture_desk':
+          addBox(2.15,0.18,1.00,0,1.10,0); addBox(0.14,1.10,0.90,-0.88,0.55,0); addBox(0.14,1.10,0.90,0.88,0.55,0); addBox(0.92,0.80,0.16,0,0.40,0); break;
+        case 'furniture_chair':
+          addBox(0.82,0.16,0.82,0,0.46,0); addBox(0.82,1.05,0.16,0,1.00,-0.33); addBox(0.12,0.46,0.12,-0.30,0.23,-0.30); addBox(0.12,0.46,0.12,0.30,0.23,-0.30); addBox(0.12,0.46,0.12,-0.30,0.23,0.30); addBox(0.12,0.46,0.12,0.30,0.23,0.30); break;
+        case 'furniture_light':
+          addBox(0.34,1.85,0.34,0,0.925,0); addBox(0.92,0.15,0.92,0,0.075,0); addBox(0.82,0.42,0.82,0,1.90,0); break;
+        default: addBox(1,1,1,0,0.5,0);
+      }
+      return group;
+    }
+
+    function createPlacedFurnitureVisual(typeId) {
+      const model = cloneFurnitureModelTemplate(typeId);
+      if (model) {
+        model.name = 'PlacedFurniture_' + typeId;
+        model.renderOrder = 4;
+        applyFurniturePlacedMaterials(model, typeId);
+        return model;
+      }
+
+      const group = createFurniturePlacementGhost(typeId);
+      group.name = 'PlacedFurniture_' + typeId;
+      group.renderOrder = 4;
+      const palette = {
+        furniture_bed: { color: 0xc69a72, roughness: 0.82, metalness: 0.04 },
+        furniture_wardrobe: { color: 0x7a4e32, roughness: 0.76, metalness: 0.08 },
+        furniture_desk: { color: 0x8f5a37, roughness: 0.74, metalness: 0.08 },
+        furniture_chair: { color: 0x9d6a43, roughness: 0.78, metalness: 0.06 },
+        furniture_light: { color: 0xb9a66c, roughness: 0.4, metalness: 0.28, emissive: 0x5e4c1c, emissiveIntensity: 0.35 }
+      }[typeId] || { color: 0x8a6a4b, roughness: 0.8, metalness: 0.05 };
+      group.traverse((obj) => {
+        if (!obj.isMesh) return;
+        obj.material = new THREE.MeshStandardMaterial({
+          color: palette.color, roughness: palette.roughness, metalness: palette.metalness,
+          emissive: palette.emissive || 0x000000, emissiveIntensity: palette.emissiveIntensity || 0
+        });
+        obj.castShadow = true; obj.receiveShadow = true;
+        obj.userData.isFurniture = true; obj.userData.furnitureTypeId = typeId; obj.userData.furnitureGhost = false;
+      });
+      group.userData.isFurniture = true;
+      group.userData.furnitureTypeId = typeId;
+      return group;
+    }
+
+    function calculateFurnitureCollisionBox(structure, furnitureRoot) {
+      if (!structure?.root || !furnitureRoot) return null;
+      const meshes = [];
+      furnitureRoot.traverse((node) => { if (node.isMesh && node.geometry) meshes.push(node); });
+      if (!meshes.length) return null;
+      furnitureRoot.updateMatrixWorld(true);
+      const inverseFurniture = furnitureRoot.matrixWorld.clone().invert();
+      const rootLocalBox = new THREE.Box3();
+      for (const mesh of meshes) {
+        if (!mesh.geometry.boundingBox && mesh.geometry.computeBoundingBox) mesh.geometry.computeBoundingBox();
+        const box = mesh.geometry.boundingBox;
+        if (!box) continue;
+        const corners = [
+          [box.min.x,box.min.y,box.min.z],[box.max.x,box.min.y,box.min.z],
+          [box.min.x,box.max.y,box.min.z],[box.max.x,box.max.y,box.min.z],
+          [box.min.x,box.min.y,box.max.z],[box.max.x,box.min.y,box.max.z],
+          [box.min.x,box.max.y,box.max.z],[box.max.x,box.max.y,box.max.z]
+        ];
+        for (const [x,y,z] of corners) {
+          rootLocalBox.expandByPoint(new THREE.Vector3(x,y,z).applyMatrix4(mesh.matrixWorld).applyMatrix4(inverseFurniture));
+        }
+      }
+      if (rootLocalBox.isEmpty()) return null;
+      const center = rootLocalBox.getCenter(new THREE.Vector3());
+      const size = rootLocalBox.getSize(new THREE.Vector3());
+      return {
+        center: { x:center.x, y:center.y, z:center.z },
+        halfX: Math.max(0.06, size.x * 0.5),
+        halfY: Math.max(0.06, size.y * 0.5),
+        halfZ: Math.max(0.06, size.z * 0.5),
+        padding: 0.05,
+        furnitureId: String(furnitureRoot.userData?.furnitureId || '')
+      };
+    }
+
+    function refreshFurnitureCollisionData(structure, furniture) {
+      if (!structure?.root || !furniture?.root) return null;
+      furniture.collisionBox = calculateFurnitureCollisionBox(structure, furniture.root);
+      return furniture.collisionBox;
+    }
+
+    function applyFurnitureLampState(furniture, on = true) {
+      if (!furniture?.root || furniture.typeId !== 'furniture_light') return false;
+      const isOn = !!on;
+      furniture.lampOn = isOn;
+      furniture.root.traverse((node) => {
+        if (node.userData?.furnitureLampTube && node.material) {
+          node.material.color.setHex(isOn ? 0xffe15a : 0x66551e);
+          if (node.material.emissive) node.material.emissive.setHex(isOn ? 0xffc928 : 0x000000);
+          node.material.emissiveIntensity = isOn ? 2.2 : 0;
+        }
+        if (node.userData?.furnitureLampLight) {
+          const baseIntensity = Number(node.userData.baseIntensity) || 0.9;
+          node.intensity = isOn ? baseIntensity : 0;
+          node.visible = isOn;
+        }
+      });
+      return true;
+    }
+
+    function getFurnitureInteractionTarget() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || sleepingActive) return null;
+      const bodyId = String(getActiveCollisionBodyId?.() || '');
+      const cameraWorld = camera.getWorldPosition(new THREE.Vector3());
+      const cameraForward = camera.getWorldDirection(new THREE.Vector3()).normalize();
+      let best = null, bestScore = Infinity;
+      for (const structure of baseStructures) {
+        if (!structure?.root?.visible || !Array.isArray(structure.furniture)) continue;
+        const base = baseCores.find(item => String(item.baseId || '') === String(structure.baseId || ''));
+        if (!base || String(base.surfaceBodyId || '') !== bodyId) continue;
+        for (const furniture of structure.furniture) {
+          const root = furniture?.root;
+          if (!root?.visible) continue;
+          const targetWorld = root.getWorldPosition(new THREE.Vector3());
+          const toTarget = targetWorld.clone().sub(cameraWorld);
+          const distance = toTarget.length();
+          if (distance > FURNITURE_INTERACT_DISTANCE || distance < 0.01) continue;
+          toTarget.multiplyScalar(1 / distance);
+          const dot = cameraForward.dot(toTarget);
+          if (dot < FURNITURE_INTERACT_DOT) continue;
+          const score = distance - dot * 0.9;
+          if (score < bestScore) { bestScore = score; best = { structure, furniture, distance, dot }; }
+        }
+      }
+      return best;
+    }
+
+    function getFurnitureInteractionLabel(target) {
+      const typeId = target?.furniture?.typeId;
+      if (typeId === 'furniture_bed') return 'Sleep in Bed';
+      if (typeId === 'furniture_chair') return 'Sit in Chair';
+      if (typeId === 'furniture_desk') return 'Open Journal';
+      if (typeId === 'furniture_light') return target.furniture.lampOn === false ? 'Turn Lamp On' : 'Turn Lamp Off';
+      if (typeId === 'furniture_wardrobe') return 'Customize Wardrobe';
+      return 'Use Furniture';
+    }
+
+    function setSittingFurnitureTransform() {
+      if (!sittingFurniture?.furniture?.root) return false;
+      const root = sittingFurniture.furniture.root;
+      const seatLocal = new THREE.Vector3(0, 0.47, -0.04);
+      const worldSeat = root.localToWorld(seatLocal.clone());
+      const bodyObject = getActiveCollisionBodyObject();
+      if (!bodyObject) return false;
+      const up = new THREE.Vector3(0,1,0).applyQuaternion(root.getWorldQuaternion(new THREE.Quaternion())).normalize();
+      const elevatedWorld = worldSeat.clone().addScaledVector(up, 1.23);
+      player.position.copy(bodyObject.worldToLocal(elevatedWorld));
+      const chairWorldQ = root.getWorldQuaternion(new THREE.Quaternion());
+      const bodyWorldQ = bodyObject.getWorldQuaternion(new THREE.Quaternion());
+      player.quaternion.copy(bodyWorldQ.invert().multiply(chairWorldQ));
+      playerState.heightOffset = 0;
+      playerState.verticalVelocity = 0;
+      return true;
+    }
+
+    function exitSittingFurniture(jump = true) {
+      if (!sittingFurniture) return false;
+      sittingFurniture = null;
+      playerCrouchBlend = 0;
+      playerState.heightOffset = 0;
+      playerState.verticalVelocity = jump ? JUMP_SPEED : 0;
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      updateCrystalPrompt();
+      return true;
+    }
+
+    function startSittingInFurniture(target) {
+      if (!target?.furniture?.root || target.furniture.typeId !== 'furniture_chair') return false;
+      if (sittingFurniture) return false;
+      sittingFurniture = target;
+      setSittingFurnitureTransform();
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      updateCrystalPrompt();
+      return true;
+    }
+
+    function trySleepInFurnitureBed(target) {
+      if (!target?.furniture?.root || target.furniture.typeId !== 'furniture_bed' || sleepingActive || sittingFurniture) return false;
+      sleepingActive = true;
+      sleepingBagInUse = { root: target.furniture.root, furniture: true };
+      sleepingRealElapsed = 0;
+      sleepingGameRemaining = SLEEP_GAME_SECONDS;
+      sleepingPreviousFlashlight = !!playerState.flashlightOn;
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      setFlashlight(false);
+      playerBody.visible = false;
+      heldCrystalFirstPerson.visible = false;
+      heldCrystalThirdPerson.visible = false;
+      document.body.classList.add('sleeping');
+      document.getElementById('sleepOverlay')?.classList.remove('hidden');
+      target.furniture.root.add(camera);
+      camera.position.set(0, 0.57, -0.55);
+      camera.lookAt(new THREE.Vector3(0, 0.57, 0.72));
+      updateCrystalPrompt();
+      return true;
+    }
+
+    function tryInteractWithFurniture() {
+      const target = getFurnitureInteractionTarget();
+      if (!target) return false;
+      const typeId = target.furniture.typeId;
+      if (typeId === 'furniture_bed') return trySleepInFurnitureBed(target);
+      if (typeId === 'furniture_chair') return startSittingInFurniture(target);
+      if (typeId === 'furniture_desk') return openJournal(false);
+      if (typeId === 'furniture_light') {
+        applyFurnitureLampState(target.furniture, target.furniture.lampOn === false);
+        persistLocalBackup?.();
+        scheduleSecureHotbarPersistence?.();
+        markMultiplayerWorldDirty?.('furniture-lamp-toggle');
+        if (multiplayerMode) broadcastMultiplayerBaseStructureSync(target.structure, 'furniture-lamp-toggle');
+        updateCrystalPrompt();
+        return true;
+      }
+      if (typeId === 'furniture_wardrobe') return openWardrobeCustomization();
+      return false;
+    }
+
+    function removeFurnitureWithHammer() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || sittingFurniture) return false;
+      if (uiState.equippedItemType !== 'hammer') return false;
+      const target = getFurnitureInteractionTarget();
+      if (!target?.structure || !target.furniture?.root) return false;
+      const furniture = target.furniture;
+      if (!canAddItemToInventory(furniture.typeId, 1)) {
+        const prompt = document.getElementById('crystalPrompt');
+        if (prompt) {
+          prompt.classList.remove('hidden');
+          prompt.innerHTML = '<span class="promptKey">FULL</span> Make room in your inventory for ' + (itemById[furniture.typeId]?.name || 'Furniture');
+        }
+        return true;
+      }
+      const name = itemById[furniture.typeId]?.name || 'Furniture';
+      const removedRoot = furniture.root;
+      spawnFurnitureDismantleEffect(removedRoot, furniture.typeId);
+      if (!addItemToInventory(furniture.typeId, 1, null, true)) return true;
+      if (removedRoot.parent) removedRoot.parent.remove(removedRoot);
+      const index = target.structure.furniture.indexOf(furniture);
+      if (index >= 0) target.structure.furniture.splice(index, 1);
+      triggerToolSwing(1.0, 220);
+      triggerToolImpact(0.75);
+      persistLocalBackup?.();
+      scheduleSecureHotbarPersistence?.();
+      scheduleMultiplayerEnvironmentSnapshot?.();
+      if (multiplayerMode) broadcastMultiplayerBaseStructureSync(target.structure, 'furniture-removed');
+      markMultiplayerWorldDirty?.('furniture-removed');
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">REMOVED</span> ' + name + ' returned to inventory';
+        setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 700);
+      }
+      return true;
+    }
+
+    function removeFurniturePlacementGhost() {
+      const ghost = furniturePlacementState.ghost;
+      if (ghost?.parent) ghost.parent.remove(ghost);
+      furniturePlacementState.ghost = null;
+    }
+
+    function exitFurniturePlacementMode() {
+      removeFurniturePlacementGhost();
+      furniturePlacementState.active = false;
+      furniturePlacementState.typeId = null;
+      furniturePlacementState.structureId = '';
+      furniturePlacementState.bodyId = '';
+      furniturePlacementState.yaw = 0;
+      furniturePlacementState.distance = 1.65;
+      furniturePlacementState.valid = false;
+      furniturePlacementState.invalidReason = '';
+    }
+
+    function getFurniturePlacementRoom() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket) return null;
+      if (!isFurnitureType(uiState.equippedItemType)) return null;
+      if (uiState.baseBuildOpen || uiState.baseCoreOpen || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || uiState.fuelSynthOpen || uiState.telephoneOpen || economyState.merchantOpen) return null;
+      if (typeof getActiveCollisionBodyObject !== 'function' || typeof getActiveCollisionBodyId !== 'function') return null;
+      const bodyObject = getActiveCollisionBodyObject();
+      const bodyId = getActiveCollisionBodyId();
+      if (!bodyObject || !bodyId) return null;
+      const support = getBaseStructureFloorSupport(player.position, bodyId, bodyObject);
+      if (!support?.structure?.root) return null;
+      if (!FURNITURE_VALID_ROOM_TYPES.has(String(support.structure.typeId || ''))) return null;
+      return { support, bodyObject, bodyId };
+    }
+
+    function placeFurnitureGhostNearPlayer(roomInfo) {
+      const structure = roomInfo?.support?.structure;
+      if (!structure?.root) return false;
+      const bounds = structure.root.userData.floorBounds || { halfX: 3.68, halfZ: 3.68, topY: 0.20 };
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      const playerLocal = structure.root.worldToLocal(playerWorld.clone());
+      const playerForwardWorld = new THREE.Vector3(0, 0, -1).applyQuaternion(player.getWorldQuaternion(new THREE.Quaternion())).normalize();
+      const playerForwardLocal = playerForwardWorld.applyQuaternion(structure.root.getWorldQuaternion(new THREE.Quaternion()).invert());
+      if (playerForwardLocal.lengthSq() < 0.0001) playerForwardLocal.set(0, 0, -1);
+      playerForwardLocal.normalize();
+      const margin = 1.25;
+      const distance = THREE.MathUtils.clamp(Number(furniturePlacementState.distance) || 1.65, 0.70, 6.00);
+      furniturePlacementState.distance = distance;
+      let x = playerLocal.x + playerForwardLocal.x * distance;
+      let z = playerLocal.z + playerForwardLocal.z * distance;
+      x = THREE.MathUtils.clamp(x, -Math.max(0.5, Number(bounds.halfX) - margin), Math.max(0.5, Number(bounds.halfX) - margin));
+      z = THREE.MathUtils.clamp(z, -Math.max(0.5, Number(bounds.halfZ) - margin), Math.max(0.5, Number(bounds.halfZ) - margin));
+
+      const ghostY = Number(bounds.topY) || 0.20;
+      furniturePlacementState.ghost.position.set(x, ghostY, z);
+      furniturePlacementState.ghost.rotation.set(0, furniturePlacementState.yaw, 0);
+      return true;
+    }
+
+    function enterFurniturePlacementMode(roomInfo) {
+      const structure = roomInfo?.support?.structure;
+      const typeId = String(uiState.equippedItemType || '');
+      if (!structure?.root || !isFurnitureType(typeId)) return false;
+
+      const sameRoom = furniturePlacementState.active &&
+        furniturePlacementState.structureId === String(structure.structureId || '') &&
+        furniturePlacementState.bodyId === String(roomInfo.bodyId || '') &&
+        furniturePlacementState.typeId === typeId &&
+        furniturePlacementState.ghost?.parent === structure.root;
+      if (!sameRoom) {
+        exitFurniturePlacementMode();
+        furniturePlacementState.active = true;
+        furniturePlacementState.typeId = typeId;
+        furniturePlacementState.structureId = String(structure.structureId || '');
+        furniturePlacementState.bodyId = String(roomInfo.bodyId || '');
+        furniturePlacementState.yaw = 0;
+        furniturePlacementState.distance = 1.65;
+        furniturePlacementState.valid = false;
+        furniturePlacementState.invalidReason = 'floor';
+        furniturePlacementState.ghost = createFurniturePlacementGhost(typeId);
+        structure.root.add(furniturePlacementState.ghost);
+      }
+      placeFurnitureGhostNearPlayer(roomInfo);
+      updateFurniturePlacementValidity(roomInfo);
+      return true;
+    }
+
+    function tryPlaceFurniture() {
+      if (!furniturePlacementState.active || !furniturePlacementState.ghost || !isFurnitureType(furniturePlacementState.typeId)) return false;
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket) return false;
+      const roomInfo = getFurniturePlacementRoom();
+      const structure = roomInfo?.support?.structure;
+      if (!structure?.root) return false;
+      updateFurniturePlacementValidity(roomInfo);
+      if (!furniturePlacementState.valid) {
+        const prompt = document.getElementById('crystalPrompt');
+        if (prompt) {
+          prompt.classList.remove('hidden');
+          const reason = furniturePlacementState.invalidReason;
+          const message = reason === 'player' ? 'Move the furniture out of the player.' :
+            reason === 'wall' ? 'Move the furniture away from walls or doors.' :
+            reason === 'furniture' ? 'Move the furniture away from another furniture piece.' :
+            'Move the furniture onto a clear floor position.';
+          prompt.innerHTML = '<span class="promptKey">BLOCKED</span> ' + message;
+        }
+        return true;
+      }
+      const slotIndex = getSelectedHotbarInventoryIndex();
+      const slot = inventorySlots[slotIndex];
+      if (!slot || slot.typeId !== furniturePlacementState.typeId || Number(slot.count) < 1) {
+        exitFurniturePlacementMode();
+        updateHotbarUI();
+        updateInventoryUI();
+        return false;
+      }
+
+      const placedTypeId = furniturePlacementState.typeId;
+      const placedYaw = furniturePlacementState.yaw;
+      const placed = createPlacedFurnitureVisual(placedTypeId);
+      placed.position.copy(furniturePlacementState.ghost.position);
+      placed.rotation.set(0, placedYaw, 0);
+      placed.userData.furnitureId = 'furniture:local:' + Date.now() + ':' + Math.random().toString(36).slice(2, 9);
+      structure.root.add(placed);
+      if (!Array.isArray(structure.furniture)) structure.furniture = [];
+      const furnitureRecord = {
+        furnitureId: String(placed.userData.furnitureId),
+        typeId: placedTypeId,
+        localPosition: placed.position.clone(),
+        yaw: Number(placedYaw) || 0,
+        lampOn: true,
+        root: placed,
+        collisionBox: null
+      };
+      structure.furniture.push(furnitureRecord);
+      refreshFurnitureCollisionData(structure, furnitureRecord);
+      if (placedTypeId === 'furniture_light') applyFurnitureLampState(furnitureRecord, true);
+
+      slot.count = Math.max(0, Number(slot.count) - 1);
+      if (slot.count <= 0) inventorySlots[slotIndex] = null;
+      exitFurniturePlacementMode();
+      refreshEquippedItem();
+      updateHotbarUI();
+      updateInventoryUI();
+      if (typeof persistLocalBackup === 'function') persistLocalBackup();
+      if (typeof scheduleSecureHotbarPersistence === 'function') scheduleSecureHotbarPersistence();
+      if (typeof scheduleMultiplayerEnvironmentSnapshot === 'function') scheduleMultiplayerEnvironmentSnapshot();
+      if (multiplayerMode) broadcastMultiplayerBaseStructureSync(structure, 'furniture-placed');
+      markMultiplayerWorldDirty?.('furniture-placed');
+
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class=\"promptKey\">PLACED</span> ' + (itemById[placedTypeId]?.name || 'Furniture');
+        setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 650);
+      }
+      return true;
+    }
+
+    function updateFurniturePlacementEntry() {
+      const typeId = String(uiState.equippedItemType || '');
+      if (!isFurnitureType(typeId)) {
+        if (furniturePlacementState.active) exitFurniturePlacementMode();
+        return false;
+      }
+      const roomInfo = getFurniturePlacementRoom();
+      if (!roomInfo) {
+        if (furniturePlacementState.active) exitFurniturePlacementMode();
+        return false;
+      }
+      return enterFurniturePlacementMode(roomInfo);
+    }
+
+    function getBaseStructureDoorLabel(structure) {
+      const names = {
+        habitat_room: 'HABITAT Door',
+        observation_module: 'OBSERVATION Door',
+        storage_module: 'STORAGE Door',
+        workshop_module: 'WORKSHOP Door',
+        research_module: 'RESEARCH Door',
+        hydroponics_module: 'HYDROPONICS Door',
+        fuel_synthesizer_module: 'FUEL SYNTHESIZER Door',
+        docking_module: 'DOCKING Door'
+      };
+      return names[String(structure?.typeId || '')] || 'MODULE Door';
+    }
+
+    function setBaseDoorOpen(structure, doorIndex = 0, open = false, animate = true) {
+      if (!structure?.root || !['habitat_room', 'observation_module', 'storage_module', 'workshop_module', 'research_module', 'hydroponics_module', 'fuel_synthesizer_module', 'docking_module'].includes(structure.typeId)) return false;
+      const doors = structure.root.userData.doors || [];
+      const door = doors[doorIndex];
+      if (!door?.pivot) return false;
+      const openRotation = Number(door.openRotation) || (Math.PI / 2);
+      structure.doorStates = Array.isArray(structure.doorStates) ? structure.doorStates : doors.map(() => false);
+      structure.doorTargets = Array.isArray(structure.doorTargets) ? structure.doorTargets : doors.map(() => 0);
+      while (structure.doorStates.length < doors.length) structure.doorStates.push(false);
+      while (structure.doorTargets.length < doors.length) structure.doorTargets.push(0);
+      structure.doorStates[doorIndex] = !!open;
+      structure.doorTargets[doorIndex] = open ? openRotation : 0;
+      if (!animate) {
+        door.pivot.rotation.y = structure.doorTargets[doorIndex];
+      }
+      const anyOpen = structure.doorStates.some(Boolean);
+      structure.doorOpen = anyOpen;
+      structure.root.userData.isDoorOpen = anyOpen;
+      structure.doorAnimating = animate;
+      return true;
+    }
+
+    // Backwards-compatible helper: toggling/restoring all doors at once.
+    function updateBaseDoorVisual(structure, open, animate = true) {
+      if (!structure?.root || !['habitat_room', 'observation_module', 'storage_module', 'workshop_module', 'research_module', 'hydroponics_module', 'fuel_synthesizer_module', 'docking_module'].includes(structure.typeId)) return false;
+      const doors = structure.root.userData.doors || [];
+      if (!doors.length) return false;
+      structure.doorStates = doors.map(() => !!open);
+      structure.doorTargets = doors.map((door) => open ? (Number(door.openRotation) || Math.PI / 2) : 0);
+      doors.forEach((door, index) => {
+        if (!animate) door.pivot.rotation.y = structure.doorTargets[index];
+      });
+      structure.doorOpen = !!open;
+      structure.root.userData.isDoorOpen = !!open;
+      structure.doorAnimating = !!animate;
+      return true;
+    }
+
+    function updateBaseDoorAnimations(delta) {
+      if (!Number.isFinite(delta) || delta <= 0) return;
+      for (const structure of baseStructures) {
+        if (!structure?.doorAnimating || !['habitat_room', 'observation_module', 'storage_module', 'workshop_module', 'research_module', 'hydroponics_module', 'fuel_synthesizer_module', 'docking_module'].includes(structure.typeId)) continue;
+        const doors = structure.root?.userData?.doors || [];
+        if (!doors.length) { structure.doorAnimating = false; continue; }
+        structure.doorStates = Array.isArray(structure.doorStates) ? structure.doorStates : doors.map(() => false);
+        structure.doorTargets = Array.isArray(structure.doorTargets) ? structure.doorTargets : doors.map(() => 0);
+        let animating = false;
+        for (let i = 0; i < doors.length; i++) {
+          const pivot = doors[i]?.pivot;
+          if (!pivot) continue;
+          const target = Number(structure.doorTargets[i]) || 0;
+          const current = pivot.rotation.y;
+          if (Math.abs(current - target) < 0.008) {
+            pivot.rotation.y = target;
+            continue;
+          }
+          const step = Math.min(1, delta * 8.5);
+          const next = THREE.MathUtils.lerp(current, target, step);
+          pivot.rotation.y = next;
+          if (Math.abs(next - target) < 0.008) pivot.rotation.y = target;
+          else animating = true;
+        }
+        structure.doorAnimating = animating;
+        structure.doorOpen = structure.doorStates.some(Boolean);
+        structure.root.userData.isDoorOpen = structure.doorOpen;
+      }
+    }
+
+    function findNearbyBaseDoor() {
+      if (state.gameState !== 'playing' || playerState.inRocket || !baseStructures.length) return null;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      let best = null;
+      let bestDistance = Infinity;
+      for (const structure of baseStructures) {
+        if (!structure?.root?.visible || !['habitat_room', 'observation_module', 'storage_module', 'workshop_module', 'research_module', 'hydroponics_module', 'fuel_synthesizer_module', 'docking_module'].includes(structure.typeId)) continue;
+        const base = baseCores.find(item => String(item.baseId || '') === String(structure.baseId || ''));
+        if (!base || String(base.surfaceBodyId || '') !== getActiveCollisionBodyId()) continue;
+        const doors = structure.root.userData.doors || [];
+        for (let index = 0; index < doors.length; index++) {
+          const door = doors[index];
+          if (!door?.pivot) continue;
+          const pos = door.pivot.getWorldPosition(new THREE.Vector3());
+          const distance = pos.distanceTo(playerWorld);
+          if (distance <= 3.3 && distance < bestDistance) {
+            best = { structure, doorIndex: index };
+            bestDistance = distance;
+          }
+        }
+      }
+      return best;
+    }
+
+    function tryToggleNearbyBaseDoor() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.baseBuildOpen || uiState.baseCoreOpen) return false;
+      const nearby = findNearbyBaseDoor();
+      if (!nearby) return false;
+      const { structure, doorIndex } = nearby;
+      const currentOpen = !!(structure.doorStates?.[doorIndex]);
+      const nextOpen = !currentOpen;
+      setBaseDoorOpen(structure, doorIndex, nextOpen, true);
+      if (multiplayerMode) broadcastMultiplayerBaseDoorSync(structure, doorIndex, nextOpen);
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) {
+        prompt.classList.remove('hidden');
+        const doorLabel = getBaseStructureDoorLabel(structure);
+        prompt.innerHTML = '<span class="promptKey">E</span> ' + (currentOpen ? 'Close ' + doorLabel : 'Open ' + doorLabel);
+        setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 500);
+      }
+      markMultiplayerWorldDirty('base-door-updated');
+      return true;
+    }
+
+    function setObservationRoofOpen(structure, open = false, animate = true) {
+      if (!structure?.root || structure.typeId !== 'observation_module') return false;
+      const roofPanels = structure.root.userData.observationRoofPanels || [];
+      if (!roofPanels.length) return false;
+      structure.roofOpen = !!open;
+      structure.roofTarget = open ? 1 : 0;
+      const lever = structure.root.userData.observationRoofLever;
+      const leverArm = lever?.userData?.leverArm || lever;
+      if (lever && leverArm) {
+        structure.roofLeverTarget = open ? Number(lever.userData.openRotation) : Number(lever.userData.closedRotation);
+        if (!Number.isFinite(structure.roofLeverTarget)) structure.roofLeverTarget = open ? 0.52 : -0.52;
+        if (!animate) leverArm.rotation.z = structure.roofLeverTarget;
+      }
+      if (!animate) {
+        for (const panel of roofPanels) panel.group.position.z = panel.closedZ + (panel.openZ - panel.closedZ) * structure.roofTarget;
+      }
+      structure.roofAnimating = !!animate;
+      structure.roofLeverAnimating = !!animate;
+      return true;
+    }
+
+    function updateObservationRoofAnimations(delta) {
+      if (!Number.isFinite(delta) || delta <= 0) return;
+      for (const structure of baseStructures) {
+        if (!structure?.root || structure.typeId !== 'observation_module' || !structure.roofAnimating) continue;
+        const panels = structure.root.userData.observationRoofPanels || [];
+        if (!panels.length) { structure.roofAnimating = false; continue; }
+        const target = Number(structure.roofTarget) || 0;
+        let animating = false;
+        const step = Math.min(1, delta * 2.5);
+        for (const panel of panels) {
+          if (!panel?.group) continue;
+          const goal = panel.closedZ + (panel.openZ - panel.closedZ) * target;
+          const current = Number(panel.group.position.z) || panel.closedZ;
+          if (Math.abs(current - goal) < 0.01) {
+            panel.group.position.z = goal;
+            continue;
+          }
+          const next = THREE.MathUtils.lerp(current, goal, step);
+          panel.group.position.z = next;
+          if (Math.abs(next - goal) >= 0.01) animating = true;
+          else panel.group.position.z = goal;
+        }
+        const lever = structure.root.userData.observationRoofLever;
+        const leverArm = lever?.userData?.leverArm || lever;
+        const leverTarget = Number(structure.roofLeverTarget);
+        if (leverArm && Number.isFinite(leverTarget)) {
+          const currentLever = Number(leverArm.rotation.z) || 0;
+          if (Math.abs(currentLever - leverTarget) < 0.008) {
+            leverArm.rotation.z = leverTarget;
+            structure.roofLeverAnimating = false;
+          } else {
+            const nextLever = THREE.MathUtils.lerp(currentLever, leverTarget, Math.min(1, delta * 8.5));
+            leverArm.rotation.z = nextLever;
+            structure.roofLeverAnimating = Math.abs(nextLever - leverTarget) >= 0.008;
+          }
+        } else {
+          structure.roofLeverAnimating = false;
+        }
+        structure.roofAnimating = animating;
+      }
+    }
+
+    function findNearbyObservationRoofLever() {
+      if (state.gameState !== 'playing' || playerState.inRocket || !baseStructures.length) return null;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      let best = null;
+      let bestDistance = Infinity;
+      for (const structure of baseStructures) {
+        if (!structure?.root?.visible || structure.typeId !== 'observation_module') continue;
+        const base = baseCores.find(item => String(item.baseId || '') === String(structure.baseId || ''));
+        if (!base || String(base.surfaceBodyId || '') !== getActiveCollisionBodyId()) continue;
+        const lever = structure.root.userData.observationRoofLever;
+        if (!lever) continue;
+        const pos = lever.getWorldPosition(new THREE.Vector3());
+        const distance = pos.distanceTo(playerWorld);
+        if (distance <= 2.25 && distance < bestDistance) {
+          best = { structure, lever };
+          bestDistance = distance;
+        }
+      }
+      return best;
+    }
+
+    function tryToggleNearbyObservationRoofLever() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.baseBuildOpen || uiState.baseCoreOpen) return false;
+      const nearby = findNearbyObservationRoofLever();
+      if (!nearby) return false;
+      const { structure } = nearby;
+      const currentOpen = !!structure.roofOpen;
+      setObservationRoofOpen(structure, !currentOpen, true);
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">RMB</span> Flip Roof Lever · ' + (currentOpen ? 'Close Roof' : 'Pull Back Roof');
+        setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 800);
+      }
+      markMultiplayerWorldDirty('observation-roof-updated');
+      return true;
+    }
+
+    function setDockingRoofOpen(structure, open = false, animate = true) {
+      if (!structure?.root || structure.typeId !== 'docking_module') return false;
+      const roofPanels = structure.root.userData.dockingRoofPanels || [];
+      if (!roofPanels.length) return false;
+      structure.roofOpen = !!open;
+      structure.roofTarget = open ? 1 : 0;
+      const lever = structure.root.userData.dockingRoofLever;
+      const leverArm = lever?.userData?.leverArm || lever;
+      if (lever && leverArm) {
+        structure.roofLeverTarget = open ? Number(lever.userData.openRotation) : Number(lever.userData.closedRotation);
+        if (!Number.isFinite(structure.roofLeverTarget)) structure.roofLeverTarget = open ? 0.52 : -0.52;
+        if (!animate) leverArm.rotation.z = structure.roofLeverTarget;
+      }
+      if (!animate) {
+        for (const panel of roofPanels) panel.group.position.z = panel.closedZ + (panel.openZ - panel.closedZ) * structure.roofTarget;
+      }
+      structure.roofAnimating = !!animate;
+      structure.roofLeverAnimating = !!animate;
+      return true;
+    }
+
+    function updateDockingRoofAnimations(delta) {
+      if (!Number.isFinite(delta) || delta <= 0) return;
+      for (const structure of baseStructures) {
+        if (!structure?.root || structure.typeId !== 'docking_module' || !structure.roofAnimating) continue;
+        const panels = structure.root.userData.dockingRoofPanels || [];
+        if (!panels.length) { structure.roofAnimating = false; continue; }
+        const target = Number(structure.roofTarget) || 0;
+        let animating = false;
+        const step = Math.min(1, delta * 2.5);
+        for (const panel of panels) {
+          if (!panel?.group) continue;
+          const goal = panel.closedZ + (panel.openZ - panel.closedZ) * target;
+          const current = Number(panel.group.position.z) || panel.closedZ;
+          if (Math.abs(current - goal) < 0.01) { panel.group.position.z = goal; continue; }
+          const next = THREE.MathUtils.lerp(current, goal, step);
+          panel.group.position.z = next;
+          if (Math.abs(next - goal) >= 0.01) animating = true;
+          else panel.group.position.z = goal;
+        }
+        const lever = structure.root.userData.dockingRoofLever;
+        const leverArm = lever?.userData?.leverArm || lever;
+        const leverTarget = Number(structure.roofLeverTarget);
+        if (leverArm && Number.isFinite(leverTarget)) {
+          const currentLever = Number(leverArm.rotation.z) || 0;
+          if (Math.abs(currentLever - leverTarget) < 0.008) {
+            leverArm.rotation.z = leverTarget;
+            structure.roofLeverAnimating = false;
+          } else {
+            const nextLever = THREE.MathUtils.lerp(currentLever, leverTarget, Math.min(1, delta * 8.5));
+            leverArm.rotation.z = nextLever;
+            structure.roofLeverAnimating = Math.abs(nextLever - leverTarget) >= 0.008;
+          }
+        } else structure.roofLeverAnimating = false;
+        structure.roofAnimating = animating;
+      }
+    }
+
+    function findNearbyDockingRoofLever() {
+      if (state.gameState !== 'playing' || playerState.inRocket || !baseStructures.length) return null;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      let best = null, bestDistance = Infinity;
+      for (const structure of baseStructures) {
+        if (!structure?.root?.visible || structure.typeId !== 'docking_module') continue;
+        const base = baseCores.find(item => String(item.baseId || '') === String(structure.baseId || ''));
+        if (!base || String(base.surfaceBodyId || '') !== getActiveCollisionBodyId()) continue;
+        const lever = structure.root.userData.dockingRoofLever;
+        if (!lever) continue;
+        const distance = lever.getWorldPosition(new THREE.Vector3()).distanceTo(playerWorld);
+        if (distance <= 2.25 && distance < bestDistance) { best = { structure, lever }; bestDistance = distance; }
+      }
+      return best;
+    }
+
+    function tryToggleNearbyDockingRoofLever() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.baseBuildOpen || uiState.baseCoreOpen) return false;
+      const nearby = findNearbyDockingRoofLever();
+      if (!nearby) return false;
+      const { structure } = nearby;
+      const currentOpen = !!structure.roofOpen;
+      setDockingRoofOpen(structure, !currentOpen, true);
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">RMB</span> Flip Roof Lever · ' + (currentOpen ? 'Close Roof' : 'Pull Back Roof');
+        setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 800);
+      }
+      markMultiplayerWorldDirty('docking-roof-updated');
+      return true;
+    }
+
+    function findNearbyObservationRoof() {
+      if (state.gameState !== 'playing' || playerState.inRocket || !baseStructures.length) return null;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      let best = null;
+      let bestDistance = Infinity;
+      for (const structure of baseStructures) {
+        if (!structure?.root?.visible || structure.typeId !== 'observation_module') continue;
+        const base = baseCores.find(item => String(item.baseId || '') === String(structure.baseId || ''));
+        if (!base || String(base.surfaceBodyId || '') !== getActiveCollisionBodyId()) continue;
+        const center = structure.root.getWorldPosition(new THREE.Vector3());
+        const distance = center.distanceTo(playerWorld);
+        if (distance <= 6.2 && distance < bestDistance) {
+          best = { structure };
+          bestDistance = distance;
+        }
+      }
+      return best;
+    }
+
+    function tryToggleNearbyObservationRoof() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.baseBuildOpen || uiState.baseCoreOpen) return false;
+      const nearby = findNearbyObservationRoof();
+      if (!nearby) return false;
+      const { structure } = nearby;
+      const currentOpen = !!structure.roofOpen;
+      setObservationRoofOpen(structure, !currentOpen, true);
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">E</span> ' + (currentOpen ? 'Close Observation Roof' : 'Pull Back Observation Roof');
+        setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 650);
+      }
+      markMultiplayerWorldDirty('observation-roof-updated');
+      return true;
+    }
+
+    function findNearbyModuleStation(stationType) {
+      if (state.gameState !== 'playing' || playerState.inRocket || uiState.equippedItemType || !baseStructures.length) return null;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      let best = null;
+      let bestDistance = Infinity;
+      for (const structure of baseStructures) {
+        if (!structure?.root?.visible || structure.root.userData.stationType !== stationType) continue;
+        const base = baseCores.find(item => String(item.baseId || '') === String(structure.baseId || ''));
+        if (!base || String(base.surfaceBodyId || '') !== getActiveCollisionBodyId()) continue;
+        const station = structure.root.userData.moduleStation;
+        if (!station) continue;
+        const pos = station.getWorldPosition(new THREE.Vector3());
+        const d = pos.distanceTo(playerWorld);
+        if (d <= 3.0 && d < bestDistance) {
+          best = { structure, station };
+          bestDistance = d;
+        }
+      }
+      return best;
+    }
+
+    function findNearbyWorkbench() { return findNearbyModuleStation('workbench'); }
+    function findNearbyResearchStation() { return findNearbyModuleStation('research_station'); }
+
+    function tryUseNearbyWorkbench() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.baseBuildOpen || uiState.baseCoreOpen) return false;
+      if (uiState.inventoryOpen || uiState.containerOpen || uiState.furnaceOpen) return false;
+      const nearby = findNearbyWorkbench();
+      if (!nearby) return false;
+      openCrafting('workbench');
+      return true;
+    }
+
+    const LANDMARK_RESEARCH_NOTES = Object.freeze({
+      ivis_beobaka_sanctuary: 'The site appears to be a stable wildlife refuge. Beobaka activity here is unusually concentrated, suggesting the terrain and vegetation provide favorable shelter.',
+      ivis_ancient_forest: 'The forest contains unusually old tree growth and a dense canopy. Long-term ecological isolation may explain the area’s distinctive vegetation.',
+      ivis_abandoned_explorer_camp: 'Recovered equipment indicates a long-term surface expedition once operated here. The surviving camp layout suggests repeated survey work around the surrounding terrain.',
+      cordelia_crashed_probe: 'The probe’s broken antenna and buried components indicate a hard landing followed by years of exposure to Cordelia’s shifting sands.',
+      cordelia_buried_ruins: 'The buried structure is constructed from local sandstone. Wind deposition has covered most of the original footprint, preserving only the higher sections.',
+      cordelia_desert_crystal_basin: 'Multiple crystal types occur in one geological basin. Their co-occurrence suggests a localized mineral-rich formation rather than ordinary surface scatter.',
+      aurora_giant_glowfish_lake: 'The lake supports dense glowfish schools in shallow water. Its light-producing ecosystem appears closely tied to the surrounding aquatic environment.',
+      aurora_underwater_ruins: 'The submerged ruins retain arches and pillars despite long-term immersion. Their position beneath a glowfish lake makes them an unusual combination of archaeological and aquatic features.',
+      aurora_abandoned_research_station: 'The outpost was built for scientific observation of Aurora. Its equipment layout suggests environmental monitoring and long-term field measurements.'
+    });
+
+    function getLandmarkResearchNote(landmarkId) {
+      return LANDMARK_RESEARCH_NOTES[landmarkId] || 'The research team has completed a preliminary survey. Further study may reveal additional information about this landmark.';
+    }
+
+    function persistLandmarkResearchSingleplayer() {
+      persistLocalBackup();
+    }
+
+    async function persistLandmarkResearch(landmarkId) {
+      if (!landmarkId) return;
+      if (multiplayerMode && secureAccountAuthorityEnabled && pocketSupabase && currentAccountUser) {
+        try {
+          const { error } = await pocketSupabase.rpc('pu_save_landmark_research_v1', {
+            p_world_id: MULTIPLAYER_WORLD_ID,
+            p_landmark_id: String(landmarkId)
+          });
+          if (error) throw error;
+        } catch (error) {
+          console.warn('Could not persist landmark research to multiplayer:', error);
+        }
+      }
+      persistLandmarkResearchSingleplayer();
+    }
+
+    function renderResearchStationUI() {
+      const overlay = document.getElementById('researchOverlay');
+      const list = document.getElementById('researchLandmarkList');
+      if (!overlay || !list) return;
+      const ids = ALL_LANDMARK_DEFS.map(def => def.id).filter(id => journalDiscoveredLandmarks.has(id));
+      list.replaceChildren();
+      if (!ids.length) {
+        const empty = document.createElement('div');
+        empty.className = 'researchEmpty';
+        empty.textContent = 'No landmarks discovered yet. Explore the planets to catalog a landmark first.';
+        list.appendChild(empty);
+        return;
+      }
+      for (const id of ids) {
+        const def = landmarkById[id];
+        if (!def) continue;
+        const card = document.createElement('div');
+        card.className = 'researchLandmarkCard' + (journalResearchedLandmarks.has(id) ? ' researched' : '');
+        const icon = document.createElement('div'); icon.className = 'researchLandmarkIcon'; icon.textContent = def.icon || '✦';
+        const body = document.createElement('div'); body.className = 'researchLandmarkBody';
+        const title = document.createElement('strong'); title.textContent = def.name;
+        const meta = document.createElement('div'); meta.className = 'researchLandmarkMeta'; meta.textContent = (def.rarity || 'Unknown') + ' · ' + String(def.surfaceBodyId || '').toUpperCase();
+        const desc = document.createElement('p'); desc.textContent = def.description || '';
+        const note = document.createElement('p'); note.className = 'researchFinding';
+        if (journalResearchedLandmarks.has(id)) {
+          note.textContent = getLandmarkResearchNote(id);
+        } else {
+          note.textContent = 'UNRESEARCHED · Run a scan to unlock the full field notes.';
+        }
+        body.append(title, meta, desc, note);
+        const action = document.createElement('button'); action.type = 'button'; action.className = 'researchButton';
+        action.textContent = journalResearchedLandmarks.has(id) ? 'RESEARCH COMPLETE' : 'RESEARCH';
+        action.disabled = journalResearchedLandmarks.has(id);
+        action.addEventListener('click', () => researchLandmark(id));
+        card.append(icon, body, action);
+        list.appendChild(card);
+      }
+    }
+
+    async function researchLandmark(landmarkId) {
+      if (!landmarkById[landmarkId] || !journalDiscoveredLandmarks.has(landmarkId) || journalResearchedLandmarks.has(landmarkId)) return false;
+      journalResearchedLandmarks.add(landmarkId);
+      renderResearchStationUI();
+      await persistLandmarkResearch(landmarkId);
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">RESEARCHED</span> ' + landmarkById[landmarkId].name;
+        setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 900);
+      }
+      return true;
+    }
+
+    function openResearchStation() {
+      if (state.gameState !== 'playing' || playerState.inRocket) return false;
+      uiState.researchOpen = true;
+      state.paused = true;
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      renderResearchStationUI();
+      document.getElementById('researchOverlay')?.classList.remove('hidden');
+      document.getElementById('inventoryOverlay')?.classList.add('hidden');
+      document.getElementById('craftingOverlay')?.classList.add('hidden');
+      uiState.inventoryOpen = false; uiState.craftingOpen = false;
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      return true;
+    }
+
+    function closeResearchStation() {
+      uiState.researchOpen = false;
+      document.getElementById('researchOverlay')?.classList.add('hidden');
+      if (state.gameState === 'playing') { state.paused = false; attemptPointerLock(); }
+    }
+
+    function tryUseNearbyResearchStation() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.baseBuildOpen || uiState.baseCoreOpen) return false;
+      if (uiState.inventoryOpen || uiState.containerOpen || uiState.furnaceOpen) return false;
+      const nearby = findNearbyResearchStation();
+      if (!nearby) return false;
+      openResearchStation();
+      return true;
+    }
+
+    // ---------- 2.4B-B: construction & snapping ----------
+    const BASE_INTERIOR_MATERIALS = {
+      wood: { id: 'wood', name: 'WOOD', mainColor: 0x8a5d37, darkColor: 0x5f3e26, roughness: 0.60, metalness: 0.05 },
+      iron: { id: 'iron', name: 'IRON', mainColor: 0x778087, darkColor: 0x3f484e, roughness: 0.38, metalness: 0.72 },
+      copper: { id: 'copper', name: 'COPPER', mainColor: 0xb86b3c, darkColor: 0x704027, roughness: 0.46, metalness: 0.62 }
+    };
+
+    function normalizeBaseInteriorMaterial(value) {
+      const key = String(value || 'wood').toLowerCase();
+      return BASE_INTERIOR_MATERIALS[key] ? key : 'wood';
+    }
+
+    function getBaseInteriorMaterialDefinition(value) {
+      return BASE_INTERIOR_MATERIALS[normalizeBaseInteriorMaterial(value)] || BASE_INTERIOR_MATERIALS.wood;
+    }
+
+    // Wood counts preserve the existing 2.4B recipes. Iron and copper replace that
+    // interior material rather than stacking another charge on top of it.
+    const BASE_INTERIOR_COSTS = {
+      habitat_room: { wood: [{ typeId: 'planks', count: 6 }], iron: [{ typeId: 'iron_plate', count: 6 }, { typeId: 'iron_ingot', count: 2 }], copper: [{ typeId: 'copper_ingot', count: 8 }] },
+      straight_corridor: { wood: [{ typeId: 'planks', count: 4 }], iron: [{ typeId: 'iron_plate', count: 4 }, { typeId: 'iron_ingot', count: 1 }], copper: [{ typeId: 'copper_ingot', count: 5 }] },
+      junction: { wood: [{ typeId: 'planks', count: 6 }], iron: [{ typeId: 'iron_plate', count: 6 }, { typeId: 'iron_ingot', count: 2 }], copper: [{ typeId: 'copper_ingot', count: 8 }] },
+      t_junction: { wood: [{ typeId: 'planks', count: 5 }], iron: [{ typeId: 'iron_plate', count: 5 }, { typeId: 'iron_ingot', count: 2 }], copper: [{ typeId: 'copper_ingot', count: 7 }] },
+      l_junction: { wood: [{ typeId: 'planks', count: 5 }], iron: [{ typeId: 'iron_plate', count: 5 }, { typeId: 'iron_ingot', count: 2 }], copper: [{ typeId: 'copper_ingot', count: 7 }] },
+      stairwell: { wood: [{ typeId: 'planks', count: 8 }], iron: [{ typeId: 'iron_plate', count: 8 }, { typeId: 'iron_ingot', count: 3 }], copper: [{ typeId: 'copper_ingot', count: 12 }] },
+      docking_module: { wood: [{ typeId: 'planks', count: 8 }], iron: [{ typeId: 'iron_plate', count: 8 }, { typeId: 'iron_ingot', count: 3 }], copper: [{ typeId: 'copper_ingot', count: 12 }] },
+      observation_module: { wood: [{ typeId: 'planks', count: 6 }], iron: [{ typeId: 'iron_plate', count: 6 }, { typeId: 'iron_ingot', count: 2 }], copper: [{ typeId: 'copper_ingot', count: 9 }] },
+      storage_module: { wood: [{ typeId: 'planks', count: 6 }], iron: [{ typeId: 'iron_plate', count: 6 }, { typeId: 'iron_ingot', count: 2 }], copper: [{ typeId: 'copper_ingot', count: 8 }] },
+      hydroponics_module: { wood: [{ typeId: 'planks', count: 8 }], iron: [{ typeId: 'iron_plate', count: 8 }, { typeId: 'iron_ingot', count: 3 }], copper: [{ typeId: 'copper_ingot', count: 12 }] },
+      workshop_module: { wood: [{ typeId: 'planks', count: 6 }], iron: [{ typeId: 'iron_plate', count: 6 }, { typeId: 'iron_ingot', count: 2 }], copper: [{ typeId: 'copper_ingot', count: 9 }] },
+      research_module: { wood: [{ typeId: 'planks', count: 6 }], iron: [{ typeId: 'iron_plate', count: 6 }, { typeId: 'iron_ingot', count: 2 }], copper: [{ typeId: 'copper_ingot', count: 9 }] },
+      fuel_synthesizer_module: { wood: [{ typeId: 'planks', count: 8 }], iron: [{ typeId: 'iron_plate', count: 8 }, { typeId: 'iron_ingot', count: 3 }], copper: [{ typeId: 'copper_ingot', count: 12 }] }
+    };
+
+    function getBaseStructureCost(typeId, interiorMaterial = 'wood') {
+      const def = BASE_STRUCTURE_DEFINITIONS[String(typeId || '')];
+      if (!def) return [];
+      const key = normalizeBaseInteriorMaterial(interiorMaterial);
+      const base = Array.isArray(def.cost) ? def.cost.filter(line => String(line.typeId) !== 'planks').map(line => ({ typeId: line.typeId, count: Number(line.count) || 0 })) : [];
+      const extra = BASE_INTERIOR_COSTS[def.id]?.[key] || BASE_INTERIOR_COSTS[def.id]?.wood || [];
+      return base.concat(extra.map(line => ({ typeId: line.typeId, count: Number(line.count) || 0 })));
+    }
+
+    const BASE_STRUCTURE_DEFINITIONS = {
+      habitat_room: {
+        id: 'habitat_room', name: 'Habitat Room', shortName: 'HABITAT ROOM',
+        halfX: 4.15, halfZ: 4.15, height: 4.4,
+        foundationCost: [
+          { typeId: 'iron_plate', count: 4 },
+          { typeId: 'iron_ingot', count: 2 }
+        ],
+        cost: [
+          { typeId: 'iron_plate', count: 16 },
+          { typeId: 'iron_ingot', count: 8 },
+          { typeId: 'copper_ingot', count: 8 },
+          { typeId: 'glass', count: 6 },
+          { typeId: 'electronics', count: 2 },
+          { typeId: 'planks', count: 6 }
+        ]
+      },
+      straight_corridor: {
+        id: 'straight_corridor', name: 'Straight Corridor', shortName: 'STRAIGHT CORRIDOR',
+        halfX: 2.0, halfZ: 3.25, height: 3.3,
+        foundationCost: [
+          { typeId: 'iron_plate', count: 4 },
+          { typeId: 'iron_ingot', count: 2 }
+        ],
+        cost: [{ typeId: 'iron_plate', count: 10 }, { typeId: 'iron_ingot', count: 5 }]
+      },
+      junction: {
+        id: 'junction', name: 'Junction Module', shortName: 'JUNCTION MODULE',
+        halfX: 3.25, halfZ: 3.25, height: 3.3,
+        foundationCost: [
+          { typeId: 'iron_plate', count: 8 },
+          { typeId: 'iron_ingot', count: 4 }
+        ],
+        // Two corridor bodies (20 plates / 10 ingots) plus the integrated foundation.
+        cost: [{ typeId: 'iron_plate', count: 28 }, { typeId: 'iron_ingot', count: 14 }]
+      },
+      t_junction: {
+        id: 't_junction', name: 'T-Junction Module', shortName: 'T-JUNCTION MODULE',
+        halfX: 3.25, halfZ: 3.25, height: 3.3,
+        foundationCost: [
+          { typeId: 'iron_plate', count: 6 },
+          { typeId: 'iron_ingot', count: 3 }
+        ],
+        // Three open corridor arms with the integrated foundation.
+        cost: [{ typeId: 'iron_plate', count: 22 }, { typeId: 'iron_ingot', count: 11 }]
+      },
+      l_junction: {
+        id: 'l_junction', name: 'L-Junction Module', shortName: 'L-JUNCTION MODULE',
+        halfX: 3.25, halfZ: 3.25, height: 3.3,
+        foundationCost: [
+          { typeId: 'iron_plate', count: 6 },
+          { typeId: 'iron_ingot', count: 3 }
+        ],
+        // Compact 90-degree corner joining two corridor-width arms.
+        cost: [{ typeId: 'iron_plate', count: 18 }, { typeId: 'iron_ingot', count: 9 }]
+      },
+      stairwell: {
+        id: 'stairwell', name: 'Stairwell Module', shortName: 'STAIRWELL',
+        halfX: 2.0, halfZ: 3.25, height: 6.6,
+        foundationCost: [
+          { typeId: 'iron_plate', count: 4 },
+          { typeId: 'iron_ingot', count: 2 }
+        ],
+        // Corridor-width vertical connector. The default wood recipe replaces the old hatch/glass pieces.
+        cost: [
+          { typeId: 'iron_plate', count: 24 },
+          { typeId: 'iron_ingot', count: 12 },
+          { typeId: 'planks', count: 8 }
+        ]
+      },
+      observation_module: {
+        id: 'observation_module', name: 'Observation Module', shortName: 'OBSERVATION MODULE',
+        halfX: 4.15, halfZ: 4.15, height: 5.25,
+        foundationCost: [
+          { typeId: 'iron_plate', count: 4 },
+          { typeId: 'iron_ingot', count: 2 }
+        ],
+        // Taller habitat footprint with a full glass roof and an upper-glass observation wall.
+        // Foundation cost is included in the displayed/charged total.
+        cost: [
+          { typeId: 'iron_plate', count: 22 },
+          { typeId: 'iron_ingot', count: 11 },
+          { typeId: 'copper_ingot', count: 10 },
+          { typeId: 'glass', count: 22 },
+          { typeId: 'electronics', count: 3 },
+          { typeId: 'planks', count: 6 }
+        ]
+      }
+,
+      storage_module: {
+        id: 'storage_module', name: 'Storage Module', shortName: 'STORAGE MODULE',
+        halfX: 4.15, halfZ: 4.15, height: 4.4,
+        foundationCost: [
+          { typeId: 'iron_plate', count: 4 },
+          { typeId: 'iron_ingot', count: 2 }
+        ],
+        // Habitat-sized storage room. The three built-in storage containers are included
+        // as actual Container recipe ingredients, alongside the integrated foundation cost.
+        cost: [
+          { typeId: 'iron_plate', count: 16 },
+          { typeId: 'iron_ingot', count: 8 },
+          { typeId: 'copper_ingot', count: 8 },
+          { typeId: 'glass', count: 6 },
+          { typeId: 'electronics', count: 2 },
+          { typeId: 'planks', count: 6 },
+          { typeId: 'container', count: 3 }
+        ]
+      },
+      hydroponics_module: {
+        id: 'hydroponics_module', name: 'Hydroponics Module', shortName: 'HYDROPONICS MODULE',
+        halfX: 4.15, halfZ: 4.15, height: 4.4,
+        foundationCost: [{ typeId: 'iron_plate', count: 4 }, { typeId: 'iron_ingot', count: 2 }],
+        cost: [
+          { typeId: 'iron_plate', count: 24 },
+          { typeId: 'iron_ingot', count: 12 },
+          { typeId: 'copper_ingot', count: 12 },
+          { typeId: 'electronics', count: 6 },
+          { typeId: 'glass', count: 8 },
+          { typeId: 'planks', count: 8 }
+        ]
+      },
+      workshop_module: {
+        id: 'workshop_module', name: 'Workshop Module', shortName: 'WORKSHOP MODULE',
+        halfX: 4.15, halfZ: 4.15, height: 4.4,
+        foundationCost: [{ typeId: 'iron_plate', count: 4 }, { typeId: 'iron_ingot', count: 2 }],
+        cost: [
+          { typeId: 'iron_plate', count: 22 },
+          { typeId: 'iron_ingot', count: 11 },
+          { typeId: 'copper_ingot', count: 10 },
+          { typeId: 'electronics', count: 4 },
+          { typeId: 'planks', count: 6 }
+        ]
+      },
+      research_module: {
+        id: 'research_module', name: 'Research Module', shortName: 'RESEARCH MODULE',
+        halfX: 4.15, halfZ: 4.15, height: 4.4,
+        foundationCost: [{ typeId: 'iron_plate', count: 4 }, { typeId: 'iron_ingot', count: 2 }],
+        cost: [
+          { typeId: 'iron_plate', count: 24 },
+          { typeId: 'iron_ingot', count: 12 },
+          { typeId: 'copper_ingot', count: 10 },
+          { typeId: 'electronics', count: 4 },
+          { typeId: 'advanced_electronics', count: 2 },
+          { typeId: 'glass', count: 6 },
+          { typeId: 'planks', count: 6 }
+        ]
+      },
+      docking_module: {
+        id: 'docking_module', name: 'Docking Module', shortName: 'DOCKING MODULE',
+        halfX: 4.15, halfZ: 4.15, height: 5.25,
+        foundationCost: [{ typeId: 'iron_plate', count: 4 }, { typeId: 'iron_ingot', count: 2 }],
+        cost: [
+          { typeId: 'iron_plate', count: 26 },
+          { typeId: 'iron_ingot', count: 13 },
+          { typeId: 'copper_ingot', count: 12 },
+          { typeId: 'electronics', count: 6 },
+          { typeId: 'advanced_electronics', count: 2 },
+          { typeId: 'glass', count: 18 },
+          { typeId: 'planks', count: 8 },
+          { typeId: 'launch_pad', count: 1 }
+        ]
+      },
+      fuel_synthesizer_module: {
+        id: 'fuel_synthesizer_module', name: 'Fuel Synthesizer Module', shortName: 'FUEL SYNTHESIZER',
+        halfX: 4.15, halfZ: 4.15, height: 4.4,
+        foundationCost: [{ typeId: 'iron_plate', count: 4 }, { typeId: 'iron_ingot', count: 2 }],
+        cost: [
+          { typeId: 'iron_plate', count: 28 },
+          { typeId: 'iron_ingot', count: 14 },
+          { typeId: 'copper_ingot', count: 14 },
+          { typeId: 'electronics', count: 6 },
+          { typeId: 'advanced_electronics', count: 4 },
+          { typeId: 'rainbow_opal', count: 2 },
+          { typeId: 'glass', count: 8 },
+          { typeId: 'planks', count: 8 }
+        ]
+      }
+    };
+    const BASE_BUILD_CAMERA_HEIGHT = 10.5;
+    const BASE_BUILD_PAN_SPEED = 8.8;
+    const BASE_BUILD_PAN_LIMIT = Math.max(12, BASE_CONSTRUCTION_RADIUS - 4.5);
+    const BASE_BUILD_SNAP_DISTANCE = 2.2;
+    const BASE_BUILD_PLAYER_PADDING = 0.10;
+    const BASE_BUILD_GHOST_VALID_MATERIAL = new THREE.MeshStandardMaterial({ color: 0x71f1a7, transparent: true, opacity: 0.40, roughness: 0.40, metalness: 0.42, depthWrite: false });
+    const BASE_BUILD_GHOST_INVALID_MATERIAL = new THREE.MeshStandardMaterial({ color: 0xff626b, transparent: true, opacity: 0.40, roughness: 0.40, metalness: 0.42, depthWrite: false });
+    const BASE_BUILD_CONNECTION_MATERIAL = new THREE.MeshBasicMaterial({ color: 0x55dfff });
+    // Elevated sockets must remain readable through the stairwell roof while in Build Mode.
+    // These are build-only markers, so disabling depth testing here does not affect gameplay.
+    const BASE_BUILD_ELEVATED_CONNECTION_MATERIAL = new THREE.MeshBasicMaterial({
+      color: 0x8ff6ff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.98
+    });
+    const BASE_BUILD_CONNECTION_GEOMETRY = new THREE.SphereGeometry(0.11, 10, 8);
+    const baseBuildState = {
+      active: false,
+      base: null,
+      typeId: null,
+      ghost: null,
+      dragging: false,
+      dragOffset: new THREE.Vector3(),
+      doorSides: ['north', 'south'],
+      doorTwoEnabled: true,
+      doorSelectionSlot: 0,
+      yaw: 0,
+      valid: false,
+      cameraPan: new THREE.Vector3(), // base-local tangent X/Z offset from Base Core
+      cameraCenterWorld: new THREE.Vector3(),
+      cameraWorldUp: new THREE.Vector3(),
+      cameraRight: new THREE.Vector3(),
+      cameraForward: new THREE.Vector3(),
+      cameraWorldPosition: new THREE.Vector3(),
+      baseWorldPosition: new THREE.Vector3(),
+      pointerNdc: new THREE.Vector2(),
+      plane: new THREE.Plane(),
+      planeHit: new THREE.Vector3(),
+      raycaster: new THREE.Raycaster(),
+      localHit: new THREE.Vector3(),
+      proposedPosition: new THREE.Vector3(),
+      localGrabPoint: new THREE.Vector3(),
+      sourcePosition: new THREE.Vector3(),
+      targetPosition: new THREE.Vector3(),
+      sourceNormal: new THREE.Vector3(),
+      targetNormal: new THREE.Vector3(),
+      delta: new THREE.Vector3(),
+      tempQuaternion: new THREE.Quaternion(),
+      connectorGroup: null,
+      connectorGhostDots: [],
+      savedCameraParent: null,
+      savedCameraPosition: new THREE.Vector3(),
+      savedCameraQuaternion: new THREE.Quaternion(),
+      savedCameraUp: new THREE.Vector3(0, 1, 0),
+      savedCameraFov: camera.fov,
+      interiorMaterial: 'wood',
+      lastSnapWasElevated: false,
+      snapTargetStructureId: null,
+      snapTargetConnectionId: null,
+      snapAnimationKey: '',
+      mirrorLJunction: false
+    };
+
+    // Short-lived build-mode feedback rings for successful socket snaps. They live under
+    // the Base Core root so they follow the planet/base frame without changing build logic.
+    const baseConnectionSnapPulses = [];
+
+    function getBaseStructureDefinition(typeId) {
+      return BASE_STRUCTURE_DEFINITIONS[String(typeId || '')] || null;
+    }
+
+    function normalizeBaseDoorSides(input, fallback = ['north', 'south']) {
+      const valid = ['north', 'east', 'south', 'west'];
+      const raw = Array.isArray(input) ? input : (input == null ? [] : [input]);
+      const out = [];
+      for (const side of raw) {
+        const value = String(side || '').toLowerCase();
+        if (!valid.includes(value) || out.includes(value)) continue;
+        out.push(value);
+        if (out.length >= 2) break;
+      }
+      if (!out.length) {
+        return (Array.isArray(fallback) ? fallback : [fallback])
+          .filter((side, i, arr) => valid.includes(side) && arr.indexOf(side) === i)
+          .slice(0, 2);
+      }
+      return out.slice(0, 2);
+    }
+
+    function getBaseStructureConnectionPoints(typeId, doorSides = ['north', 'south']) {
+      if (typeId === 'habitat_room') {
+        return normalizeBaseDoorSides(doorSides).map((side, index) => {
+          const d = getRoomDoorDefinition(side);
+          return {
+            id: 'door-' + index,
+            side,
+            position: new THREE.Vector3(d.pos[0], 1.55, d.pos[2]),
+            normal: new THREE.Vector3(d.normal[0], 0, d.normal[2])
+          };
+        });
+      }
+      if (typeId === 'straight_corridor') {
+        return [
+          { id: 'end-a', side: 'north', position: new THREE.Vector3(0, 1.55, -3.12), normal: new THREE.Vector3(0, 0, -1) },
+          { id: 'end-b', side: 'south', position: new THREE.Vector3(0, 1.55, 3.12), normal: new THREE.Vector3(0, 0, 1) }
+        ];
+      }
+      if (typeId === 'hydroponics_module') {
+        const d = getRoomDoorDefinition('north');
+        return [{ id: 'door-0', side: 'north', position: new THREE.Vector3(d.pos[0], 1.55, d.pos[2]), normal: new THREE.Vector3(d.normal[0], 0, d.normal[2]) }];
+      }
+      if (typeId === 'docking_module') {
+        const d = getRoomDoorDefinition('north');
+        return [{ id: 'door-0', side: 'north', position: new THREE.Vector3(d.pos[0], 1.55, d.pos[2]), normal: new THREE.Vector3(d.normal[0], 0, d.normal[2]) }];
+      }
+      if (typeId === 'hydroponics_module' || typeId === 'observation_module' || typeId === 'storage_module' || typeId === 'workshop_module' || typeId === 'research_module' || typeId === 'fuel_synthesizer_module') {
+        return normalizeBaseDoorSides(doorSides, ['north', 'south']).map((side, index) => {
+          const d = getRoomDoorDefinition(side);
+          return { id: 'door-' + index, side, position: new THREE.Vector3(d.pos[0], 1.55, d.pos[2]), normal: new THREE.Vector3(d.normal[0], 0, d.normal[2]) };
+        });
+      }
+      if (typeId === 't_junction') {
+        // Three real T exits: the stem end (north) and both crossbar ends (east/west).
+        return [
+          { id: 'end-north', side: 'north', position: new THREE.Vector3(0, 1.55, -3.12), normal: new THREE.Vector3(0, 0, -1) },
+          { id: 'end-east', side: 'east', position: new THREE.Vector3(3.12, 1.55, 0), normal: new THREE.Vector3(1, 0, 0) },
+          { id: 'end-west', side: 'west', position: new THREE.Vector3(-3.12, 1.55, 0), normal: new THREE.Vector3(-1, 0, 0) }
+        ];
+      }
+      if (typeId === 'l_junction') {
+        return [
+          { id: 'end-north', side: 'north', position: new THREE.Vector3(0, 1.55, -3.12), normal: new THREE.Vector3(0, 0, -1) },
+          { id: 'end-east', side: 'east', position: new THREE.Vector3(3.12, 1.55, 0), normal: new THREE.Vector3(1, 0, 0) }
+        ];
+      }
+      if (typeId === 'stairwell') {
+        // Both ends are true modular connection faces. The upper point is one normal module
+        // height above the lower point, matching the raised landing/floor used by the stairs.
+        return [
+          { id: 'bottom-entry', side: 'south', position: new THREE.Vector3(0, 1.55, 3.12), normal: new THREE.Vector3(0, 0, 1) },
+          { id: 'top-entry', side: 'north', position: new THREE.Vector3(0, 4.85, -3.12), normal: new THREE.Vector3(0, 0, -1), elevated: true }
+        ];
+      }
+      if (typeId === 'junction') {
+        return [
+          { id: 'end-north', side: 'north', position: new THREE.Vector3(0, 1.55, -3.12), normal: new THREE.Vector3(0, 0, -1) },
+          { id: 'end-east', side: 'east', position: new THREE.Vector3(3.12, 1.55, 0), normal: new THREE.Vector3(1, 0, 0) },
+          { id: 'end-south', side: 'south', position: new THREE.Vector3(0, 1.55, 3.12), normal: new THREE.Vector3(0, 0, 1) },
+          { id: 'end-west', side: 'west', position: new THREE.Vector3(-3.12, 1.55, 0), normal: new THREE.Vector3(-1, 0, 0) }
+        ];
+      }
+      return [];
+    }
+
+    function getRoomDoorDefinition(side) {
+      const map = {
+        north: { pos: [0, 0, -4.02], normal: [0, 0, -1] },
+        east: { pos: [4.02, 0, 0], normal: [1, 0, 0] },
+        south: { pos: [0, 0, 4.02], normal: [0, 0, 1] },
+        west: { pos: [-4.02, 0, 0], normal: [-1, 0, 0] }
+      };
+      return map[side] || map.north;
+    }
+
+    function makeBaseBuildMaterial(color, roughness = 0.38, metalness = 0.76) {
+      return new THREE.MeshStandardMaterial({ color, roughness, metalness });
+    }
+
+    function addStructureBox(group, material, size, position, collisionBoxes = null, extraUserData = null) {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
+      mesh.position.set(position[0], position[1], position[2]);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      if (extraUserData && typeof extraUserData === 'object') Object.assign(mesh.userData, extraUserData);
+      group.add(mesh);
+      if (collisionBoxes) collisionBoxes.push({
+        center: { x: position[0], y: position[1], z: position[2] },
+        halfX: size[0] * 0.5, halfY: size[1] * 0.5, halfZ: size[2] * 0.5,
+        ...(extraUserData || {})
+      });
+      return mesh;
+    }
+
+    function getDoorHingeTransform(doorSide, halfWidth) {
+      const edge = halfWidth;
+      switch (doorSide) {
+        case 'north': return { x: -edge, z: -4.02, offsetX: halfWidth, offsetZ: 0, openRotation: Math.PI / 2 };
+        case 'east':  return { x:  4.02, z: -edge, offsetX: 0, offsetZ: halfWidth, openRotation: -Math.PI / 2 };
+        case 'south': return { x:  edge, z:  4.02, offsetX: -halfWidth, offsetZ: 0, openRotation: Math.PI / 2 };
+        case 'west':  return { x: -4.02, z:  edge, offsetX: 0, offsetZ: -halfWidth, openRotation: -Math.PI / 2 };
+        default: return { x: -edge, z: -4.02, offsetX: halfWidth, offsetZ: 0, openRotation: Math.PI / 2 };
+      }
+    }
+
+    function addHabitatDoor(group, collisionBoxes, doorSide, ghost, doorIndex = 0, interiorDoorMaterial = null) {
+      const d = getRoomDoorDefinition(doorSide);
+      const width = 2.1;
+      const height = 3.15;
+      const thickness = 0.14;
+      const halfWidth = width * 0.5;
+      const hinge = getDoorHingeTransform(doorSide, halfWidth);
+      const frameMat = makeBaseBuildMaterial(0x9aaab1, 0.27, 0.88);
+      const doorMat = interiorDoorMaterial || makeBaseBuildMaterial(0x7b5634, 0.48, 0.12);
+      const isX = Math.abs(d.normal[0]) > 0.5;
+
+      const doorPivot = new THREE.Group();
+      doorPivot.name = 'HabitatDoorPivot_' + doorIndex;
+      doorPivot.position.set(hinge.x, 1.62, hinge.z);
+      doorPivot.userData.openRotation = hinge.openRotation;
+      doorPivot.userData.side = doorSide;
+      doorPivot.userData.doorIndex = doorIndex;
+
+      const door = new THREE.Mesh(
+        isX ? new THREE.BoxGeometry(thickness, height, width) : new THREE.BoxGeometry(width, height, thickness),
+        doorMat
+      );
+      door.position.set(hinge.offsetX, 0, hinge.offsetZ);
+      door.castShadow = true;
+      door.receiveShadow = true;
+      doorPivot.add(door);
+
+      if (!ghost) {
+        const handleMat = makeBaseBuildMaterial(0xd5dce0, 0.22, 0.80);
+        const handle = new THREE.Mesh(
+          isX ? new THREE.BoxGeometry(0.08, 0.14, 0.05) : new THREE.BoxGeometry(0.05, 0.14, 0.08),
+          handleMat
+        );
+        if (doorSide === 'north') handle.position.set(0.30, 0.05, 0.10);
+        else if (doorSide === 'east') handle.position.set(-0.10, 0.05, 0.30);
+        else if (doorSide === 'south') handle.position.set(-0.30, 0.05, -0.10);
+        else handle.position.set(0.10, 0.05, -0.30);
+        doorPivot.add(handle);
+      }
+
+      group.userData.doorPivots = group.userData.doorPivots || [];
+      group.userData.doorPivots.push(doorPivot);
+      group.userData.doors = group.userData.doors || [];
+      group.userData.doors.push({ side: doorSide, pivot: doorPivot, openRotation: hinge.openRotation, index: doorIndex });
+      group.add(doorPivot);
+
+      // Closed-door collision occupies the actual doorway opening. It is disabled while open.
+      const doorCollision = {
+        center: { x: d.pos[0], y: 1.62, z: d.pos[2] },
+        halfX: isX ? thickness * 0.5 : halfWidth,
+        halfY: height * 0.5,
+        halfZ: isX ? halfWidth : thickness * 0.5,
+        isDoor: true,
+        doorIndex,
+        doorSide
+      };
+      collisionBoxes.push(doorCollision);
+    }
+
+    function setStructureGhostMaterial(root, valid) {
+      const material = valid ? BASE_BUILD_GHOST_VALID_MATERIAL : BASE_BUILD_GHOST_INVALID_MATERIAL;
+      root.traverse((obj) => {
+        if (!obj.isMesh) return;
+        obj.material = material;
+        obj.castShadow = false;
+        obj.receiveShadow = false;
+      });
+    }
+
+    function addHabitatCladding(group, wood, doorSides) {
+      const wallT = 0.08;
+      const claddingH = 3.65;
+      const doorWidth = 2.1;
+      const sideWidth = (8.0 - doorWidth) / 2;
+      const sideCenter = doorWidth * 0.5 + sideWidth * 0.5;
+      const y = 2.12;
+      const addSplit = (orientation, a, b) => {
+        if (orientation === 'horizontal') {
+          addStructureBox(group, wood, [sideWidth, claddingH, wallT], [a, y, b], null);
+          addStructureBox(group, wood, [sideWidth, claddingH, wallT], [-a, y, b], null);
+        } else {
+          addStructureBox(group, wood, [wallT, claddingH, sideWidth], [b, y, a], null);
+          addStructureBox(group, wood, [wallT, claddingH, sideWidth], [b, y, -a], null);
+        }
+      };
+      const set = new Set(doorSides);
+      if (set.has('north')) addSplit('horizontal', sideCenter, -3.76); else addStructureBox(group, wood, [7.35, claddingH, wallT], [0, y, -3.76], null);
+      if (set.has('south')) addSplit('horizontal', sideCenter, 3.76); else addStructureBox(group, wood, [7.35, claddingH, wallT], [0, y, 3.76], null);
+      if (set.has('east')) addSplit('vertical', sideCenter, 3.76); else addStructureBox(group, wood, [wallT, claddingH, 7.35], [3.76, y, 0], null);
+      if (set.has('west')) addSplit('vertical', sideCenter, -3.76); else addStructureBox(group, wood, [wallT, claddingH, 7.35], [-3.76, y, 0], null);
+    }
+
+    function addIntegratedFoundationT(group, halfArm, corridorHalfWidth, frameMat, accentMat) {
+      // True T footprint: one north/south stem only on the north side, with a full
+      // east/west crossbar. This keeps the three connection faces physically open.
+      const armWidth = corridorHalfWidth * 2 + 0.28;
+      const armDepth = halfArm - corridorHalfWidth + 0.28;
+      const center = new THREE.Mesh(new THREE.BoxGeometry(armWidth, 0.18, armWidth), frameMat);
+      center.position.set(0, 0.02, 0);
+      center.castShadow = true; center.receiveShadow = true; center.userData.isBaseFoundation = true;
+      group.add(center);
+      const makePlate = (w, d, x, z) => {
+        const plate = new THREE.Mesh(new THREE.BoxGeometry(w, 0.18, d), frameMat);
+        plate.position.set(x, 0.02, z);
+        plate.castShadow = true; plate.receiveShadow = true; plate.userData.isBaseFoundation = true;
+        group.add(plate);
+      };
+      makePlate(armWidth, armDepth, 0, -(halfArm + corridorHalfWidth) * 0.5); // north stem
+      makePlate(armDepth, armWidth, -(halfArm + corridorHalfWidth) * 0.5, 0); // west arm
+      makePlate(armDepth, armWidth,  (halfArm + corridorHalfWidth) * 0.5, 0); // east arm
+
+      const railT = 0.11, railY = 0.10;
+      const rail = (sx, sz, px, pz) => {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, railT, sz), accentMat);
+        mesh.position.set(px, railY, pz); mesh.castShadow = true; mesh.receiveShadow = true; mesh.userData.isBaseFoundationRail = true;
+        group.add(mesh);
+      };
+      const outer = halfArm + 0.10;
+      rail(armWidth, 0.10, 0, -outer); // north outer edge
+      rail(0.10, armWidth, -outer, 0); // west outer edge
+      rail(0.10, armWidth,  outer, 0); // east outer edge
+      rail(armWidth, 0.10, 0, corridorHalfWidth + 0.10); // closed south edge
+      group.userData.foundationIncluded = true;
+      group.userData.foundationFootprint = { halfX: halfArm + 0.14, halfZ: halfArm + 0.14 };
+    }
+
+    function addIntegratedFoundationL(group, halfArm, corridorHalfWidth, frameMat, accentMat) {
+      // L-shaped foundation: north stem turns east through the corner.
+      const armWidth = corridorHalfWidth * 2 + 0.28;
+      const armDepth = halfArm - corridorHalfWidth + 0.28;
+      const center = new THREE.Mesh(new THREE.BoxGeometry(armWidth, 0.18, armWidth), frameMat);
+      center.position.set(0, 0.02, 0);
+      center.castShadow = true; center.receiveShadow = true; center.userData.isBaseFoundation = true;
+      group.add(center);
+      const makePlate = (w, d, x, z) => {
+        const plate = new THREE.Mesh(new THREE.BoxGeometry(w, 0.18, d), frameMat);
+        plate.position.set(x, 0.02, z);
+        plate.castShadow = true; plate.receiveShadow = true; plate.userData.isBaseFoundation = true;
+        group.add(plate);
+      };
+      makePlate(armWidth, armDepth, 0, -(halfArm + corridorHalfWidth) * 0.5); // north stem
+      makePlate(armDepth, armWidth, (halfArm + corridorHalfWidth) * 0.5, 0); // east arm
+
+      const railT = 0.11, railY = 0.10;
+      const rail = (sx, sz, px, pz) => {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, railT, sz), accentMat);
+        mesh.position.set(px, railY, pz); mesh.castShadow = true; mesh.receiveShadow = true; mesh.userData.isBaseFoundationRail = true;
+        group.add(mesh);
+      };
+      const outer = halfArm + 0.10;
+      rail(armWidth, 0.10, 0, -outer); // north outer edge
+      rail(0.10, armWidth, outer, 0); // east outer edge
+      rail(armWidth, 0.10, 0, corridorHalfWidth + 0.10); // south outer edge
+      rail(0.10, halfArm - corridorHalfWidth + 0.20, -corridorHalfWidth - 0.10, -(halfArm - corridorHalfWidth) * 0.5); // west of north stem
+      rail(halfArm - corridorHalfWidth + 0.20, 0.10, (halfArm - corridorHalfWidth) * 0.5, -corridorHalfWidth - 0.10); // inner corner edge
+      group.userData.foundationIncluded = true;
+      group.userData.foundationFootprint = { halfX: halfArm + 0.14, halfZ: halfArm + 0.14 };
+    }
+
+    function addIntegratedFoundationCross(group, halfArm, corridorHalfWidth, frameMat, accentMat) {
+      const armDepth = halfArm * 2 + 0.28;
+      const armWidth = corridorHalfWidth * 2 + 0.28;
+      const center = new THREE.Mesh(new THREE.BoxGeometry(armWidth, 0.18, armWidth), frameMat);
+      center.position.y = 0.02;
+      center.castShadow = true;
+      center.receiveShadow = true;
+      center.userData.isBaseFoundation = true;
+      group.add(center);
+
+      const makePlate = (x, z, w, d) => {
+        const plate = new THREE.Mesh(new THREE.BoxGeometry(w, 0.18, d), frameMat);
+        plate.position.set(x, 0.02, z);
+        plate.castShadow = true;
+        plate.receiveShadow = true;
+        plate.userData.isBaseFoundation = true;
+        group.add(plate);
+      };
+      makePlate(0, -(halfArm + corridorHalfWidth) * 0.5, armWidth, halfArm - corridorHalfWidth + 0.28);
+      makePlate(0,  (halfArm + corridorHalfWidth) * 0.5, armWidth, halfArm - corridorHalfWidth + 0.28);
+      makePlate(-(halfArm + corridorHalfWidth) * 0.5, 0, halfArm - corridorHalfWidth + 0.28, armWidth);
+      makePlate( (halfArm + corridorHalfWidth) * 0.5, 0, halfArm - corridorHalfWidth + 0.28, armWidth);
+
+      const railT = 0.11;
+      const railY = 0.10;
+      const rail = (sx, sz, px, pz) => {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, railT, sz), accentMat);
+        mesh.position.set(px, railY, pz);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.userData.isBaseFoundationRail = true;
+        group.add(mesh);
+      };
+      const outer = halfArm + 0.10;
+      rail(armWidth, 0.10, 0, -outer);
+      rail(armWidth, 0.10, 0, outer);
+      rail(0.10, armWidth, -outer, 0);
+      rail(0.10, armWidth, outer, 0);
+      rail(0.10, halfArm - corridorHalfWidth + 0.20, -corridorHalfWidth - 0.10, -(halfArm - corridorHalfWidth) * 0.5);
+      rail(0.10, halfArm - corridorHalfWidth + 0.20, corridorHalfWidth + 0.10, -(halfArm - corridorHalfWidth) * 0.5);
+      rail(0.10, halfArm - corridorHalfWidth + 0.20, -corridorHalfWidth - 0.10, (halfArm - corridorHalfWidth) * 0.5);
+      rail(0.10, halfArm - corridorHalfWidth + 0.20, corridorHalfWidth + 0.10, (halfArm - corridorHalfWidth) * 0.5);
+      rail(halfArm - corridorHalfWidth + 0.20, 0.10, -(halfArm - corridorHalfWidth) * 0.5, -corridorHalfWidth - 0.10);
+      rail(halfArm - corridorHalfWidth + 0.20, 0.10, (halfArm - corridorHalfWidth) * 0.5, -corridorHalfWidth - 0.10);
+      rail(halfArm - corridorHalfWidth + 0.20, 0.10, -(halfArm - corridorHalfWidth) * 0.5, corridorHalfWidth + 0.10);
+      rail(halfArm - corridorHalfWidth + 0.20, 0.10, (halfArm - corridorHalfWidth) * 0.5, corridorHalfWidth + 0.10);
+
+      group.userData.foundationIncluded = true;
+      group.userData.foundationFootprint = { halfX: halfArm + 0.14, halfZ: halfArm + 0.14 };
+    }
+
+    function addIntegratedFoundation(group, halfX, halfZ, frameMat, accentMat) {
+      const padX = halfX * 2 + 0.28;
+      const padZ = halfZ * 2 + 0.28;
+      const plate = new THREE.Mesh(new THREE.BoxGeometry(padX, 0.18, padZ), frameMat);
+      plate.position.y = 0.02;
+      plate.castShadow = true;
+      plate.receiveShadow = true;
+      plate.userData.isBaseFoundation = true;
+      group.add(plate);
+
+      const railT = 0.11;
+      const railY = 0.10;
+      const rails = [
+        [padX, railT, 0.0, 0, railY, -halfZ - 0.10],
+        [padX, railT, 0.0, 0, railY,  halfZ + 0.10],
+        [railT, railY, padZ, -halfX - 0.10, 0.10, 0],
+        [railT, railY, padZ,  halfX + 0.10, 0.10, 0]
+      ];
+      for (const [sx, sy, sz, px, py, pz] of rails) {
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), accentMat);
+        rail.position.set(px, py, pz);
+        rail.castShadow = true;
+        rail.receiveShadow = true;
+        rail.userData.isBaseFoundationRail = true;
+        group.add(rail);
+      }
+      group.userData.foundationIncluded = true;
+      group.userData.foundationFootprint = { halfX: halfX + 0.14, halfZ: halfZ + 0.14 };
+    }
+
+    function getBaseFoundationAnchorPoints(typeId, mirroredX = false) {
+      if (typeId === 'habitat_room') {
+        const x = 4.0 - 0.34;
+        const z = 4.0 - 0.34;
+        return [
+          [-x, -z], [0, -z], [x, -z],
+          [-x, 0],            [x, 0],
+          [-x, z],  [0, z],   [x, z]
+        ];
+      }
+      if (typeId === 'straight_corridor') {
+        const x = 1.9 - 0.28;
+        const z = 3.1 - 0.30;
+        return [
+          [-x, -z], [0, -z], [x, -z],
+          [-x, z],  [0, z],  [x, z]
+        ];
+      }
+      if (typeId === 'observation_module' || typeId === 'storage_module' || typeId === 'workshop_module' || typeId === 'research_module' || typeId === 'docking_module') {
+        const x = 4.0 - 0.34;
+        const z = 4.0 - 0.34;
+        return [
+          [-x, -z], [0, -z], [x, -z],
+          [-x, 0],            [x, 0],
+          [-x, z],  [0, z],   [x, z]
+        ];
+      }
+      if (typeId === 't_junction') {
+        // Support the three arms of the T-shaped foundation without filling the closed western side.
+        const arm = 3.10 - 0.30;
+        const inner = 1.58;
+        return [
+          [-inner, -arm], [0, -arm], [inner, -arm],
+          [arm, -inner], [arm, 0], [arm, inner],
+          [-inner, arm], [0, arm], [inner, arm],
+          [-inner, -inner], [-inner, 0], [-inner, inner]
+        ];
+      }
+      if (typeId === 'l_junction') {
+        const arm = 3.10 - 0.30;
+        const inner = 1.58;
+        const points = [
+          [-inner, -arm], [0, -arm], [inner, -arm],
+          [arm, -inner], [arm, 0], [arm, inner],
+          [-inner, inner], [0, inner],
+          [-inner, 0]
+        ];
+        return mirroredX ? points.map(([x,z]) => [-x,z]) : points;
+      }
+      if (typeId === 'stairwell') {
+        const x = 1.66;
+        const z = 3.02;
+        return [
+          [-x, -z], [0, -z], [x, -z],
+          [-x, 0], [x, 0],
+          [-x, z], [0, z], [x, z]
+        ];
+      }
+      if (typeId === 'junction') {
+        // Support the four arms of the plus-shaped foundation without creating a full square pad.
+        const arm = 3.10 - 0.30;
+        const inner = 1.58;
+        return [
+          [-inner, -arm], [0, -arm], [inner, -arm],
+          [arm, -inner],  [arm, 0],   [arm, inner],
+          [-inner, arm], [0, arm], [inner, arm],
+          [-arm, -inner], [-arm, 0], [-arm, inner]
+        ];
+      }
+      return [[0, 0]];
+    }
+
+    function getBaseFoundationSupportGround(root, localX, localZ, base, out = {}) {
+      if (!root || !base) return null;
+      const ctx = getPlaceableSurfaceContext(String(base.surfaceBodyId || 'ivis'));
+      if (!ctx?.parent) return null;
+      const topLocal = new THREE.Vector3(localX, -0.02, localZ);
+      const topWorld = root.localToWorld(topLocal.clone());
+      const bodyLocal = ctx.parent.worldToLocal(topWorld.clone());
+      if (bodyLocal.lengthSq() < 0.000001) return null;
+      const dir = bodyLocal.normalize();
+      const groundHeight = Number(ctx.getHeight(dir)) || 0;
+      const groundBody = dir.clone().multiplyScalar(ctx.radius + groundHeight + 0.015);
+      const groundWorld = ctx.parent.localToWorld(groundBody.clone());
+      out.topWorld = topWorld;
+      out.groundWorld = groundWorld;
+      out.dir = dir;
+      out.distance = topWorld.distanceTo(groundWorld);
+      return out;
+    }
+
+    function updateBaseStructureFoundationSupports(structure) {
+      if (!structure?.root) return;
+      const group = structure.root;
+      const existingSupportGroup = group.userData.foundationSupportGroup || null;
+      if (existingSupportGroup) {
+        while (existingSupportGroup.children.length) {
+          const child = existingSupportGroup.children[existingSupportGroup.children.length - 1];
+          existingSupportGroup.remove(child);
+          if (child?.geometry && child.geometry.dispose) child.geometry.dispose();
+          if (child?.material && child.material !== BASE_BUILD_GHOST_VALID_MATERIAL && child.material !== BASE_BUILD_GHOST_INVALID_MATERIAL) {
+            if (!child.material.userData?.sharedBaseBuildMaterial && child.material.dispose) child.material.dispose();
+          }
+        }
+      } else {
+        group.userData.foundationSupportGroup = new THREE.Group();
+        group.userData.foundationSupportGroup.name = 'IntegratedFoundationSupports';
+        group.add(group.userData.foundationSupportGroup);
+      }
+
+      const base = baseCores.find((candidate) => String(candidate?.baseId || '') === String(structure.baseId || ''));
+      const def = getBaseStructureDefinition(structure.typeId);
+      if (!base || !def || !group.parent) return;
+
+      const points = getBaseFoundationAnchorPoints(structure.typeId, !!structure.root?.userData?.mirroredX);
+      const supportMat = makeBaseBuildMaterial(0x39464d, 0.68, 0.72);
+      const footMat = makeBaseBuildMaterial(0x66747a, 0.58, 0.82);
+      const braceMat = makeBaseBuildMaterial(0x4b5960, 0.62, 0.74);
+      const supportGroup = group.userData.foundationSupportGroup;
+      const groupWorldQuat = group.getWorldQuaternion(new THREE.Quaternion());
+      const invGroupWorldQuat = groupWorldQuat.clone().invert();
+      const bodyWorldQuat = base.root.parent?.getWorldQuaternion(new THREE.Quaternion()) || new THREE.Quaternion();
+      const upLocal = new THREE.Vector3(0, 1, 0);
+
+      const supportLengths = [];
+      for (const [sx, sz] of points) {
+        const sample = getBaseFoundationSupportGround(group, sx, sz, base, {});
+        if (!sample) continue;
+        const topLocal = group.worldToLocal(sample.topWorld.clone());
+        const groundLocal = group.worldToLocal(sample.groundWorld.clone());
+        const vectorLocal = groundLocal.clone().sub(topLocal);
+        const length = vectorLocal.length();
+        supportLengths.push(length);
+        if (length <= 0.08) continue;
+
+        const beam = new THREE.Mesh(new THREE.BoxGeometry(0.30, length, 0.30), supportMat);
+        beam.position.copy(topLocal).add(groundLocal).multiplyScalar(0.5);
+        beam.quaternion.setFromUnitVectors(upLocal, vectorLocal.normalize());
+        beam.castShadow = true;
+        beam.receiveShadow = true;
+        beam.userData.isBaseFoundationSupport = true;
+        supportGroup.add(beam);
+
+        const groundNormalWorld = sample.dir.clone().applyQuaternion(bodyWorldQuat).normalize();
+        const groundNormalLocal = groundNormalWorld.clone().applyQuaternion(invGroupWorldQuat).normalize();
+        const footQuat = new THREE.Quaternion().setFromUnitVectors(upLocal, groundNormalLocal);
+        const foot = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.12, 0.58), footMat);
+        foot.position.copy(groundLocal).addScaledVector(groundNormalLocal, 0.06);
+        foot.quaternion.copy(footQuat);
+        foot.castShadow = true;
+        foot.receiveShadow = true;
+        foot.userData.isBaseFoundationFoot = true;
+        supportGroup.add(foot);
+
+        const collar = new THREE.Mesh(new THREE.BoxGeometry(0.40, 0.12, 0.40), braceMat);
+        collar.position.copy(topLocal).addScaledVector(vectorLocal.normalize(), 0.06);
+        collar.quaternion.setFromUnitVectors(upLocal, vectorLocal.normalize());
+        collar.castShadow = true;
+        collar.receiveShadow = true;
+        collar.userData.isBaseFoundationCollar = true;
+        supportGroup.add(collar);
+      }
+
+      const maxSupportLength = supportLengths.length ? Math.max(...supportLengths) : 0;
+      group.userData.foundationSupportLengths = supportLengths;
+      group.userData.foundationMaxSupportLength = maxSupportLength;
+      group.userData.foundationAutoSupported = true;
+      group.userData.foundationSupportLimit = 7.5;
+    }
+
+    function getBaseStructureFoundationMaxGap(root, typeId, base) {
+      const points = getBaseFoundationAnchorPoints(typeId, !!root?.userData?.mirroredX);
+      let maxGap = 0;
+      let minGap = Infinity;
+      for (const [sx, sz] of points) {
+        const sample = getBaseFoundationSupportGround(root, sx, sz, base, {});
+        if (!sample) continue;
+        maxGap = Math.max(maxGap, sample.distance);
+        minGap = Math.min(minGap, sample.distance);
+      }
+      return { maxGap, minGap: Number.isFinite(minGap) ? minGap : 0 };
+    }
+
+    function refreshAllBaseFoundationSupports() {
+      for (const structure of baseStructures) updateBaseStructureFoundationSupports(structure);
+    }
+
+    function applyMirroredBaseStructureData(group, collisionBoxes) {
+      if (!group) return;
+      // Mirror the procedural L corner across its local X axis. We mirror node transforms
+      // rather than applying a negative scale to the root so existing floor/ground helpers
+      // and world-space rotation logic keep behaving exactly as before.
+      group.traverse((node) => {
+        if (node === group) return;
+        if (node.position) node.position.x *= -1;
+        if (node.rotation) node.rotation.y *= -1;
+      });
+      for (const box of collisionBoxes || []) {
+        if (box?.center) box.center.x = -(Number(box.center.x) || 0);
+      }
+      if (Array.isArray(group.userData.floorRects)) {
+        for (const rect of group.userData.floorRects) {
+          const minX = Number(rect.minX) || 0;
+          const maxX = Number(rect.maxX) || 0;
+          rect.minX = -maxX;
+          rect.maxX = -minX;
+        }
+      }
+      if (Array.isArray(group.userData.floorPortals)) {
+        for (const portal of group.userData.floorPortals) {
+          portal.center.x = -(Number(portal.center?.x) || 0);
+          if (portal.side === 'east') portal.side = 'west';
+          else if (portal.side === 'west') portal.side = 'east';
+        }
+      }
+      group.userData.mirroredX = true;
+    }
+
+    function getBaseStructureConnectionPointsForState(typeId, doorSides = ['north', 'south'], mirroredX = false) {
+      const points = getBaseStructureConnectionPoints(typeId, doorSides).map((point) => ({
+        ...point,
+        position: point.position.clone(),
+        normal: point.normal.clone()
+      }));
+      if (typeId === 'l_junction' && mirroredX) {
+        for (const point of points) {
+          point.position.x *= -1;
+          point.normal.x *= -1;
+          if (point.side === 'east') point.side = 'west';
+          else if (point.side === 'west') point.side = 'east';
+          if (point.id === 'end-east') point.id = 'end-west';
+        }
+      }
+      return points;
+    }
+
+    function createBaseStructureVisual(typeId, doorSides = ['north', 'south'], ghost = false, interiorMaterial = 'wood', mirroredX = false) {
+      interiorMaterial = normalizeBaseInteriorMaterial(interiorMaterial);
+      mirroredX = !!mirroredX && typeId === 'l_junction';
+      const normalizedDoorSides = (typeId === 'hydroponics_module' || typeId === 'docking_module')
+        ? ['north']
+        : ['habitat_room', 'observation_module', 'storage_module', 'workshop_module', 'research_module', 'fuel_synthesizer_module', 'hydroponics_module'].includes(typeId)
+          ? normalizeBaseDoorSides(doorSides, ['north', 'south'])
+          : [];
+      const group = new THREE.Group();
+      group.name = 'BaseStructure_' + typeId;
+      group.userData.isBaseStructure = true;
+      group.userData.structureType = typeId;
+      group.userData.doorSides = normalizedDoorSides.slice();
+      group.userData.interiorMaterial = interiorMaterial;
+      group.userData.mirroredX = false;
+      const collisionBoxes = [];
+      const steel = makeBaseBuildMaterial(0x66747a, 0.34, 0.78);
+      const frame = makeBaseBuildMaterial(0x273238, 0.40, 0.70);
+      const interiorDef = getBaseInteriorMaterialDefinition(interiorMaterial);
+      const wood = makeBaseBuildMaterial(interiorDef.mainColor, interiorDef.roughness, interiorDef.metalness);
+      const woodDark = makeBaseBuildMaterial(interiorDef.darkColor, Math.min(0.76, interiorDef.roughness + 0.06), Math.max(0.03, interiorDef.metalness - 0.08));
+      const trim = makeBaseBuildMaterial(0xb4c0c5, 0.25, 0.86);
+
+      if (typeId === 'habitat_room') {
+        addIntegratedFoundation(group, 4.0, 4.0, frame, trim);
+        group.userData.foundationHalfX = 4.0 + 0.14;
+        group.userData.foundationHalfZ = 4.0 + 0.14;
+        group.userData.floorBounds = { halfX: 3.68, halfZ: 3.68, topY: 0.20, ceilingY: 4.15 };
+        // The visible floor stops at the inner wall, but the collision floor continues
+        // through each doorway so connected modules have one continuous walkable surface.
+        group.userData.floorPortals = [];
+        const wallT = 0.22;
+        const wallH = 4.2;
+        const doorWidth = 2.1;
+        const sideWidth = (8.0 - doorWidth) / 2;
+        const sideCenter = doorWidth * 0.5 + sideWidth * 0.5;
+        const wallY = 2.1;
+        const doorSet = new Set(normalizedDoorSides);
+
+        addStructureBox(group, woodDark, [7.9, 0.16, 7.9], [0, 0.10, 0]);
+        addStructureBox(group, frame, [7.9, 0.20, 7.9], [0, 4.25, 0]);
+
+        const addWall = (size, pos, withCollision = true) => addStructureBox(group, steel, size, pos, withCollision ? collisionBoxes : null);
+        const addHorizontalDoorWall = (z) => {
+          addWall([sideWidth, wallH, wallT], [-sideCenter, wallY, z]);
+          addWall([sideWidth, wallH, wallT], [ sideCenter, wallY, z]);
+        };
+        const addVerticalDoorWall = (x) => {
+          addWall([wallT, wallH, sideWidth], [x, wallY, -sideCenter]);
+          addWall([wallT, wallH, sideWidth], [x, wallY,  sideCenter]);
+        };
+
+        if (doorSet.has('north')) addHorizontalDoorWall(-3.89); else addWall([8.0, wallH, wallT], [0, wallY, -3.89]);
+        if (doorSet.has('south')) addHorizontalDoorWall( 3.89); else addWall([8.0, wallH, wallT], [0, wallY,  3.89]);
+        if (doorSet.has('east')) addVerticalDoorWall( 3.89); else addWall([wallT, wallH, 8.0], [ 3.89, wallY, 0]);
+        if (doorSet.has('west')) addVerticalDoorWall(-3.89); else addWall([wallT, wallH, 8.0], [-3.89, wallY, 0]);
+
+        // Robust player-only shell colliders.  The visible steel walls are intentionally thin,
+        // but a thin collider can be crossed by diagonal/high-speed movement or at the tiny
+        // seam where wall segments meet.  These invisible guards extend slightly into the wall
+        // and overlap the corners, while leaving the selected doorway(s) open.  They are ignored
+        // by structure-placement overlap checks because they are marked isPlayerOnly.
+        const shellT = 0.34;
+        const shellY = 2.10;
+        const shellH = 4.20;
+        const shellSideWidth = sideWidth;
+        const shellSideCenter = sideCenter;
+        const addPlayerShellBox = (size, center, extra = {}) => {
+          collisionBoxes.push({
+            center: { x: center[0], y: center[1], z: center[2] },
+            halfX: size[0] * 0.5, halfY: size[1] * 0.5, halfZ: size[2] * 0.5,
+            isPlayerOnly: true,
+            roomShell: true,
+            padding: 0.04,
+            ...extra
+          });
+        };
+        if (doorSet.has('north')) {
+          addPlayerShellBox([shellSideWidth, shellH, shellT], [-shellSideCenter, shellY, -3.89]);
+          addPlayerShellBox([shellSideWidth, shellH, shellT], [ shellSideCenter, shellY, -3.89]);
+        } else addPlayerShellBox([8.0, shellH, shellT], [0, shellY, -3.89]);
+        if (doorSet.has('south')) {
+          addPlayerShellBox([shellSideWidth, shellH, shellT], [-shellSideCenter, shellY,  3.89]);
+          addPlayerShellBox([shellSideWidth, shellH, shellT], [ shellSideCenter, shellY,  3.89]);
+        } else addPlayerShellBox([8.0, shellH, shellT], [0, shellY,  3.89]);
+        if (doorSet.has('east')) {
+          addPlayerShellBox([shellT, shellH, shellSideWidth], [ 3.89, shellY, -shellSideCenter]);
+          addPlayerShellBox([shellT, shellH, shellSideWidth], [ 3.89, shellY,  shellSideCenter]);
+        } else addPlayerShellBox([shellT, shellH, 8.0], [ 3.89, shellY, 0]);
+        if (doorSet.has('west')) {
+          addPlayerShellBox([shellT, shellH, shellSideWidth], [-3.89, shellY, -shellSideCenter]);
+          addPlayerShellBox([shellT, shellH, shellSideWidth], [-3.89, shellY,  shellSideCenter]);
+        } else addPlayerShellBox([shellT, shellH, 8.0], [-3.89, shellY, 0]);
+
+        // Extra corner blocks close the exterior/interior seam at all four wall joins.
+        const cornerShell = 0.42;
+        for (const cx of [-3.90, 3.90]) for (const cz of [-3.90, 3.90]) {
+          addPlayerShellBox([cornerShell, shellH, cornerShell], [cx, shellY, cz], { padding: 0.02 });
+        }
+
+        addHabitatCladding(group, wood, normalizedDoorSides);
+
+        group.userData.doorPivots = [];
+        group.userData.doors = [];
+        normalizedDoorSides.forEach((side, index) => addHabitatDoor(group, collisionBoxes, side, ghost, index, wood));
+        for (const side of normalizedDoorSides) {
+          const d = getRoomDoorDefinition(side);
+          const isX = Math.abs(d.normal[0]) > 0.5;
+          group.userData.floorPortals.push({
+            side,
+            center: { x: d.pos[0], z: d.pos[2] },
+            halfX: isX ? 1.12 : 0.58,
+            halfZ: isX ? 0.58 : 1.12,
+            minY: -0.08,
+            maxY: 1.25,
+            depth: 0.58
+          });
+        }
+        // Player-only corner guards close the tiny seam where two wall collision boxes meet.
+        // They are ignored by structure-overlap validation, so they cannot make valid modules red.
+        const cornerY = 2.10;
+        for (const cx of [-3.96, 3.96]) {
+          for (const cz of [-3.96, 3.96]) {
+            collisionBoxes.push({
+              center: { x: cx, y: cornerY, z: cz },
+              halfX: 0.16, halfY: 2.08, halfZ: 0.16,
+              isPlayerOnly: true,
+              padding: 0.03
+            });
+          }
+        }
+        normalizedDoorSides.forEach((side) => {
+          const d = getRoomDoorDefinition(side);
+          const isX = Math.abs(d.normal[0]) > 0.5;
+          addStructureBox(group, trim, isX ? [0.20, 1.0, 2.32] : [2.32, 1.0, 0.20], isX ? [d.pos[0], 3.56, 0] : [0, 3.56, d.pos[2]], null);
+        });
+
+        group.userData.collisionBoxes = collisionBoxes;
+        group.userData.connectionPoints = getBaseStructureConnectionPoints(typeId, normalizedDoorSides);
+      } else if (typeId === 'observation_module') {
+        // Habitat-sized observation chamber, slightly taller, with two standard connection exits.
+        // The upper half of the east wall is transparent glass, and the entire roof retracts.
+        addIntegratedFoundation(group, 4.0, 4.0, frame, trim);
+        group.userData.foundationHalfX = 4.0 + 0.14;
+        group.userData.foundationHalfZ = 4.0 + 0.14;
+        group.userData.floorBounds = { halfX: 3.68, halfZ: 3.68, topY: 0.20, ceilingY: 5.00 };
+        group.userData.floorPortals = normalizedDoorSides.map((side) => {
+          const d = getRoomDoorDefinition(side);
+          const isX = Math.abs(d.normal[0]) > 0.5;
+          return { side, center: { x: d.pos[0], z: d.pos[2] }, halfX: isX ? 0.60 : 1.12, halfZ: isX ? 1.12 : 0.60, minY: -0.08, maxY: 2.35, depth: 0.58 };
+        });
+        const wallT = 0.22;
+        const lowerWallH = 2.45;
+        const upperGlassH = 2.45;
+        const wallY = 1.38;
+        const glassY = 3.82;
+        const doorWidth = 2.1;
+        const sideWidth = (8.0 - doorWidth) / 2;
+        const sideCenter = doorWidth * 0.5 + sideWidth * 0.5;
+        const glassMat = new THREE.MeshPhysicalMaterial({
+          color: 0x9adcf2, roughness: 0.08, metalness: 0.08, transmission: 0.35,
+          transparent: true, opacity: 0.52, thickness: 0.035,
+          side: THREE.DoubleSide, depthWrite: false
+        });
+        const glassTrim = makeBaseBuildMaterial(0xb4c0c5, 0.18, 0.88);
+
+        addStructureBox(group, woodDark, [7.9, 0.16, 7.9], [0, 0.10, 0]);
+        // Day 21: the observation roof is the retractable glass assembly created below.
+        // Do not add the old solid top panel here, otherwise it blocks the glass roof/view.
+
+        // Lower walls keep an opening on whichever 1 or 2 door sides were selected.
+        const doorSet = new Set(normalizedDoorSides);
+        const addObsWall = (size, pos, extra = {}) => addStructureBox(group, steel, size, pos, collisionBoxes, extra);
+        const addHorizontalObsDoorWall = (z) => {
+          addObsWall([sideWidth, lowerWallH, wallT], [-sideCenter, wallY, z]);
+          addObsWall([sideWidth, lowerWallH, wallT], [ sideCenter, wallY, z]);
+        };
+        const addVerticalObsDoorWall = (x) => {
+          addObsWall([wallT, lowerWallH, sideWidth], [x, wallY, -sideCenter]);
+          addObsWall([wallT, lowerWallH, sideWidth], [x, wallY,  sideCenter]);
+        };
+        if (doorSet.has('north')) addHorizontalObsDoorWall(-3.89); else addObsWall([8.0, lowerWallH, wallT], [0, wallY, -3.89]);
+        if (doorSet.has('south')) addHorizontalObsDoorWall( 3.89); else addObsWall([8.0, lowerWallH, wallT], [0, wallY,  3.89]);
+        if (doorSet.has('east')) addVerticalObsDoorWall(3.89); else addObsWall([wallT, lowerWallH, 8.0], [3.89, wallY, 0]);
+        if (doorSet.has('west')) addVerticalObsDoorWall(-3.89); else addObsWall([wallT, lowerWallH, 8.0], [-3.89, wallY, 0]);
+
+        // Upper north/south/west wall sections stay sealed and sturdy.
+        addObsWall([7.9, upperGlassH, wallT], [0, glassY, -3.89]);
+        addObsWall([7.9, upperGlassH, wallT], [0, glassY,  3.89]);
+        addObsWall([wallT, upperGlassH, 8.0], [-3.89, glassY, 0]);
+
+        // Full upper-east observation wall in glass.
+        const observationGlass = new THREE.Mesh(new THREE.BoxGeometry(wallT, upperGlassH, 7.86), glassMat);
+        observationGlass.position.set(3.89, glassY, 0);
+        observationGlass.castShadow = false;
+        observationGlass.receiveShadow = true;
+        observationGlass.userData.isObservationGlass = true;
+        group.add(observationGlass);
+        collisionBoxes.push({
+          center: { x: 3.89, y: glassY, z: 0 },
+          halfX: wallT * 0.5, halfY: upperGlassH * 0.5, halfZ: 3.93,
+          observationGlass: true, padding: 0.02
+        });
+
+        // Reinforced mullions keep the glass wall readable without turning it opaque.
+        for (const z of [-2.0, 0, 2.0]) addStructureBox(group, glassTrim, [0.10, upperGlassH + 0.08, 0.10], [3.77, glassY, z], null);
+        addStructureBox(group, glassTrim, [0.12, 0.12, 7.92], [3.76, 2.60, 0], null);
+
+        // Interior timber rails.
+        addStructureBox(group, wood, [0.08, 2.15, 5.75], [-3.70, 2.02, 0]);
+        addStructureBox(group, wood, [7.35, 0.08, 0.10], [0, 2.45, -3.70]);
+        addStructureBox(group, wood, [7.35, 0.08, 0.10], [0, 2.45,  3.70]);
+
+        // Retractable roof: two glass panels slide outward along local Z, exposing the sky.
+        const roofGroup = new THREE.Group();
+        roofGroup.name = 'ObservationRetractableRoof';
+        const roofPanelDepth = 3.86;
+        const roofPanelWidth = 7.72;
+        const roofPanelMat = glassMat.clone();
+        roofPanelMat.opacity = 0.44;
+        const roofFrameMat = glassTrim;
+        const makeRoofPanel = (closedZ, openZ, label) => {
+          const panelGroup = new THREE.Group();
+          panelGroup.name = label;
+          const panel = new THREE.Mesh(new THREE.BoxGeometry(roofPanelWidth, 0.12, roofPanelDepth), roofPanelMat);
+          panel.castShadow = false; panel.receiveShadow = true; panel.userData.isObservationRoofGlass = true;
+          panelGroup.add(panel);
+          addStructureBox(panelGroup, roofFrameMat, [roofPanelWidth + 0.08, 0.10, 0.10], [0, -0.02, -roofPanelDepth * 0.5]);
+          addStructureBox(panelGroup, roofFrameMat, [roofPanelWidth + 0.08, 0.10, 0.10], [0, -0.02,  roofPanelDepth * 0.5]);
+          panelGroup.position.set(0, 5.09, closedZ);
+          roofGroup.add(panelGroup);
+          return { group: panelGroup, closedZ, openZ };
+        };
+        const northRoof = makeRoofPanel(-1.93, -5.42, 'ObservationRoof_North');
+        const southRoof = makeRoofPanel( 1.93,  5.42, 'ObservationRoof_South');
+        group.add(roofGroup);
+        group.userData.observationRoofPanels = [northRoof, southRoof];
+        group.userData.observationRoofOpen = false;
+        group.userData.observationGlassMaterial = glassMat;
+
+        // Physical lever on the inner west wall. Right-click beside it to flip the roof.
+        const leverBase = new THREE.Group();
+        leverBase.name = 'ObservationRoofLever';
+        leverBase.position.set(-3.35, 1.42, 0.90);
+        const leverMount = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.46, 0.34), glassTrim);
+        leverMount.castShadow = true; leverMount.receiveShadow = true;
+        leverBase.add(leverMount);
+        const leverArm = new THREE.Group();
+        leverArm.name = 'ObservationRoofLeverArm';
+        leverArm.position.set(0.02, 0.02, 0);
+        const leverStem = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.52, 0.08), frame);
+        leverStem.position.set(0.08, 0.22, 0);
+        leverStem.rotation.z = -0.42;
+        leverStem.castShadow = true;
+        leverArm.add(leverStem);
+        const leverHandleMat = makeBaseBuildMaterial(0xd3a848, 0.30, 0.70);
+        const leverHandle = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.12, 0.16), leverHandleMat);
+        leverHandle.position.set(0.18, 0.44, 0);
+        leverHandle.castShadow = true;
+        leverArm.add(leverHandle);
+        leverArm.rotation.z = -0.52;
+        leverBase.add(leverArm);
+        leverBase.rotation.z = 0;
+        leverBase.userData.leverArm = leverArm;
+        leverBase.userData.closedRotation = -0.52;
+        leverBase.userData.openRotation = 0.52;
+        leverBase.userData.isObservationRoofLever = true;
+        group.add(leverBase);
+        group.userData.observationRoofLever = leverBase;
+        group.userData.observationRoofLeverTarget = -0.52;
+
+        group.userData.doorPivots = [];
+        group.userData.doors = [];
+        normalizedDoorSides.forEach((side, index) => addHabitatDoor(group, collisionBoxes, side, ghost, index, wood));
+        group.userData.doors.forEach((door) => {
+          // Keep observation-room door hardware below the higher glass line.
+          door.pivot.position.y = 1.62;
+        });
+
+        // Extra player-only corner guards close the same tiny seams used by habitat rooms.
+        for (const cx of [-3.96, 3.96]) for (const cz of [-3.96, 3.96]) {
+          collisionBoxes.push({ center: { x: cx, y: 2.52, z: cz }, halfX: 0.16, halfY: 2.42, halfZ: 0.16, isPlayerOnly: true, padding: 0.03 });
+        }
+
+        group.userData.collisionBoxes = collisionBoxes;
+        group.userData.connectionPoints = getBaseStructureConnectionPoints(typeId, normalizedDoorSides);
+        group.userData.doorSides = normalizedDoorSides.slice();
+      } else if (typeId === 'docking_module') {
+        addIntegratedFoundation(group, 4.0, 4.0, frame, trim);
+        group.userData.foundationHalfX = 4.0 + 0.14;
+        group.userData.foundationHalfZ = 4.0 + 0.14;
+        group.userData.floorBounds = { halfX: 3.68, halfZ: 3.68, topY: 0.20, ceilingY: 5.00 };
+        group.userData.floorPortals = [{ side: 'north', center: { x: 0, z: -4.02 }, halfX: 1.12, halfZ: 0.60, minY: -0.08, maxY: 2.35, depth: 0.58 }];
+
+        const wallT = 0.22, wallH = 4.2, doorWidth = 2.1;
+        const sideWidth = (8.0 - doorWidth) / 2, sideCenter = doorWidth * 0.5 + sideWidth * 0.5, wallY = 2.1;
+        addStructureBox(group, woodDark, [7.9, 0.16, 7.9], [0, 0.10, 0]);
+        const addDockWall = (size, pos) => addStructureBox(group, steel, size, pos, collisionBoxes, { dockingWall: true, padding: 0.02 });
+        addDockWall([sideWidth, wallH, wallT], [-sideCenter, wallY, -3.89]);
+        addDockWall([sideWidth, wallH, wallT], [ sideCenter, wallY, -3.89]);
+        addDockWall([8.0, wallH, wallT], [0, wallY, 3.89]);
+        addDockWall([wallT, wallH, 8.0], [3.89, wallY, 0]);
+        addDockWall([wallT, wallH, 8.0], [-3.89, wallY, 0]);
+        addHabitatCladding(group, wood, ['north']);
+        addStructureBox(group, trim, [2.32, 1.0, 0.20], [0, 3.56, -4.02], null);
+
+        const shellT = 0.34, shellY = 2.10, shellH = 4.20;
+        const addShell = (size, center) => collisionBoxes.push({ center: { x:center[0], y:center[1], z:center[2] }, halfX:size[0]*0.5, halfY:size[1]*0.5, halfZ:size[2]*0.5, isPlayerOnly:true, roomShell:true, padding:0.04 });
+        addShell([sideWidth, shellH, shellT], [-sideCenter, shellY, -3.89]);
+        addShell([sideWidth, shellH, shellT], [ sideCenter, shellY, -3.89]);
+        addShell([8.0, shellH, shellT], [0, shellY, 3.89]);
+        addShell([shellT, shellH, 8.0], [3.89, shellY, 0]);
+        addShell([shellT, shellH, 8.0], [-3.89, shellY, 0]);
+        for (const cx of [-3.96, 3.96]) for (const cz of [-3.96, 3.96]) addShell([0.32, shellH, 0.32], [cx, shellY, cz]);
+
+        const glassMat = new THREE.MeshPhysicalMaterial({ color:0x9adcf2, roughness:0.08, metalness:0.08, transmission:0.35, transparent:true, opacity:0.48, thickness:0.035, side:THREE.DoubleSide, depthWrite:false });
+        const roofGroup = new THREE.Group(); roofGroup.name='DockingRetractableRoof';
+        const roofPanelDepth = 3.86, roofPanelWidth = 7.72;
+        const makePanel = (closedZ, openZ, label) => {
+          const panelGroup = new THREE.Group(); panelGroup.name=label;
+          const panel = new THREE.Mesh(new THREE.BoxGeometry(roofPanelWidth,0.12,roofPanelDepth),glassMat);
+          panel.castShadow=false; panel.receiveShadow=true; panel.userData.isDockingRoofGlass=true;
+          panelGroup.add(panel);
+          addStructureBox(panelGroup,trim,[roofPanelWidth+0.08,0.10,0.10],[0,-0.02,-roofPanelDepth*0.5]);
+          addStructureBox(panelGroup,trim,[roofPanelWidth+0.08,0.10,0.10],[0,-0.02, roofPanelDepth*0.5]);
+          panelGroup.position.set(0,4.31,closedZ); roofGroup.add(panelGroup);
+          return {group:panelGroup,closedZ,openZ};
+        };
+        group.add(roofGroup);
+        group.userData.dockingRoofPanels=[makePanel(-1.93,-5.42,'DockingRoof_North'),makePanel(1.93,5.42,'DockingRoof_South')];
+
+        const leverBase = new THREE.Group(); leverBase.name='DockingRoofLever'; leverBase.position.set(3.32,1.42,0.90);
+        const mount = new THREE.Mesh(new THREE.BoxGeometry(0.14,0.46,0.34),trim); mount.castShadow=true; mount.receiveShadow=true; leverBase.add(mount);
+        const leverArm = new THREE.Group(); leverArm.name='DockingRoofLeverArm'; leverArm.position.set(-0.02,0.02,0);
+        const stem = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.52,0.08),frame); stem.position.set(-0.08,0.22,0); stem.rotation.z=0.42; leverArm.add(stem);
+        const handle = new THREE.Mesh(new THREE.BoxGeometry(0.26,0.12,0.16),makeBaseBuildMaterial(0xd3a848,0.30,0.70)); handle.position.set(-0.18,0.44,0); leverArm.add(handle);
+        leverArm.rotation.z=-0.52; leverBase.add(leverArm);
+        leverBase.userData.leverArm=leverArm; leverBase.userData.closedRotation=-0.52; leverBase.userData.openRotation=0.52; leverBase.userData.isDockingRoofLever=true;
+        group.add(leverBase); group.userData.dockingRoofLever=leverBase;
+
+        const dockingPadVisual=createLaunchPadVisual(0.84); dockingPadVisual.position.set(0,0.20,0); dockingPadVisual.userData.isDockingLaunchPad=true; group.add(dockingPadVisual); group.userData.dockingPadVisual=dockingPadVisual;
+
+        group.userData.doorPivots=[]; group.userData.doors=[]; addHabitatDoor(group,collisionBoxes,'north',ghost,0, wood);
+        group.userData.collisionBoxes=collisionBoxes; group.userData.connectionPoints=getBaseStructureConnectionPoints(typeId,['north']); group.userData.doorSides=['north'];
+      } else if (typeId === 'storage_module') {
+        // Habitat-sized storage room with two standard connection exits. The visible room
+        // contains functional storage containers (added when the structure is placed) plus
+        // decorative wooden crates that are purely visual.
+        addIntegratedFoundation(group, 4.0, 4.0, frame, trim);
+        group.userData.foundationHalfX = 4.0 + 0.14;
+        group.userData.foundationHalfZ = 4.0 + 0.14;
+        group.userData.floorBounds = { halfX: 3.68, halfZ: 3.68, topY: 0.20, ceilingY: 4.15 };
+        group.userData.floorPortals = normalizeBaseDoorSides(normalizedDoorSides, ['north', 'south']).map((side) => {
+          const d = getRoomDoorDefinition(side);
+          const isX = Math.abs(d.normal[0]) > 0.5;
+          return { side, center: { x: d.pos[0], z: d.pos[2] }, halfX: isX ? 1.12 : 0.60, halfZ: isX ? 0.60 : 1.12, minY: -0.08, maxY: 2.35, depth: 0.58 };
+        });
+
+        const wallT = 0.22;
+        const wallH = 4.2;
+        const doorWidth = 2.1;
+        const sideWidth = (8.0 - doorWidth) / 2;
+        const sideCenter = doorWidth * 0.5 + sideWidth * 0.5;
+        const wallY = 2.1;
+        const doorSet = new Set(normalizedDoorSides);
+        addStructureBox(group, woodDark, [7.9, 0.16, 7.9], [0, 0.10, 0]);
+        addStructureBox(group, frame, [7.9, 0.20, 7.9], [0, 4.25, 0]);
+
+        const addStorageWall = (size, pos) => addStructureBox(group, steel, size, pos, collisionBoxes, { padding: 0.02, storageWall: true });
+        const addHorizontalStorageDoorWall = (z) => {
+          addStorageWall([sideWidth, wallH, wallT], [-sideCenter, wallY, z]);
+          addStorageWall([sideWidth, wallH, wallT], [ sideCenter, wallY, z]);
+        };
+        const addVerticalStorageDoorWall = (x) => {
+          addStorageWall([wallT, wallH, sideWidth], [x, wallY, -sideCenter]);
+          addStorageWall([wallT, wallH, sideWidth], [x, wallY,  sideCenter]);
+        };
+        if (doorSet.has('north')) addHorizontalStorageDoorWall(-3.89); else addStorageWall([8.0, wallH, wallT], [0, wallY, -3.89]);
+        if (doorSet.has('south')) addHorizontalStorageDoorWall( 3.89); else addStorageWall([8.0, wallH, wallT], [0, wallY,  3.89]);
+        if (doorSet.has('east')) addVerticalStorageDoorWall( 3.89); else addStorageWall([wallT, wallH, 8.0], [ 3.89, wallY, 0]);
+        if (doorSet.has('west')) addVerticalStorageDoorWall(-3.89); else addStorageWall([wallT, wallH, 8.0], [-3.89, wallY, 0]);
+
+        // Player-only shell colliders use the same robust room-wall approach as Habitat.
+        const shellT = 0.34;
+        const shellY = 2.10;
+        const shellH = 4.20;
+        const addPlayerShellBox = (size, center) => collisionBoxes.push({
+          center: { x: center[0], y: center[1], z: center[2] },
+          halfX: size[0] * 0.5, halfY: size[1] * 0.5, halfZ: size[2] * 0.5,
+          isPlayerOnly: true, roomShell: true, padding: 0.04
+        });
+        if (doorSet.has('north')) {
+          addPlayerShellBox([sideWidth, shellH, shellT], [-sideCenter, shellY, -3.89]);
+          addPlayerShellBox([sideWidth, shellH, shellT], [ sideCenter, shellY, -3.89]);
+        } else addPlayerShellBox([8.0, shellH, shellT], [0, shellY, -3.89]);
+        if (doorSet.has('south')) {
+          addPlayerShellBox([sideWidth, shellH, shellT], [-sideCenter, shellY, 3.89]);
+          addPlayerShellBox([sideWidth, shellH, shellT], [ sideCenter, shellY, 3.89]);
+        } else addPlayerShellBox([8.0, shellH, shellT], [0, shellY, 3.89]);
+        if (doorSet.has('east')) {
+          addPlayerShellBox([shellT, shellH, sideWidth], [ 3.89, shellY, -sideCenter]);
+          addPlayerShellBox([shellT, shellH, sideWidth], [ 3.89, shellY,  sideCenter]);
+        } else addPlayerShellBox([shellT, shellH, 8.0], [ 3.89, shellY, 0]);
+        if (doorSet.has('west')) {
+          addPlayerShellBox([shellT, shellH, sideWidth], [-3.89, shellY, -sideCenter]);
+          addPlayerShellBox([shellT, shellH, sideWidth], [-3.89, shellY,  sideCenter]);
+        } else addPlayerShellBox([shellT, shellH, 8.0], [-3.89, shellY, 0]);
+        const cornerShell = 0.42;
+        for (const cx of [-3.90, 3.90]) for (const cz of [-3.90, 3.90]) addPlayerShellBox([cornerShell, shellH, cornerShell], [cx, shellY, cz]);
+
+        // Warm timber cladding and upper rail make it read as a purpose-built storage bay.
+        addHabitatCladding(group, wood, normalizedDoorSides);
+
+        // Decorative crates: visible clutter that has no inventory and no interaction.
+        const crateWood = makeBaseBuildMaterial(0x734a2c, 0.70, 0.03);
+        const crateDark = makeBaseBuildMaterial(0x4f301e, 0.76, 0.02);
+        const addDecorCrate = (x, z, scale = 1, rot = 0, stack = 0) => {
+          const crate = new THREE.Group();
+          crate.name = 'StorageDecorativeBox';
+          crate.position.set(x, 0.22 + stack * 0.92 * scale, z);
+          crate.rotation.y = rot;
+          crate.scale.setScalar(scale);
+          const body = new THREE.Mesh(new THREE.BoxGeometry(1.18, 0.72, 0.92), crateWood);
+          body.position.y = 0.36; body.castShadow = true; body.receiveShadow = true;
+          crate.add(body);
+          const bandA = new THREE.Mesh(new THREE.BoxGeometry(1.22, 0.08, 0.10), crateDark);
+          bandA.position.set(0, 0.36, -0.47);
+          const bandB = bandA.clone(); bandB.position.z = 0.47;
+          const bandC = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.78, 0.96), crateDark);
+          bandC.position.set(0, 0.36, 0);
+          crate.add(bandA, bandB, bandC);
+          group.add(crate);
+        };
+        addDecorCrate(-3.05, -2.45, 0.95, Math.PI / 2);
+        addDecorCrate(-3.00, -1.20, 0.82, Math.PI / 2);
+        addDecorCrate(-3.05,  1.20, 0.95, Math.PI / 2);
+        addDecorCrate(-2.95,  2.45, 0.78, Math.PI / 2);
+        addDecorCrate( 2.55, -2.65, 0.72, -Math.PI / 2);
+        addDecorCrate( 2.55, -2.65, 0.66, -Math.PI / 2, 1);
+
+        // Fill the space above each shorter Storage Module door so there is no open wall gap.
+        // Match the Habitat module's visual header treatment while keeping the doorway itself clear.
+        normalizedDoorSides.forEach((side) => {
+          const d = getRoomDoorDefinition(side);
+          const isX = Math.abs(d.normal[0]) > 0.5;
+          addStructureBox(
+            group,
+            trim,
+            isX ? [0.20, 1.0, 2.32] : [2.32, 1.0, 0.20],
+            isX ? [d.pos[0], 3.56, 0] : [0, 3.56, d.pos[2]],
+            null
+          );
+        });
+
+        group.userData.doorPivots = [];
+        group.userData.doors = [];
+        normalizedDoorSides.forEach((side, index) => addHabitatDoor(group, collisionBoxes, side, ghost, index, wood));
+        group.userData.collisionBoxes = collisionBoxes;
+        group.userData.connectionPoints = getBaseStructureConnectionPoints(typeId, normalizedDoorSides);
+        group.userData.doorSides = normalizedDoorSides.slice();
+      } else if (typeId === 'hydroponics_module') {
+        // Day 21: habitat-sized self-watering grow room with one fixed north doorway.
+        addIntegratedFoundation(group, 4.0, 4.0, frame, trim);
+        group.userData.foundationHalfX = 4.0 + 0.14;
+        group.userData.foundationHalfZ = 4.0 + 0.14;
+        group.userData.floorBounds = { halfX: 3.68, halfZ: 3.68, topY: 0.20, ceilingY: 4.15 };
+        const dNorth = getRoomDoorDefinition('north');
+        group.userData.floorPortals = [{ side: 'north', center: { x: dNorth.pos[0], z: dNorth.pos[2] }, halfX: 1.12, halfZ: 0.60, minY: -0.08, maxY: 2.35, depth: 0.58 }];
+
+        const wallT = 0.22, wallH = 4.2, doorWidth = 2.1;
+        const sideWidth = (8.0 - doorWidth) / 2;
+        const sideCenter = doorWidth * 0.5 + sideWidth * 0.5;
+        const wallY = 2.1;
+        addStructureBox(group, woodDark, [7.9, 0.16, 7.9], [0, 0.10, 0]);
+        addStructureBox(group, frame, [7.9, 0.20, 7.9], [0, 4.25, 0]);
+        const addHydroWall = (size, pos) => addStructureBox(group, steel, size, pos, collisionBoxes, { padding: 0.02, hydroWall: true });
+        const addHydroNorthDoorWall = () => {
+          addHydroWall([sideWidth, wallH, wallT], [-sideCenter, wallY, -3.89]);
+          addHydroWall([sideWidth, wallH, wallT], [ sideCenter, wallY, -3.89]);
+        };
+        addHydroNorthDoorWall();
+        addHydroWall([8.0, wallH, wallT], [0, wallY, 3.89]);
+        addHydroWall([wallT, wallH, 8.0], [ 3.89, wallY, 0]);
+        addHydroWall([wallT, wallH, 8.0], [-3.89, wallY, 0]);
+        addHabitatCladding(group, wood, ['north']);
+        addStructureBox(group, trim, [2.32, 1.0, 0.20], [0, 3.56, -4.02], null);
+
+        // Player-only wall shells close seams without changing the visible structure.
+        const shellT = 0.34, shellY = 2.10, shellH = 4.20;
+        const addShell = (size, center) => collisionBoxes.push({ center: { x:center[0], y:center[1], z:center[2] }, halfX:size[0]*0.5, halfY:size[1]*0.5, halfZ:size[2]*0.5, isPlayerOnly:true, roomShell:true, padding:0.04 });
+        addShell([sideWidth, shellH, shellT], [-sideCenter, shellY, -3.89]);
+        addShell([sideWidth, shellH, shellT], [ sideCenter, shellY, -3.89]);
+        addShell([8.0, shellH, shellT], [0, shellY, 3.89]);
+        addShell([shellT, shellH, 8.0], [3.89, shellY, 0]);
+        addShell([shellT, shellH, 8.0], [-3.89, shellY, 0]);
+        for (const cx of [-3.90, 3.90]) for (const cz of [-3.90, 3.90]) addShell([0.42, shellH, 0.42], [cx, shellY, cz]);
+
+        // Two compact planting beds on each side, four rows front-to-back. The centre aisle stays open.
+        const bedX = [-2.25, 2.25];
+        const bedZ = [-2.55, -0.85, 0.85, 2.55];
+        const rackMat = makeBaseBuildMaterial(0x39484e, 0.38, 0.72);
+        const tubeGlow = new THREE.MeshBasicMaterial({ color: 0x66e5ff, transparent: true, opacity: 0.40, depthWrite: false });
+        for (let side = 0; side < 2; side++) {
+          for (let row = 0; row < 4; row++) {
+            const x = bedX[side], z = bedZ[row];
+            const stand = new THREE.Mesh(new THREE.BoxGeometry(2.68, 0.12, 1.20), rackMat);
+            stand.position.set(x, 0.20, z);
+            stand.castShadow = true; stand.receiveShadow = true;
+            stand.userData.isHydroponicFurniture = true;
+            group.add(stand);
+            // Watering hardware is rendered by the persistent hydroponic plot visual.
+            // Do not create the legacy procedural tube/arm/emitter here, or the custom
+            // Hydroponics Tube.glb would render twice.
+          }
+        }
+
+        group.userData.doorPivots = [];
+        group.userData.doors = [];
+        addHabitatDoor(group, collisionBoxes, 'north', ghost, 0, wood);
+        group.userData.collisionBoxes = collisionBoxes;
+        group.userData.connectionPoints = getBaseStructureConnectionPoints(typeId, ['north']);
+        group.userData.doorSides = ['north'];
+      } else if (typeId === 'workshop_module' || typeId === 'research_module' || typeId === 'fuel_synthesizer_module') {
+        // Day 21: habitat-sized facility rooms with standard 1–2 doorway configuration.
+        addIntegratedFoundation(group, 4.0, 4.0, frame, trim);
+        group.userData.foundationHalfX = 4.0 + 0.14;
+        group.userData.foundationHalfZ = 4.0 + 0.14;
+        group.userData.floorBounds = { halfX: 3.68, halfZ: 3.68, topY: 0.20, ceilingY: 4.15 };
+        group.userData.floorPortals = normalizedDoorSides.map((side) => {
+          const d = getRoomDoorDefinition(side);
+          const isX = Math.abs(d.normal[0]) > 0.5;
+          return { side, center: { x: d.pos[0], z: d.pos[2] }, halfX: isX ? 1.12 : 0.60, halfZ: isX ? 0.60 : 1.12, minY: -0.08, maxY: 2.35, depth: 0.58 };
+        });
+        const wallT = 0.22;
+        const wallH = 4.2;
+        const doorWidth = 2.1;
+        const sideWidth = (8.0 - doorWidth) / 2;
+        const sideCenter = doorWidth * 0.5 + sideWidth * 0.5;
+        const wallY = 2.1;
+        const doorSet = new Set(normalizedDoorSides);
+        const addWall = (size, pos, extra = {}) => addStructureBox(group, steel, size, pos, collisionBoxes, extra);
+        const addHorizontalDoorWall = (z) => {
+          addWall([sideWidth, wallH, wallT], [-sideCenter, wallY, z]);
+          addWall([sideWidth, wallH, wallT], [ sideCenter, wallY, z]);
+        };
+        const addVerticalDoorWall = (x) => {
+          addWall([wallT, wallH, sideWidth], [x, wallY, -sideCenter]);
+          addWall([wallT, wallH, sideWidth], [x, wallY,  sideCenter]);
+        };
+        if (doorSet.has('north')) addHorizontalDoorWall(-3.89); else addWall([8.0, wallH, wallT], [0, wallY, -3.89]);
+        if (doorSet.has('south')) addHorizontalDoorWall( 3.89); else addWall([8.0, wallH, wallT], [0, wallY,  3.89]);
+        if (doorSet.has('east')) addVerticalDoorWall( 3.89); else addWall([wallT, wallH, 8.0], [ 3.89, wallY, 0]);
+        if (doorSet.has('west')) addVerticalDoorWall(-3.89); else addWall([wallT, wallH, 8.0], [-3.89, wallY, 0]);
+        addStructureBox(group, woodDark, [7.9, 0.16, 7.9], [0, 0.10, 0]);
+        addStructureBox(group, frame, [7.9, 0.20, 7.9], [0, 4.25, 0]);
+        addHabitatCladding(group, wood, normalizedDoorSides);
+        normalizedDoorSides.forEach((side) => {
+          const d = getRoomDoorDefinition(side);
+          const isX = Math.abs(d.normal[0]) > 0.5;
+          addStructureBox(group, trim, isX ? [0.20, 1.0, 2.32] : [2.32, 1.0, 0.20], isX ? [d.pos[0], 3.56, 0] : [0, 3.56, d.pos[2]], null);
+        });
+        // Slightly oversized hidden corner guards stop diagonal clipping through seams.
+        for (const cx of [-3.96, 3.96]) for (const cz of [-3.96, 3.96]) {
+          collisionBoxes.push({ center: { x: cx, y: 2.10, z: cz }, halfX: 0.16, halfY: 2.08, halfZ: 0.16, isPlayerOnly: true, padding: 0.03 });
+        }
+        group.userData.doorPivots = [];
+        group.userData.doors = [];
+        normalizedDoorSides.forEach((side, index) => addHabitatDoor(group, collisionBoxes, side, ghost, index, wood));
+
+        const stationGroup = new THREE.Group();
+        stationGroup.name = typeId === 'workshop_module' ? 'WorkshopWorkbench' : (typeId === 'research_module' ? 'ResearchStation' : 'FuelSynthesizer');
+        if (typeId === 'workshop_module') {
+          const benchWood = makeBaseBuildMaterial(0x8b5a34, 0.62, 0.08);
+          const benchMetal = makeBaseBuildMaterial(0x6b7a80, 0.28, 0.78);
+          addStructureBox(stationGroup, benchWood, [3.25, 0.28, 1.05], [-0.15, 1.12, -2.55], null);
+          addStructureBox(stationGroup, benchWood, [0.20, 1.05, 0.92], [-1.50, 0.58, -2.55], null);
+          addStructureBox(stationGroup, benchWood, [0.20, 1.05, 0.92], [ 1.20, 0.58, -2.55], null);
+          addStructureBox(stationGroup, benchMetal, [0.32, 0.18, 0.32], [-0.75, 1.35, -2.48], null);
+          addStructureBox(stationGroup, benchMetal, [0.18, 0.52, 0.18], [-0.72, 1.60, -2.48], null);
+          addStructureBox(stationGroup, frame, [0.75, 0.12, 0.54], [0.35, 1.36, -2.48], null);
+          addStructureBox(stationGroup, trim, [0.10, 0.82, 0.56], [-1.70, 1.50, -2.55], null);
+          group.userData.moduleStation = stationGroup;
+          group.userData.stationType = 'workbench';
+        } else if (typeId === 'research_module') {
+          const deskMat = makeBaseBuildMaterial(0x4a5660, 0.35, 0.72);
+          const consoleMat = makeBaseBuildMaterial(0x263239, 0.34, 0.78);
+          const screenMat = new THREE.MeshStandardMaterial({ color: 0x73d8ff, emissive: 0x2d78a4, emissiveIntensity: 1.25, roughness: 0.14, metalness: 0.42 });
+          addStructureBox(stationGroup, deskMat, [3.10, 0.24, 1.18], [-0.10, 1.02, -2.55], null);
+          addStructureBox(stationGroup, deskMat, [0.18, 0.92, 0.90], [-1.45, 0.48, -2.55], null);
+          addStructureBox(stationGroup, deskMat, [0.18, 0.92, 0.90], [ 1.25, 0.48, -2.55], null);
+          addStructureBox(stationGroup, consoleMat, [1.75, 0.72, 0.16], [0.0, 1.52, -2.48], null);
+          addStructureBox(stationGroup, screenMat, [1.20, 0.48, 0.04], [0.0, 1.50, -2.38], null);
+          addStructureBox(stationGroup, frame, [0.26, 0.70, 0.26], [-2.05, 1.37, -2.55], null);
+          addStructureBox(stationGroup, trim, [0.12, 1.55, 0.12], [1.75, 1.23, -2.55], null);
+          const scanRing = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.07, 8, 24), screenMat);
+          scanRing.rotation.x = Math.PI / 2;
+          scanRing.position.set(1.72, 2.15, -2.55);
+          stationGroup.add(scanRing);
+          group.userData.moduleStation = stationGroup;
+          group.userData.stationType = 'research_station';
+        } else {
+          const synthBodyMat = makeBaseBuildMaterial(0x45545b, 0.34, 0.76);
+          const synthPanelMat = new THREE.MeshStandardMaterial({ color: 0x24343b, emissive: 0x0b5668, emissiveIntensity: 0.95, roughness: 0.26, metalness: 0.74 });
+          const synthGlassMat = new THREE.MeshStandardMaterial({ color: 0x74dff5, emissive: 0x2a9fb7, emissiveIntensity: 1.1, transparent: true, opacity: 0.72, roughness: 0.12, metalness: 0.28 });
+          addStructureBox(stationGroup, synthBodyMat, [2.8, 1.00, 1.45], [0, 0.72, -2.55], null);
+          addStructureBox(stationGroup, synthPanelMat, [2.45, 0.18, 1.18], [0, 1.25, -2.55], null);
+          addStructureBox(stationGroup, synthPanelMat, [0.28, 1.35, 0.30], [-1.12, 1.78, -2.55], null);
+          addStructureBox(stationGroup, synthPanelMat, [0.28, 1.35, 0.30], [1.12, 1.78, -2.55], null);
+          const leftTank = new THREE.Mesh(new THREE.CylinderGeometry(0.40, 0.40, 0.75, 18), synthBodyMat); leftTank.position.set(-0.78, 1.72, -2.54); stationGroup.add(leftTank);
+          const rightTank = new THREE.Mesh(new THREE.CylinderGeometry(0.40, 0.40, 0.75, 18), synthBodyMat); rightTank.position.set(0.78, 1.72, -2.54); stationGroup.add(rightTank);
+          const ring = new THREE.Mesh(new THREE.TorusGeometry(0.36, 0.065, 10, 22), synthGlassMat); ring.rotation.x = Math.PI / 2; ring.position.set(0, 1.38, -2.43); stationGroup.add(ring);
+          addStructureBox(stationGroup, synthPanelMat, [1.15, 0.55, 0.12], [0, 1.82, -2.34], null);
+          group.userData.moduleStation = stationGroup;
+          group.userData.stationType = 'fuel_synthesizer';
+        }
+        // Keep the station on a wall that is not occupied by a selected doorway.
+        // The station's local geometry is modeled against its north (-Z) wall, so a
+        // simple quarter-turn moves it cleanly to the other free wall orientations.
+        const stationSide = ['south', 'north', 'east', 'west'].find((side) => !doorSet.has(side)) || 'south';
+        const stationRotation = stationSide === 'south' ? Math.PI
+          : stationSide === 'east' ? Math.PI / 2
+          : stationSide === 'west' ? -Math.PI / 2
+          : 0;
+        stationGroup.rotation.y = stationRotation;
+        stationGroup.userData.wallSide = stationSide;
+        group.add(stationGroup);
+        group.userData.collisionBoxes = collisionBoxes;
+        group.userData.connectionPoints = getBaseStructureConnectionPoints(typeId, normalizedDoorSides);
+        group.userData.doorSides = normalizedDoorSides.slice();
+      } else if (typeId === 'straight_corridor') {
+        addIntegratedFoundation(group, 1.74, 3.1, frame, trim);
+        group.userData.foundationHalfX = 1.9 + 0.14;
+        group.userData.foundationHalfZ = 3.1 + 0.14;
+        // Corridor floors extend all the way to the connection centerline. That removes
+        // the old 0.24-unit floor gap between two snapped corridors.
+        group.userData.floorBounds = { halfX: 1.58, halfZ: 3.12, topY: 0.20, ceilingY: 3.02 };
+        group.userData.floorPortals = [
+          { side: 'north', center: { x: 0, z: -3.12 }, halfX: 1.58, halfZ: 0.42, minY: -0.08, maxY: 2.35, depth: 0.42 },
+          { side: 'south', center: { x: 0, z: 3.12 }, halfX: 1.58, halfZ: 0.42, minY: -0.08, maxY: 2.35, depth: 0.42 }
+        ];
+        const wallT = 0.20;
+        const wallH = 3.05;
+        addStructureBox(group, woodDark, [3.8, 0.16, 6.2], [0, 0.10, 0]);
+        addStructureBox(group, frame, [3.8, 0.18, 6.2], [0, 3.15, 0]);
+        addStructureBox(group, steel, [wallT, wallH, 6.2], [-1.81, 1.62, 0], collisionBoxes, { padding: 0.02, corridorWall: true });
+        addStructureBox(group, steel, [wallT, wallH, 6.2], [ 1.81, 1.62, 0], collisionBoxes, { padding: 0.02, corridorWall: true });
+        addStructureBox(group, wood, [0.08, 2.5, 5.75], [-1.66, 1.58, 0]);
+        addStructureBox(group, wood, [0.08, 2.5, 5.75], [ 1.66, 1.58, 0]);
+        group.userData.collisionBoxes = collisionBoxes;
+        group.userData.connectionPoints = getBaseStructureConnectionPoints(typeId);
+        group.userData.doorSides = [];
+      } else if (typeId === 't_junction') {
+        const halfArm = 3.1;
+        const corridorHalf = 1.58;
+        const wallT = 0.20;
+        const wallH = 3.05;
+        addIntegratedFoundationT(group, halfArm, corridorHalf, frame, trim);
+        group.userData.foundationHalfX = halfArm + 0.14;
+        group.userData.foundationHalfZ = halfArm + 0.14;
+        group.userData.floorBounds = { halfX: halfArm, halfZ: halfArm, topY: 0.20, ceilingY: 3.02 };
+        // A true T: narrow stem to the north, wide crossbar east/west, no south arm.
+        group.userData.floorRects = [
+          { minX: -corridorHalf, maxX: corridorHalf, minZ: -3.12, maxZ: corridorHalf },
+          { minX: -3.12, maxX: 3.12, minZ: -corridorHalf, maxZ: corridorHalf }
+        ];
+        group.userData.floorPortals = [
+          { side: 'north', center: { x: 0, z: -3.12 }, halfX: corridorHalf, halfZ: 0.42, minY: -0.08, maxY: 2.35, depth: 0.42 },
+          { side: 'east', center: { x: 3.12, z: 0 }, halfX: 0.42, halfZ: corridorHalf, minY: -0.08, maxY: 2.35, depth: 0.42 },
+          { side: 'west', center: { x: -3.12, z: 0 }, halfX: 0.42, halfZ: corridorHalf, minY: -0.08, maxY: 2.35, depth: 0.42 }
+        ];
+
+        // T-shaped floor and roof plates.
+        addStructureBox(group, woodDark, [3.8, 0.16, 3.8], [0, 0.10, 0]);
+        addStructureBox(group, woodDark, [3.8, 0.16, 3.10], [0, 0.10, -2.45]);
+        addStructureBox(group, woodDark, [3.10, 0.16, 3.8], [-2.45, 0.10, 0]);
+        addStructureBox(group, woodDark, [3.10, 0.16, 3.8], [ 2.45, 0.10, 0]);
+        addStructureBox(group, frame, [3.8, 0.18, 3.8], [0, 3.15, 0]);
+        addStructureBox(group, frame, [3.8, 0.18, 3.10], [0, 3.15, -2.45]);
+        addStructureBox(group, frame, [3.10, 0.18, 3.8], [-2.45, 3.15, 0]);
+        addStructureBox(group, frame, [3.10, 0.18, 3.8], [ 2.45, 3.15, 0]);
+
+        // Closed south wall only. North/east/west ends are genuine open doorways.
+        addStructureBox(group, steel, [6.20, wallH, wallT], [0, 1.62, 1.81], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [wallT, wallH, 1.30], [-1.81, 1.62, -2.46], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [wallT, wallH, 1.30], [ 1.81, 1.62, -2.46], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [1.30, wallH, wallT], [-2.46, 1.62, -1.81], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [1.30, wallH, wallT], [ 2.46, 1.62, -1.81], collisionBoxes, { padding: 0.02, junctionWall: true });
+
+        // Interior timber lining follows the T silhouette without filling any doorway.
+        const tWood = wood;
+        addStructureBox(group, tWood, [0.08, 2.5, 1.12], [-1.66, 1.58, -2.40]);
+        addStructureBox(group, tWood, [0.08, 2.5, 1.12], [ 1.66, 1.58, -2.40]);
+        addStructureBox(group, tWood, [1.12, 2.5, 0.08], [-2.40, 1.58, -1.66]);
+        addStructureBox(group, tWood, [1.12, 2.5, 0.08], [ 2.40, 1.58, -1.66]);
+
+        // Clear doorway frames: visual-only posts/header at all three exits.
+        const addTFrame = (side) => {
+          if (side === 'north') {
+            addStructureBox(group, trim, [0.14, 2.90, 0.14], [-1.66, 1.45, -3.13]);
+            addStructureBox(group, trim, [0.14, 2.90, 0.14], [ 1.66, 1.45, -3.13]);
+            addStructureBox(group, trim, [3.46, 0.14, 0.14], [0, 2.92, -3.13]);
+          } else {
+            const x = side === 'east' ? 3.13 : -3.13;
+            addStructureBox(group, trim, [0.14, 2.90, 0.14], [x, 1.45, -1.66]);
+            addStructureBox(group, trim, [0.14, 2.90, 0.14], [x, 1.45,  1.66]);
+            addStructureBox(group, trim, [0.14, 0.14, 3.46], [x, 2.92, 0]);
+          }
+        };
+        addTFrame('north'); addTFrame('east'); addTFrame('west');
+        group.userData.collisionBoxes = collisionBoxes;
+        group.userData.connectionPoints = getBaseStructureConnectionPoints(typeId);
+        group.userData.doorSides = [];
+      } else if (typeId === 'l_junction') {
+        // Compact, solid 90-degree corner. Two corridor-width legs meet at a square corner;
+        // the north and east ends are open connection faces. There is no decorative hollow
+        // cutout, so the player gets one continuous floor and a clean inner-corner wall.
+        const corridorHalf = 1.58;
+        const armEnd = 3.12;
+        const wallT = 0.20;
+        const wallH = 3.05;
+        const floorDepth = armEnd + corridorHalf; // 4.70
+        const inner = corridorHalf + wallT;        // 1.78
+        const outer = corridorHalf + wallT;        // 1.78
+        const northLength = floorDepth;
+        const eastLength = floorDepth;
+
+        addIntegratedFoundationL(group, 3.10, corridorHalf, frame, trim);
+        group.userData.foundationHalfX = 3.24;
+        group.userData.foundationHalfZ = 3.24;
+        group.userData.floorBounds = { halfX: 3.10, halfZ: 3.10, topY: 0.20, ceilingY: 3.02 };
+        group.userData.floorRects = [
+          { minX: -corridorHalf, maxX: corridorHalf, minZ: -armEnd, maxZ: corridorHalf },
+          { minX: -corridorHalf, maxX: armEnd, minZ: -corridorHalf, maxZ: corridorHalf }
+        ];
+        group.userData.floorPortals = [
+          { side: 'north', center: { x: 0, z: -armEnd }, halfX: corridorHalf, halfZ: 0.44, minY: -0.08, maxY: 2.35, depth: 0.44 },
+          { side: 'east', center: { x: armEnd, z: 0 }, halfX: 0.44, halfZ: corridorHalf, minY: -0.08, maxY: 2.35, depth: 0.44 }
+        ];
+
+        // Continuous L-shaped floor and roof. The overlapping center removes any floor seam.
+        addStructureBox(group, woodDark, [corridorHalf * 2 + 0.10, 0.16, floorDepth + 0.10], [0, 0.10, (corridorHalf - armEnd) * 0.5], null);
+        addStructureBox(group, woodDark, [floorDepth + 0.10, 0.16, corridorHalf * 2 + 0.10], [(armEnd - corridorHalf) * 0.5, 0.10, 0], null);
+        addStructureBox(group, frame, [corridorHalf * 2 + 0.10, 0.18, floorDepth + 0.10], [0, 3.15, (corridorHalf - armEnd) * 0.5], null);
+        addStructureBox(group, frame, [floorDepth + 0.10, 0.18, corridorHalf * 2 + 0.10], [(armEnd - corridorHalf) * 0.5, 3.15, 0], null);
+
+        // Closed exterior walls: west side of the vertical leg, south side of the horizontal
+        // leg, plus the two short walls forming the inside of the corner notch. North/east ends
+        // are completely open for module connections.
+        addStructureBox(group, steel, [wallT, wallH, floorDepth], [-inner, 1.62, (corridorHalf - armEnd) * 0.5], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [floorDepth, wallH, wallT], [(armEnd - corridorHalf) * 0.5, 1.62, inner], collisionBoxes, { padding: 0.02, junctionWall: true });
+        // Seal the outer southwest corner where the two perpendicular exterior walls meet.
+        // Their rectangular extents intentionally stop at the corridor boundaries, which left
+        // a narrow full-height diagonal slit at the convex corner from certain camera angles.
+        // This compact corner core overlaps both wall boxes and closes that seam without
+        // changing the L footprint, floor, connection points, or build logic.
+        addStructureBox(group, steel, [wallT + 0.04, wallH, wallT + 0.04],
+          [-corridorHalf - wallT * 0.5, 1.62, corridorHalf + wallT * 0.5],
+          collisionBoxes, { padding: 0.02, junctionWall: true, lOuterCornerSeam: true });
+
+        // Inner corner walls seal the rectangular notch without creating any holes in the L floor.
+        const notchSpan = armEnd - corridorHalf;
+        addStructureBox(group, steel, [wallT, wallH, notchSpan], [inner, 1.62, -(armEnd + corridorHalf) * 0.5], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [notchSpan, wallH, wallT], [(armEnd + corridorHalf) * 0.5, 1.62, -inner], collisionBoxes, { padding: 0.02, junctionWall: true });
+
+        // Warm interior lining follows the same four closed perimeter segments.
+        const interiorT = 0.08;
+        const interiorH = 2.50;
+        const interiorY = 1.58;
+        addStructureBox(group, wood, [interiorT, interiorH, floorDepth - 0.16], [-corridorHalf - 0.08, interiorY, (corridorHalf - armEnd) * 0.5], null);
+        addStructureBox(group, wood, [floorDepth - 0.16, interiorH, interiorT], [(armEnd - corridorHalf) * 0.5, interiorY, corridorHalf + 0.08], null);
+        addStructureBox(group, wood, [interiorT, interiorH, notchSpan - 0.14], [corridorHalf + 0.08, interiorY, -(armEnd + corridorHalf) * 0.5], null);
+        addStructureBox(group, wood, [notchSpan - 0.14, interiorH, interiorT], [(armEnd + corridorHalf) * 0.5, interiorY, -corridorHalf - 0.08], null);
+
+        // Match the exterior corner seal with a small interior finish cap. This closes the
+        // tiny lining gap where the west and south interior panels meet.
+        addStructureBox(group, wood, [interiorT + 0.04, interiorH, interiorT + 0.04],
+          [-corridorHalf - 0.02, interiorY, corridorHalf + 0.02], null, { lOuterCornerInteriorSeam: true });
+
+        // Seal the concave corner where the two perpendicular inner wall segments meet.
+        // The previous lining stopped just short of this shared corner, leaving a tiny
+        // camera-visible vertical sliver of background.  This small structural core +
+        // matching interior liner closes that seam without changing the walkable L floor.
+        addStructureBox(group, steel, [wallT + 0.04, wallH, wallT + 0.04], [inner, 1.62, -inner], collisionBoxes, { padding: 0.02, junctionWall: true, lCornerSeam: true });
+        addStructureBox(group, wood, [interiorT + 0.03, interiorH, interiorT + 0.03], [corridorHalf + 0.08, interiorY, -corridorHalf - 0.08], null, { lCornerInteriorSeam: true });
+
+        // Connection frames at the two open faces.
+        const addLFrame = (side) => {
+          if (side === 'north') {
+            addStructureBox(group, trim, [0.14, 2.90, 0.14], [-corridorHalf - 0.08, 1.45, -armEnd - 0.01]);
+            addStructureBox(group, trim, [0.14, 2.90, 0.14], [ corridorHalf + 0.08, 1.45, -armEnd - 0.01]);
+            addStructureBox(group, trim, [corridorHalf * 2 + 0.30, 0.14, 0.14], [0, 2.92, -armEnd - 0.01]);
+          } else if (side === 'east') {
+            addStructureBox(group, trim, [0.14, 2.90, 0.14], [armEnd + 0.01, 1.45, -corridorHalf - 0.08]);
+            addStructureBox(group, trim, [0.14, 2.90, 0.14], [armEnd + 0.01, 1.45,  corridorHalf + 0.08]);
+            addStructureBox(group, trim, [0.14, 0.14, corridorHalf * 2 + 0.30], [armEnd + 0.01, 2.92, 0]);
+          }
+        };
+        addLFrame('north');
+        addLFrame('east');
+        group.userData.collisionBoxes = collisionBoxes;
+        group.userData.connectionPoints = getBaseStructureConnectionPointsForState(typeId, [], mirroredX);
+        group.userData.doorSides = [];
+      
+        if (mirroredX) applyMirroredBaseStructureData(group, collisionBoxes);
+      } else if (typeId === 'stairwell') {
+        // Compact two-level stairwell: corridor-width footprint, double-height shell, and
+        // matching lower/upper connection faces so a corridor, junction, or room can snap
+        // onto either end. The upper connection is one module height above the lower one.
+        const halfX = 1.72;
+        const halfZ = 3.12;
+        const wallT = 0.20;
+        const wallH = 6.38;
+        const lowerDoorWidth = 2.85;
+        const upperDoorWidth = 2.85;
+        const lowerDoorHalf = lowerDoorWidth * 0.5;
+        const upperDoorHalf = upperDoorWidth * 0.5;
+        const upperFloorY = 3.50;
+
+        addIntegratedFoundation(group, 1.74, 3.1, frame, trim);
+        group.userData.foundationHalfX = 1.88;
+        group.userData.foundationHalfZ = 3.24;
+        group.userData.floorBounds = { halfX: halfX, halfZ: halfZ, topY: 0.20, ceilingY: 6.50 };
+        group.userData.upperFloorY = upperFloorY;
+        group.userData.floorRects = [{ minX: -halfX, maxX: halfX, minZ: -halfZ, maxZ: halfZ }];
+        // The upper stair landing sits one module level above the lower floor.  Keep a
+        // generous landing strip that reaches slightly past the stairwell's outer face;
+        // connected rooms have their playable floor inset from their connection wall, so
+        // this overlap closes the tiny seam at the upper doorway.
+        // Keep the upper landing itself inside the normal stairwell floor portal.
+        // Cross-module transitions are handled by the shared connection-floor bridge below
+        // rather than by extending the stairwell's floor bounds beyond the module.
+        group.userData.floorLevels = [];
+        group.userData.floorPortals = [
+          { side: 'south', center: { x: 0, z: 3.12 }, halfX: 1.60, halfZ: 0.50, minY: -0.12, maxY: 2.10, depth: 0.50 },
+          // The upper doorway is a real traversable portal on the raised floor. Keep a
+          // generous vertical range so the player capsule/camera cannot get caught by the
+          // threshold while stepping from the stair landing into an attached module.
+          { side: 'north', center: { x: 0, z: -3.12 }, halfX: 1.66, halfZ: 1.12, minY: upperFloorY - 0.20, maxY: upperFloorY + 2.25, depth: 1.12 }
+        ];
+        group.userData.floorRamps = [{
+          minX: -1.62, maxX: 1.62, minZ: 2.96, maxZ: -2.96,
+          lowZ: 2.96, highZ: -2.96, lowY: 0.20, highY: upperFloorY,
+          sideClearance: 0.05
+        }];
+
+        // Full-width stair flight; the outer stringer/fill blocks the old side cracks.
+        const stairMat = woodDark;
+        const treadMat = wood;
+        const stairCount = 20;
+        const runStart = 2.88;
+        const runEnd = -2.88;
+        const stepDepth = (runStart - runEnd) / stairCount;
+        const stairWidth = 3.28;
+        for (let i = 0; i < stairCount; i++) {
+          const t = (i + 0.5) / stairCount;
+          const z = runStart + (runEnd - runStart) * t;
+          const topY = 0.20 + (upperFloorY - 0.20) * ((i + 1) / stairCount);
+          const step = new THREE.Mesh(new THREE.BoxGeometry(stairWidth, Math.max(0.10, topY - 0.20), stepDepth + 0.04), stairMat);
+          step.position.set(0, 0.20 + (topY - 0.20) * 0.5, z);
+          step.castShadow = true; step.receiveShadow = true;
+          step.userData.isBaseStairStep = true;
+          group.add(step);
+          const tread = new THREE.Mesh(new THREE.BoxGeometry(stairWidth, 0.11, stepDepth + 0.06), treadMat);
+          tread.position.set(0, topY + 0.055, z);
+          tread.castShadow = true; tread.receiveShadow = true;
+          tread.userData.isBaseStairTread = true;
+          group.add(tread);
+        }
+
+        // Side filler boards eliminate any walkable crack beside the steps.
+        addStructureBox(group, stairMat, [0.16, upperFloorY - 0.20, 5.90], [-1.58, 1.85, 0], null);
+        addStructureBox(group, stairMat, [0.16, upperFloorY - 0.20, 5.90], [ 1.58, 1.85, 0], null);
+
+        // Upper landing bridge: extend the physical walkable floor through the connection
+        // seam and slightly into the attached module. This mirrors the extended floor-support
+        // hitbox above, so there is real geometry underneath the transition zone as well.
+        addStructureBox(group, treadMat, [3.34, 0.12, 1.34], [0, upperFloorY + 0.06, -3.48], null, { stairwellUpperLanding: true });
+        addStructureBox(group, stairMat, [3.36, 0.18, 1.34], [0, upperFloorY - 0.09, -3.48], null, { stairwellUpperLandingSupport: true });
+
+        // Lower end wall uses the compact stairwell width, leaving a true doorway.
+        const endWallWidth = halfX * 2.0;
+        const lowerSide = Math.max(0.14, (endWallWidth - lowerDoorWidth) * 0.5);
+        const lowerSideCenter = lowerDoorHalf + lowerSide * 0.5;
+        addStructureBox(group, steel, [wallT, wallH, 7.55], [-1.78, wallH * 0.5, 0], collisionBoxes, { padding: 0.02, stairwellWall: true });
+        addStructureBox(group, steel, [wallT, wallH, 7.55], [ 1.78, wallH * 0.5, 0], collisionBoxes, { padding: 0.02, stairwellWall: true });
+        // The north end intentionally has NO solid wall. This is the permanent upper doorway/exit.
+        // Only the two narrow side returns below are structural; the center is completely open.
+        addStructureBox(group, steel, [lowerSide, wallH, wallT], [-lowerSideCenter, wallH * 0.5, 3.20], collisionBoxes, { padding: 0.02, stairwellWall: true, isPlayerOnly: true, stairwellConnectionSide: true });
+        addStructureBox(group, steel, [lowerSide, wallH, wallT], [ lowerSideCenter, wallH * 0.5, 3.20], collisionBoxes, { padding: 0.02, stairwellWall: true, isPlayerOnly: true, stairwellConnectionSide: true });
+
+        // Upper connection opening is aligned to the upper floor/module height and matches the compact width.
+        const upperSide = Math.max(0.14, (endWallWidth - upperDoorWidth) * 0.5);
+        const upperSideCenter = upperDoorHalf + upperSide * 0.5;
+        addStructureBox(group, steel, [upperSide, wallH, wallT], [-upperSideCenter, wallH * 0.5, -3.20], collisionBoxes, { padding: 0.02, stairwellWall: true, isPlayerOnly: true, stairwellConnectionSide: true });
+        addStructureBox(group, steel, [upperSide, wallH, wallT], [ upperSideCenter, wallH * 0.5, -3.20], collisionBoxes, { padding: 0.02, stairwellWall: true, isPlayerOnly: true, stairwellConnectionSide: true });
+        // The upper doorway is the only opening in that north wall. Build an obvious
+        // doorway frame around the opening so the connection is visually readable from the
+        // stair landing and from any module snapped above. These pieces are visual-only so
+        // they never block the doorway.
+        const upperFramePostH = 2.86;
+        const upperFramePostY = upperFloorY + upperFramePostH * 0.5;
+        addStructureBox(group, trim, [0.14, upperFramePostH, 0.14], [-1.47, upperFramePostY, -3.13], null, { stairwellUpperDoorFrame: true });
+        addStructureBox(group, trim, [0.14, upperFramePostH, 0.14], [ 1.47, upperFramePostY, -3.13], null, { stairwellUpperDoorFrame: true });
+        addStructureBox(group, trim, [2.94, 0.14, 0.14], [0, upperFloorY + upperFramePostH - 0.03, -3.13], null, { stairwellUpperDoorFrame: true });
+
+        // Double-height roof; no glass hatch.
+        addStructureBox(group, woodDark, [3.8, 0.16, 6.2], [0, 6.50, 0]);
+        addStructureBox(group, frame, [3.8, 0.18, 6.6], [0, 6.62, 0]);
+
+        group.userData.collisionBoxes = collisionBoxes;
+        group.userData.connectionPoints = getBaseStructureConnectionPoints(typeId);
+        group.userData.doorSides = [];
+      } else if (typeId === 'junction') {
+        const halfArm = 3.1;
+        const corridorHalf = 1.58;
+        const wallT = 0.20;
+        const wallH = 3.05;
+        addIntegratedFoundationCross(group, halfArm, corridorHalf, frame, trim);
+        group.userData.foundationHalfX = halfArm + 0.14;
+        group.userData.foundationHalfZ = halfArm + 0.14;
+        group.userData.floorBounds = { halfX: corridorHalf, halfZ: corridorHalf, topY: 0.20, ceilingY: 3.02 };
+        group.userData.floorRects = [
+          { minX: -corridorHalf, maxX: corridorHalf, minZ: -3.12, maxZ: 3.12 },
+          { minX: -3.12, maxX: 3.12, minZ: -corridorHalf, maxZ: corridorHalf }
+        ];
+        group.userData.floorPortals = [
+          { side: 'north', center: { x: 0, z: -3.12 }, halfX: corridorHalf, halfZ: 0.42, minY: -0.08, maxY: 2.35, depth: 0.42 },
+          { side: 'east', center: { x: 3.12, z: 0 }, halfX: 0.42, halfZ: corridorHalf, minY: -0.08, maxY: 2.35, depth: 0.42 },
+          { side: 'south', center: { x: 0, z: 3.12 }, halfX: corridorHalf, halfZ: 0.42, minY: -0.08, maxY: 2.35, depth: 0.42 },
+          { side: 'west', center: { x: -3.12, z: 0 }, halfX: 0.42, halfZ: corridorHalf, minY: -0.08, maxY: 2.35, depth: 0.42 }
+        ];
+
+        // Two crossing corridor shells create a single open four-way junction.
+        addStructureBox(group, woodDark, [3.8, 0.16, 6.2], [0, 0.10, 0]);
+        addStructureBox(group, woodDark, [6.2, 0.16, 3.8], [0, 0.10, 0]);
+        addStructureBox(group, frame, [3.8, 0.18, 6.2], [0, 3.15, 0]);
+        addStructureBox(group, frame, [6.2, 0.18, 3.8], [0, 3.15, 0]);
+
+        // Side walls trace the plus-shaped perimeter while leaving all four exits open.
+        const sideDepth = 1.29;
+        const sideCenter = (3.10 + 1.81) * 0.5;
+        addStructureBox(group, steel, [wallT, wallH, sideDepth], [-1.81, 1.62, -sideCenter], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [wallT, wallH, sideDepth], [ 1.81, 1.62, -sideCenter], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [wallT, wallH, sideDepth], [-1.81, 1.62,  sideCenter], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [wallT, wallH, sideDepth], [ 1.81, 1.62,  sideCenter], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [sideDepth, wallH, wallT], [-sideCenter, 1.62, -1.81], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [sideDepth, wallH, wallT], [ sideCenter, 1.62, -1.81], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [sideDepth, wallH, wallT], [-sideCenter, 1.62,  1.81], collisionBoxes, { padding: 0.02, junctionWall: true });
+        addStructureBox(group, steel, [sideDepth, wallH, wallT], [ sideCenter, 1.62,  1.81], collisionBoxes, { padding: 0.02, junctionWall: true });
+
+        // Warm inner wall trim keeps the module visually consistent with straight corridors.
+        const woodInner = wood;
+        const trimH = 2.5;
+        const trimY = 1.58;
+        const trimT = 0.08;
+        addStructureBox(group, woodInner, [trimT, trimH, sideDepth - 0.14], [-1.66, trimY, -sideCenter], null);
+        addStructureBox(group, woodInner, [trimT, trimH, sideDepth - 0.14], [ 1.66, trimY, -sideCenter], null);
+        addStructureBox(group, woodInner, [trimT, trimH, sideDepth - 0.14], [-1.66, trimY,  sideCenter], null);
+        addStructureBox(group, woodInner, [trimT, trimH, sideDepth - 0.14], [ 1.66, trimY,  sideCenter], null);
+        addStructureBox(group, woodInner, [sideDepth - 0.14, trimH, trimT], [-sideCenter, trimY, -1.66], null);
+        addStructureBox(group, woodInner, [sideDepth - 0.14, trimH, trimT], [ sideCenter, trimY, -1.66], null);
+        addStructureBox(group, woodInner, [sideDepth - 0.14, trimH, trimT], [-sideCenter, trimY,  1.66], null);
+        addStructureBox(group, woodInner, [sideDepth - 0.14, trimH, trimT], [ sideCenter, trimY,  1.66], null);
+
+        group.userData.collisionBoxes = collisionBoxes;
+        group.userData.connectionPoints = getBaseStructureConnectionPoints(typeId);
+        group.userData.doorSides = [];
+      }
+
+      if (ghost) setStructureGhostMaterial(group, false);
+      return group;
+    }
+
+    function getBaseCoreConnectionPoints() {
+      const radius = 4.0;
+      return [
+        { position: new THREE.Vector3(0, 1.55, -radius), normal: new THREE.Vector3(0,0,-1) },
+        { position: new THREE.Vector3(radius, 1.55, 0), normal: new THREE.Vector3(1,0,0) },
+        { position: new THREE.Vector3(0, 1.55, radius), normal: new THREE.Vector3(0,0,1) },
+        { position: new THREE.Vector3(-radius, 1.55, 0), normal: new THREE.Vector3(-1,0,0) }
+      ];
+    }
+
+    function updateBaseBuildConnectorDots() {
+      const base = baseBuildState.base;
+      if (!base) return;
+      if (!baseBuildState.connectorGroup) {
+        baseBuildState.connectorGroup = new THREE.Group();
+        baseBuildState.connectorGroup.name = 'BaseBuildConnections';
+        base.root.add(baseBuildState.connectorGroup);
+      }
+      while (baseBuildState.connectorGroup.children.length) baseBuildState.connectorGroup.remove(baseBuildState.connectorGroup.children[0]);
+      baseBuildState.connectorGhostDots.length = 0;
+      baseBuildState.lastSnapWasElevated = false;
+      baseBuildState.snapTargetStructureId = null;
+      baseBuildState.snapTargetConnectionId = null;
+      const addStaticDot = (pos, scale = 1, elevated = false) => {
+        const dot = new THREE.Mesh(
+          BASE_BUILD_CONNECTION_GEOMETRY,
+          elevated ? BASE_BUILD_ELEVATED_CONNECTION_MATERIAL : BASE_BUILD_CONNECTION_MATERIAL
+        );
+        dot.scale.setScalar(scale);
+        dot.position.copy(pos);
+        dot.renderOrder = 8;
+        baseBuildState.connectorGroup.add(dot);
+      };
+      getBaseCoreConnectionPoints().forEach((p) => addStaticDot(p.position, 1.0));
+      for (const structure of baseStructures) {
+        if (!structure?.root || String(structure.baseId) !== String(base.baseId)) continue;
+        const q = structure.root.quaternion;
+        for (const point of structure.connectionPoints || []) {
+          const pos = point.position.clone().applyQuaternion(q).add(structure.root.position);
+          addStaticDot(pos, point.elevated ? 1.18 : 0.92, !!point.elevated);
+        }
+      }
+      if (baseBuildState.ghost) {
+        const points = baseBuildState.ghost.userData.connectionPoints || [];
+        for (const point of points) {
+          const dot = new THREE.Mesh(BASE_BUILD_CONNECTION_GEOMETRY, BASE_BUILD_CONNECTION_MATERIAL);
+          dot.scale.setScalar(1.18);
+          dot.renderOrder = 9;
+          baseBuildState.connectorGroup.add(dot);
+          baseBuildState.connectorGhostDots.push(dot);
+        }
+        updateGhostConnectorDotsOnly();
+      }
+    }
+
+    function updateGhostConnectorDotsOnly() {
+      if (!baseBuildState.ghost) return;
+      const points = baseBuildState.ghost.userData.connectionPoints || [];
+      for (let i = 0; i < baseBuildState.connectorGhostDots.length; i++) {
+        const point = points[i];
+        const dot = baseBuildState.connectorGhostDots[i];
+        if (!point || !dot) { if (dot) dot.visible = false; continue; }
+        dot.position.copy(point.position).applyQuaternion(baseBuildState.ghost.quaternion).add(baseBuildState.ghost.position);
+        dot.visible = true;
+      }
+    }
+
+    function updateBaseBuildGhostAppearance() {
+      if (!baseBuildState.ghost) return;
+      baseBuildState.valid = baseStructurePlacementValid();
+      setStructureGhostMaterial(baseBuildState.ghost, baseBuildState.valid);
+      baseBuildState.ghost.userData.valid = baseBuildState.valid;
+    }
+
+    function updateBaseBuildCamera(delta) {
+      if (!baseBuildState.active || !baseBuildState.base) return;
+      const base = baseBuildState.base;
+      const rootQuat = base.root.getWorldQuaternion(baseBuildState.tempQuaternion);
+      baseBuildState.cameraWorldUp.set(0,1,0).applyQuaternion(rootQuat).normalize();
+      baseBuildState.cameraRight.set(1,0,0).applyQuaternion(rootQuat).normalize();
+      baseBuildState.cameraForward.set(0,0,-1).applyQuaternion(rootQuat).normalize();
+
+      let dx = 0, dz = 0;
+      if (physicalKeys['KeyD'] || systemState.keys['KeyD']) dx += 1;
+      if (physicalKeys['KeyA'] || systemState.keys['KeyA']) dx -= 1;
+      if (physicalKeys['KeyW'] || systemState.keys['KeyW']) dz -= 1;
+      if (physicalKeys['KeyS'] || systemState.keys['KeyS']) dz += 1;
+      if (dx || dz) {
+        const len = Math.hypot(dx, dz) || 1;
+        baseBuildState.cameraPan.x += (dx / len) * BASE_BUILD_PAN_SPEED * delta;
+        baseBuildState.cameraPan.z += (dz / len) * BASE_BUILD_PAN_SPEED * delta;
+        const panLen = Math.hypot(baseBuildState.cameraPan.x, baseBuildState.cameraPan.z);
+        if (panLen > BASE_BUILD_PAN_LIMIT) {
+          const scale = BASE_BUILD_PAN_LIMIT / panLen;
+          baseBuildState.cameraPan.x *= scale;
+          baseBuildState.cameraPan.z *= scale;
+        }
+      }
+
+      base.root.getWorldPosition(baseBuildState.baseWorldPosition);
+      baseBuildState.cameraCenterWorld.copy(baseBuildState.cameraPan).applyQuaternion(rootQuat).add(baseBuildState.baseWorldPosition);
+      baseBuildState.cameraWorldPosition.copy(baseBuildState.cameraCenterWorld).addScaledVector(baseBuildState.cameraWorldUp, BASE_BUILD_CAMERA_HEIGHT);
+      camera.position.copy(baseBuildState.cameraWorldPosition);
+      // Keep a stable tangent-space screen orientation; using surface up here would be
+      // parallel to the top-down camera direction and can produce a rolled/undefined view.
+      camera.up.copy(baseBuildState.cameraForward);
+      camera.lookAt(baseBuildState.cameraCenterWorld);
+      camera.updateMatrixWorld(true);
+    }
+
+    function getBaseBuildPointerPlane() {
+      if (!baseBuildState.base) return false;
+      baseBuildState.base.root.getWorldPosition(baseBuildState.baseWorldPosition);
+      baseBuildState.base.root.getWorldQuaternion(baseBuildState.tempQuaternion);
+      baseBuildState.cameraWorldUp.set(0,1,0).applyQuaternion(baseBuildState.tempQuaternion).normalize();
+      baseBuildState.plane.setFromNormalAndCoplanarPoint(baseBuildState.cameraWorldUp, baseBuildState.baseWorldPosition);
+      return true;
+    }
+
+    function updateBaseBuildPointer(e) {
+      if (!baseBuildState.active || !baseBuildState.base || !baseBuildState.ghost || !baseBuildState.dragging) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      baseBuildState.pointerNdc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+      baseBuildState.raycaster.setFromCamera(baseBuildState.pointerNdc, camera);
+      if (!getBaseBuildPointerPlane()) return;
+      if (!baseBuildState.raycaster.ray.intersectPlane(baseBuildState.plane, baseBuildState.planeHit)) return;
+      baseBuildState.localHit.copy(baseBuildState.planeHit);
+      baseBuildState.base.root.worldToLocal(baseBuildState.localHit);
+      baseBuildState.proposedPosition.copy(baseBuildState.localHit).sub(baseBuildState.dragOffset);
+      baseBuildState.proposedPosition.y = 0.06;
+      baseBuildState.ghost.position.copy(baseBuildState.proposedPosition);
+      baseBuildState.ghost.rotation.y = baseBuildState.yaw;
+      updateGhostConnectorDotsOnly();
+      updateBaseBuildGhostAppearance();
+    }
+
+    function beginBaseBuildDrag(e) {
+      if (!baseBuildState.active || !baseBuildState.ghost || e.button !== 0) return false;
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (!rect.width || !rect.height) return false;
+      baseBuildState.pointerNdc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+      baseBuildState.raycaster.setFromCamera(baseBuildState.pointerNdc, camera);
+      if (!baseBuildState.raycaster.intersectObject(baseBuildState.ghost, true).length) return false;
+      if (!getBaseBuildPointerPlane()) return false;
+      if (!baseBuildState.raycaster.ray.intersectPlane(baseBuildState.plane, baseBuildState.planeHit)) return false;
+      baseBuildState.localGrabPoint.copy(baseBuildState.planeHit);
+      baseBuildState.base.root.worldToLocal(baseBuildState.localGrabPoint);
+      baseBuildState.dragOffset.copy(baseBuildState.localGrabPoint).sub(baseBuildState.ghost.position);
+      baseBuildState.dragging = true;
+      document.body.classList.add('base-build-dragging');
+      updateBaseBuildPointer(e);
+      return true;
+    }
+
+    function spawnBaseConnectionSnapPulse(base, worldPosition, worldNormal) {
+      if (!base?.root || !worldPosition || !worldNormal) return;
+      const group = new THREE.Group();
+      const localPosition = base.root.worldToLocal(worldPosition.clone());
+      const baseWorldQ = base.root.getWorldQuaternion(new THREE.Quaternion());
+      const localNormal = worldNormal.clone().applyQuaternion(baseWorldQ.invert()).normalize();
+      group.position.copy(localPosition);
+      group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), localNormal);
+      group.renderOrder = 40;
+
+      const outer = new THREE.Mesh(
+        new THREE.RingGeometry(0.42, 0.51, 32),
+        new THREE.MeshBasicMaterial({ color: 0x72f3ff, transparent: true, opacity: 0.92, depthWrite: false, side: THREE.DoubleSide })
+      );
+      const inner = new THREE.Mesh(
+        new THREE.RingGeometry(0.20, 0.27, 24),
+        new THREE.MeshBasicMaterial({ color: 0xd7fbff, transparent: true, opacity: 0.72, depthWrite: false, side: THREE.DoubleSide })
+      );
+      const core = new THREE.Mesh(
+        new THREE.SphereGeometry(0.10, 12, 8),
+        new THREE.MeshBasicMaterial({ color: 0xbafaff, transparent: true, opacity: 0.92, depthWrite: false })
+      );
+      group.add(outer, inner, core);
+      base.root.add(group);
+      baseConnectionSnapPulses.push({ group, outer, inner, core, age: 0, life: 0.46 });
+    }
+
+    function updateBaseConnectionSnapPulses(delta) {
+      for (let i = baseConnectionSnapPulses.length - 1; i >= 0; i--) {
+        const pulse = baseConnectionSnapPulses[i];
+        pulse.age += delta;
+        const t = THREE.MathUtils.clamp(pulse.age / pulse.life, 0, 1);
+        const eased = 1 - Math.pow(1 - t, 2.8);
+        pulse.outer.scale.setScalar(0.55 + eased * 1.55);
+        pulse.inner.scale.setScalar(0.45 + eased * 1.05);
+        pulse.core.scale.setScalar(0.65 + Math.sin(t * Math.PI) * 1.65);
+        pulse.outer.material.opacity = (1 - t) * 0.95;
+        pulse.inner.material.opacity = (1 - t) * 0.74;
+        pulse.core.material.opacity = (1 - t) * 0.88;
+        if (pulse.age >= pulse.life) {
+          if (pulse.group.parent) pulse.group.parent.remove(pulse.group);
+          pulse.outer.geometry.dispose();
+          pulse.inner.geometry.dispose();
+          pulse.core.geometry.dispose();
+          pulse.outer.material.dispose();
+          pulse.inner.material.dispose();
+          pulse.core.material.dispose();
+          baseConnectionSnapPulses.splice(i, 1);
+        }
+      }
+    }
+
+    function clearBaseConnectionSnapPulses() {
+      for (const pulse of baseConnectionSnapPulses.splice(0)) {
+        if (pulse.group?.parent) pulse.group.parent.remove(pulse.group);
+        pulse.outer?.geometry?.dispose();
+        pulse.inner?.geometry?.dispose();
+        pulse.core?.geometry?.dispose();
+        pulse.outer?.material?.dispose();
+        pulse.inner?.material?.dispose();
+        pulse.core?.material?.dispose();
+      }
+    }
+
+    function maybeSnapBaseBuildGhost() {
+      if (!baseBuildState.ghost || baseBuildState.dragging) return false;
+      const sourcePoints = baseBuildState.ghost.userData.connectionPoints || [];
+      if (!sourcePoints.length) return false;
+      let best = null;
+      let bestDistance = BASE_BUILD_SNAP_DISTANCE;
+      const consider = (sourcePoint, targetPosition, targetNormal, targetMeta = null) => {
+        baseBuildState.sourcePosition.copy(sourcePoint.position).applyQuaternion(baseBuildState.ghost.quaternion).add(baseBuildState.ghost.position);
+        baseBuildState.sourceNormal.copy(sourcePoint.normal).applyQuaternion(baseBuildState.ghost.quaternion).normalize();
+        baseBuildState.targetPosition.copy(targetPosition);
+        baseBuildState.targetNormal.copy(targetNormal).normalize();
+        const alignment = baseBuildState.sourceNormal.dot(baseBuildState.targetNormal);
+        if (alignment > -0.90) return;
+
+        const elevatedConnection = !!sourcePoint.elevated || !!targetMeta?.elevated;
+        // The stairwell's top socket is an upper-level destination. Do not allow its elevated
+        // source socket to snap down onto ordinary ground-level sockets.
+        if (sourcePoint.elevated && !targetMeta?.elevated) return;
+        const dx = baseBuildState.targetPosition.x - baseBuildState.sourcePosition.x;
+        const dz = baseBuildState.targetPosition.z - baseBuildState.sourcePosition.z;
+        const horizontalDistance = Math.hypot(dx, dz);
+        const verticalDistance = Math.abs(baseBuildState.targetPosition.y - baseBuildState.sourcePosition.y);
+
+        // Elevated sockets need to be selectable from the top-down build camera while the
+        // ghost is still on the normal build plane. Snap using X/Z proximity, then apply the
+        // full 3D delta so the room/corridor automatically rises to the upper floor.
+        if (elevatedConnection) {
+          if (horizontalDistance >= BASE_BUILD_SNAP_DISTANCE || verticalDistance > 4.25) return;
+          const distance = horizontalDistance + verticalDistance * 0.02;
+          if (distance >= bestDistance) return;
+          bestDistance = distance;
+          best = {
+            sourcePoint,
+            targetPosition: baseBuildState.targetPosition.clone(),
+            targetNormal: baseBuildState.targetNormal.clone(),
+            elevated: true,
+            targetStructureId: targetMeta?.structureId || null,
+            targetConnectionId: targetMeta?.id || null
+          };
+          return;
+        }
+
+        const distance = baseBuildState.sourcePosition.distanceTo(baseBuildState.targetPosition);
+        if (distance >= bestDistance) return;
+        bestDistance = distance;
+        best = { sourcePoint, targetPosition: baseBuildState.targetPosition.clone(), targetNormal: baseBuildState.targetNormal.clone(), elevated: false, targetStructureId: targetMeta?.structureId || null, targetConnectionId: targetMeta?.id || null };
+      };
+
+      for (const p of getBaseCoreConnectionPoints()) {
+        for (const sourcePoint of sourcePoints) consider(sourcePoint, p.position, p.normal);
+      }
+      for (const structure of baseStructures) {
+        if (!structure?.root || String(structure.baseId) !== String(baseBuildState.base?.baseId || '')) continue;
+        for (const point of structure.connectionPoints || []) {
+          const targetPosition = point.position.clone().applyQuaternion(structure.root.quaternion).add(structure.root.position);
+          const targetNormal = point.normal.clone().applyQuaternion(structure.root.quaternion).normalize();
+          // Once any module is placed above the base plane (for example a room attached to the
+          // stairwell's top socket), every one of that module's sockets lives on the same upper
+          // level. Treat those sockets as elevated even for older saved worlds whose connection
+          // records predate the explicit `elevated` flag. This lets players chain as many rooms,
+          // corridors, and junctions as they like from the stairwell's upper floor.
+          const structureRootY = Number(structure.root.position?.y) || 0;
+          const inferredElevated = Math.abs(structureRootY) > 0.9;
+          const targetMeta = { ...point, elevated: !!point.elevated || inferredElevated, structureId: structure.structureId };
+          for (const sourcePoint of sourcePoints) consider(sourcePoint, targetPosition, targetNormal, targetMeta);
+        }
+      }
+      if (!best) {
+        baseBuildState.lastSnapWasElevated = false;
+        baseBuildState.snapTargetStructureId = null;
+        baseBuildState.snapTargetConnectionId = null;
+        baseBuildState.snapAnimationKey = '';
+        return false;
+      }
+      baseBuildState.sourcePosition.copy(best.sourcePoint.position).applyQuaternion(baseBuildState.ghost.quaternion).add(baseBuildState.ghost.position);
+      baseBuildState.delta.copy(best.targetPosition).sub(baseBuildState.sourcePosition);
+      baseBuildState.ghost.position.add(baseBuildState.delta);
+      baseBuildState.lastSnapWasElevated = !!best.elevated;
+      baseBuildState.snapTargetStructureId = best.targetStructureId || null;
+      baseBuildState.snapTargetConnectionId = best.targetConnectionId || null;
+      if (best.targetNormal) baseBuildState.targetNormal.copy(best.targetNormal).normalize();
+      const snapKey = [
+        baseBuildState.snapTargetStructureId || 'core',
+        baseBuildState.snapTargetConnectionId || 'core',
+        Math.round(best.targetPosition.x * 20),
+        Math.round(best.targetPosition.y * 20),
+        Math.round(best.targetPosition.z * 20)
+      ].join(':');
+      if (snapKey !== baseBuildState.snapAnimationKey) {
+        baseBuildState.snapAnimationKey = snapKey;
+        spawnBaseConnectionSnapPulse(baseBuildState.base, best.targetPosition, best.targetNormal);
+      }
+      updateGhostConnectorDotsOnly();
+      updateBaseBuildGhostAppearance();
+      return true;
+    }
+
+    function getBaseStructureCollisionBoxInBaseSpace(root, collisionBox, out = {}) {
+      const centerLocal = collisionBox?.center || { x: 0, y: 0, z: 0 };
+      const yaw = Number(root?.rotation?.y) || 0;
+      const cos = Math.cos(yaw);
+      const sin = Math.sin(yaw);
+      const cx = Number(root?.position?.x) || 0;
+      const cy = Number(root?.position?.y) || 0;
+      const cz = Number(root?.position?.z) || 0;
+      out.x = cx + (Number(centerLocal.x) || 0) * cos + (Number(centerLocal.z) || 0) * sin;
+      out.y = cy + (Number(centerLocal.y) || 0);
+      out.z = cz - (Number(centerLocal.x) || 0) * sin + (Number(centerLocal.z) || 0) * cos;
+      out.halfX = Math.max(0.02, Number(collisionBox?.halfX) || 0.05);
+      out.halfY = Math.max(0.02, Number(collisionBox?.halfY) || 0.05);
+      out.halfZ = Math.max(0.02, Number(collisionBox?.halfZ) || 0.05);
+      out.cos = cos;
+      out.sin = sin;
+      return out;
+    }
+
+    function baseOrientedBoxesOverlap(a, b, epsilon = 0.025) {
+      if (!a || !b) return false;
+      if (Math.abs(a.y - b.y) >= a.halfY + b.halfY - epsilon) return false;
+      const axX = { x: a.cos, z: -a.sin };
+      const axZ = { x: a.sin, z: a.cos };
+      const bxX = { x: b.cos, z: -b.sin };
+      const bxZ = { x: b.sin, z: b.cos };
+      const centerDX = b.x - a.x;
+      const centerDZ = b.z - a.z;
+      const testAxes = [axX, axZ, bxX, bxZ];
+      for (const axis of testAxes) {
+        const distance = Math.abs(centerDX * axis.x + centerDZ * axis.z);
+        const radiusA = a.halfX * Math.abs(axX.x * axis.x + axX.z * axis.z) +
+          a.halfZ * Math.abs(axZ.x * axis.x + axZ.z * axis.z);
+        const radiusB = b.halfX * Math.abs(bxX.x * axis.x + bxX.z * axis.z) +
+          b.halfZ * Math.abs(bxZ.x * axis.x + bxZ.z * axis.z);
+        if (distance >= radiusA + radiusB - epsilon) return false;
+      }
+      return true;
+    }
+
+    function baseStructureOverlapsExisting(candidateRoot) {
+      const candidateBoxes = Array.isArray(candidateRoot?.userData?.collisionBoxes) ? candidateRoot.userData.collisionBoxes : [];
+      if (!candidateBoxes.length) return false;
+      for (const other of baseStructures) {
+        if (!other?.root || String(other.baseId) !== String(baseBuildState.base?.baseId || '')) continue;
+        const isElevatedAttachmentPartner = !!baseBuildState.lastSnapWasElevated &&
+          String(baseBuildState.snapTargetStructureId || '') === String(other.structureId || '');
+        const existingBoxes = Array.isArray(other.collisionBoxes) ? other.collisionBoxes : [];
+        for (const candidateCollision of candidateBoxes) {
+          // Door panels and tiny player-only seam guards are not structural overlap blockers.
+          if (candidateCollision?.isDoor || candidateCollision?.isPlayerOnly) continue;
+          const candidateSpace = getBaseStructureCollisionBoxInBaseSpace(candidateRoot, candidateCollision, {});
+          for (const existingCollision of existingBoxes) {
+            const existingSpace = getBaseStructureCollisionBoxInBaseSpace(other.root, existingCollision, {});
+            if (isElevatedAttachmentPartner &&
+                String(baseBuildState.snapTargetConnectionId || '') === 'top-entry' &&
+                String(other.typeId || '') === 'stairwell') {
+              // At a valid elevated socket, the two modules' end-wall thicknesses are allowed
+              // to meet/overlap at the connection seam. Other existing geometry still blocks.
+              const targetX = Number(baseBuildState.targetPosition?.x) || 0;
+              const targetY = Number(baseBuildState.targetPosition?.y) || 0;
+              const targetZ = Number(baseBuildState.targetPosition?.z) || 0;
+              // Large habitat rooms are wider than the compact stairwell. Their doorway
+              // side-walls naturally occupy the same lateral seam volume, so a radial exemption
+              // was still too narrow and made otherwise-correct upper attachments go red.
+              // For the stairwell's top-entry only, allow collision-box overlap when BOTH boxes
+              // are actually hugging the shared doorway plane. This permits the wider doorway
+              // side-walls to meet the narrow stairwell returns, without allowing overlap down
+              // the body of either module.
+              const targetNormal = baseBuildState.targetNormal.lengthSq() > 0.5
+                ? baseBuildState.targetNormal.clone().normalize()
+                : new THREE.Vector3(0, 0, -1);
+              // Compare each OBB's *nearest face* to the shared connection plane rather
+              // than its center. The stairwell side walls intentionally run beside the
+              // entire flight and therefore have centers far from the top socket, but their
+              // outer faces still touch the doorway seam. Using the nearest face lets those
+              // seam-adjacent boxes meet a wider room without making the whole ghost invalid.
+              const projectedHalfExtent = (box) => Math.max(0,
+                box.halfX * Math.abs(box.cos * targetNormal.x + (-box.sin) * targetNormal.z) +
+                box.halfZ * Math.abs(box.sin * targetNormal.x + box.cos * targetNormal.z)
+              );
+              const candidateCenterPlane =
+                (candidateSpace.x - targetX) * targetNormal.x +
+                (candidateSpace.z - targetZ) * targetNormal.z;
+              const existingCenterPlane =
+                (existingSpace.x - targetX) * targetNormal.x +
+                (existingSpace.z - targetZ) * targetNormal.z;
+              const candidatePlaneDistance = Math.max(0,
+                Math.abs(candidateCenterPlane) - projectedHalfExtent(candidateSpace)
+              );
+              const existingPlaneDistance = Math.max(0,
+                Math.abs(existingCenterPlane) - projectedHalfExtent(existingSpace)
+              );
+              const candidateAtConnection = candidatePlaneDistance <= 0.70 &&
+                Math.abs(candidateSpace.y - targetY) < 2.55;
+              const existingAtConnection = existingPlaneDistance <= 0.70 &&
+                Math.abs(existingSpace.y - targetY) < 3.55;
+              if (candidateAtConnection && existingAtConnection) continue;
+            }
+            if (existingCollision?.isDoor || existingCollision?.isPlayerOnly) continue;
+            if (baseOrientedBoxesOverlap(candidateSpace, existingSpace)) return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    function baseStructurePlacementValid() {
+      const base = baseBuildState.base;
+      const root = baseBuildState.ghost;
+      const def = getBaseStructureDefinition(baseBuildState.typeId);
+      if (!base || !root || !def || !playerCanBuildBase(base)) return false;
+      const footprintRadius = Math.hypot(def.halfX, def.halfZ);
+      if (Math.hypot(root.position.x, root.position.z) + footprintRadius > Number(base.constructionRadius || BASE_CONSTRUCTION_RADIUS)) return false;
+      const foundationGap = getBaseStructureFoundationMaxGap(root, baseBuildState.typeId, base);
+      const foundationLimit = 7.5;
+      if (foundationGap.maxGap > foundationLimit) return false;
+      if (foundationGap.minGap < -0.15) return false;
+      if (baseStructureOverlapsExisting(root)) return false;
+      const buildCost = getBaseStructureCost(baseBuildState.typeId, baseBuildState.interiorMaterial);
+      if (state.gameMode !== 'freeplay' && !buildCost.every(line => countItem(line.typeId) >= line.count)) return false;
+      return true;
+    }
+
+    function oppositeDoorSide(side) {
+      return ({ north: 'south', south: 'north', east: 'west', west: 'east' })[side] || 'south';
+    }
+
+    function rebuildBaseRoomGhostFromDoorSelection() {
+      if (!baseBuildState.active || !['habitat_room', 'observation_module', 'storage_module', 'workshop_module', 'research_module', 'fuel_synthesizer_module'].includes(baseBuildState.typeId) || !baseBuildState.base) return;
+      const typeId = baseBuildState.typeId;
+      const pos = baseBuildState.ghost?.position.clone() || new THREE.Vector3(0, 0.06, -7);
+      baseBuildState.ghost?.parent?.remove(baseBuildState.ghost);
+      baseBuildState.ghost = createBaseStructureVisual(typeId, baseBuildState.doorSides, true, baseBuildState.interiorMaterial, baseBuildState.mirrorLJunction);
+      baseBuildState.ghost.position.copy(pos);
+      baseBuildState.ghost.rotation.y = baseBuildState.yaw;
+      baseBuildState.base.root.add(baseBuildState.ghost);
+      baseBuildState.dragging = false;
+      updateBaseBuildConnectorDots();
+      updateBaseBuildGhostAppearance();
+    }
+
+    function rebuildHabitatGhostFromDoorSelection() {
+      rebuildBaseRoomGhostFromDoorSelection();
+    }
+
+    function setBaseBuildDoorTwoEnabled(enabled) {
+      baseBuildState.doorTwoEnabled = !!enabled;
+      const first = baseBuildState.doorSides[0] || 'north';
+      if (baseBuildState.doorTwoEnabled) {
+        const second = baseBuildState.doorSides[1] && baseBuildState.doorSides[1] !== first
+          ? baseBuildState.doorSides[1]
+          : oppositeDoorSide(first);
+        baseBuildState.doorSides = [first, second];
+      } else {
+        baseBuildState.doorSides = [first];
+      }
+      baseBuildState.doorSelectionSlot = baseBuildState.doorTwoEnabled ? (baseBuildState.doorSelectionSlot || 0) : 0;
+      refreshBaseBuildDoorPicker();
+      rebuildBaseRoomGhostFromDoorSelection();
+    }
+
+    function setBaseBuildDoorSide(side, slot = baseBuildState.doorSelectionSlot || 0) {
+      const validSides = ['north', 'east', 'south', 'west'];
+      if (!validSides.includes(side)) return;
+      slot = slot === 1 ? 1 : 0;
+      if (slot === 1 && !baseBuildState.doorTwoEnabled) setBaseBuildDoorTwoEnabled(true);
+      const current = normalizeBaseDoorSides(baseBuildState.doorSides, ['north']);
+      if (slot === 0) {
+        if (current[1] === side) {
+          current[1] = current[0] || oppositeDoorSide(side);
+        }
+        current[0] = side;
+      } else {
+        if (current[0] === side) return;
+        current[1] = side;
+      }
+      baseBuildState.doorSides = baseBuildState.doorTwoEnabled ? normalizeBaseDoorSides(current, ['north', 'south']) : [side];
+      baseBuildState.doorSelectionSlot = slot;
+      refreshBaseBuildDoorPicker();
+      rebuildBaseRoomGhostFromDoorSelection();
+    }
+
+    function refreshBaseBuildDoorPicker() {
+      const two = !!baseBuildState.doorTwoEnabled;
+      const doorOne = baseBuildState.doorSides[0] || 'north';
+      const doorTwo = baseBuildState.doorSides[1] || '';
+      document.querySelectorAll('#baseBuildDoorPicker [data-base-door-slot]').forEach((btn) => {
+        const slot = Number(btn.dataset.baseDoorSlot) || 0;
+        btn.classList.toggle('active', slot === (baseBuildState.doorSelectionSlot || 0));
+      });
+      document.querySelectorAll('#baseBuildDoorPicker [data-base-door-toggle]').forEach((btn) => {
+        btn.classList.toggle('active', two);
+        btn.textContent = two ? 'ON' : 'OFF';
+        btn.setAttribute('aria-pressed', two ? 'true' : 'false');
+      });
+      document.querySelectorAll('#baseBuildDoorPicker [data-base-door]').forEach((btn) => {
+        const side = btn.dataset.baseDoor;
+        const slot = Number(btn.dataset.baseDoorSlot) || 0;
+        const selected = slot === 0 ? side === doorOne : two && side === doorTwo;
+        btn.classList.toggle('selected', selected);
+        btn.classList.toggle('disabled', slot === 1 && !two);
+        btn.disabled = slot === 1 && !two;
+      });
+      const doorTwoCard = document.querySelector('#baseBuildDoorPicker [data-base-door-card="1"]');
+      doorTwoCard?.classList.toggle('disabled', !two);
+    }
+
+    function rebuildBaseBuildGhostFromOptions() {
+      if (!baseBuildState.active || !baseBuildState.base || !baseBuildState.typeId) return;
+      const typeId = baseBuildState.typeId;
+      const def = getBaseStructureDefinition(typeId);
+      if (!def) return;
+      const pos = baseBuildState.ghost?.position?.clone() || new THREE.Vector3(0, 0.06, -10);
+      const yaw = baseBuildState.yaw;
+      baseBuildState.ghost?.parent?.remove(baseBuildState.ghost);
+      const usesRoomDoorPicker = ['habitat_room', 'observation_module', 'storage_module', 'workshop_module', 'research_module', 'fuel_synthesizer_module'].includes(typeId);
+      baseBuildState.ghost = createBaseStructureVisual(typeId, usesRoomDoorPicker ? baseBuildState.doorSides : [], true, baseBuildState.interiorMaterial, baseBuildState.mirrorLJunction);
+      baseBuildState.ghost.position.copy(pos);
+      baseBuildState.ghost.rotation.y = yaw;
+      baseBuildState.base.root.add(baseBuildState.ghost);
+      baseBuildState.dragging = false;
+      updateBaseBuildConnectorDots();
+      updateBaseBuildGhostAppearance();
+    }
+
+    function refreshBaseBuildMirrorControl() {
+      const show = !!baseBuildState.active && baseBuildState.typeId === 'l_junction';
+      const control = document.getElementById('baseBuildMirrorControl');
+      control?.classList.toggle('hidden', !show);
+      const button = document.getElementById('baseBuildMirrorButton');
+      if (button) {
+        button.textContent = baseBuildState.mirrorLJunction ? 'MIRRORED L' : 'NORMAL L';
+        button.setAttribute('aria-pressed', baseBuildState.mirrorLJunction ? 'true' : 'false');
+        button.classList.toggle('selected', baseBuildState.mirrorLJunction);
+      }
+    }
+
+    function setBaseBuildMirror(enabled = !baseBuildState.mirrorLJunction) {
+      if (!baseBuildState.active || baseBuildState.typeId !== 'l_junction') return;
+      baseBuildState.mirrorLJunction = !!enabled;
+      refreshBaseBuildMirrorControl();
+      rebuildBaseBuildGhostFromOptions();
+    }
+
+    function setBaseBuildInteriorMaterial(material) {
+      if (!baseBuildState.active) return;
+      const key = normalizeBaseInteriorMaterial(material);
+      baseBuildState.interiorMaterial = key;
+      document.querySelectorAll('[data-base-interior-material]').forEach((button) => {
+        button.classList.toggle('selected', button.dataset.baseInteriorMaterial === key);
+        button.setAttribute('aria-pressed', button.dataset.baseInteriorMaterial === key ? 'true' : 'false');
+      });
+      rebuildBaseBuildGhostFromOptions();
+      updateBaseBuildCostUi();
+    }
+
+    function selectBaseBuildStructure(typeId) {
+      if (!baseBuildState.active) return;
+      const def = getBaseStructureDefinition(typeId);
+      if (!def || !baseBuildState.base || !playerCanBuildBase(baseBuildState.base)) return;
+      baseBuildState.ghost?.parent?.remove(baseBuildState.ghost);
+      baseBuildState.typeId = typeId;
+      baseBuildState.yaw = 0;
+      if (typeId !== 'l_junction') baseBuildState.mirrorLJunction = false;
+      baseBuildState.lastSnapWasElevated = false;
+      baseBuildState.snapTargetStructureId = null;
+      baseBuildState.snapTargetConnectionId = null;
+      baseBuildState.snapAnimationKey = '';
+      baseBuildState.dragging = false;
+      baseBuildState.doorSides = (typeId === 'hydroponics_module' || typeId === 'docking_module')
+        ? ['north']
+        : (baseBuildState.doorTwoEnabled
+          ? normalizeBaseDoorSides(baseBuildState.doorSides, ['north', 'south'])
+          : [normalizeBaseDoorSides(baseBuildState.doorSides, ['north'])[0] || 'north']);
+      const usesRoomDoorPicker = ['habitat_room', 'observation_module', 'storage_module', 'workshop_module', 'research_module', 'fuel_synthesizer_module'].includes(typeId);
+      baseBuildState.ghost = createBaseStructureVisual(typeId, usesRoomDoorPicker ? baseBuildState.doorSides : [], true, baseBuildState.interiorMaterial, baseBuildState.mirrorLJunction);
+      baseBuildState.ghost.position.set(0, 0.06, (usesRoomDoorPicker || typeId === 'hydroponics_module' || typeId === 'docking_module') ? -7.0 : -10.0);
+      baseBuildState.ghost.rotation.y = 0;
+      baseBuildState.base.root.add(baseBuildState.ghost);
+      document.querySelectorAll('.baseBuildCard[data-base-structure]').forEach((btn) => btn.classList.toggle('active', btn.dataset.baseStructure === typeId));
+      document.querySelectorAll('[data-base-interior-material]').forEach((button) => { const selected = button.dataset.baseInteriorMaterial === baseBuildState.interiorMaterial; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', selected ? 'true' : 'false'); });
+      document.getElementById('baseBuildDoorPicker')?.classList.toggle('hidden', !usesRoomDoorPicker);
+      document.getElementById('baseBuildMaterialPicker')?.classList.remove('hidden');
+      const doorLabel = document.querySelector('#baseBuildDoorPicker .baseBuildDoorLabel');
+      const doorSubLabel = document.querySelector('#baseBuildDoorPicker .baseBuildDoorSubLabel');
+      const pickerNames = { observation_module: 'OBSERVATION MODULE DOORWAYS', storage_module: 'STORAGE MODULE DOORWAYS', workshop_module: 'WORKSHOP MODULE DOORWAYS', research_module: 'RESEARCH MODULE DOORWAYS', fuel_synthesizer_module: 'FUEL SYNTHESIZER DOORWAYS', hydroponics_module: 'HYDROPONICS MODULE DOORWAY', habitat_room: 'HABITAT DOORWAYS' };
+      if (doorLabel) doorLabel.textContent = pickerNames[typeId] || 'MODULE DOORWAYS';
+      if (doorSubLabel) doorSubLabel.textContent = 'Choose 1 or 2 connection doors. Door 2 is optional.';
+      refreshBaseBuildDoorPicker();
+      refreshBaseBuildMirrorControl();
+      updateBaseBuildConnectorDots();
+      updateBaseBuildGhostAppearance();
+    }
+
+    function updateBaseBuildCostUi() {
+      const freeplay = state.gameMode === 'freeplay';
+      document.querySelectorAll('.baseBuildCard').forEach((card) => {
+        const def = getBaseStructureDefinition(card.dataset.baseStructure);
+        const costEl = card.querySelector('.baseBuildCost');
+        if (!def || !costEl) return;
+        const material = (card.dataset.baseStructure === baseBuildState.typeId) ? baseBuildState.interiorMaterial : 'wood';
+        const cost = getBaseStructureCost(card.dataset.baseStructure, material);
+        const costText = freeplay ? 'FREEPLAY · NO MATERIAL COST' : cost.map(line => `${line.count} ${itemById[line.typeId]?.name || line.typeId}`).join(' · ');
+        costEl.textContent = costText;
+        const infoEl = card.querySelector('.baseBuildCardInfo');
+        const featureEl = card.querySelector('.baseBuildCardTooltip em');
+        const infoText = infoEl?.textContent?.trim() || '';
+        const featureText = featureEl?.textContent?.trim() || '';
+        card.setAttribute('aria-label', `${def.name}. ${infoText}${infoText && featureText ? ' ' : ''}${featureText} ${costText}.`);
+        card.removeAttribute('title');
+        card.classList.toggle('disabled', !freeplay && cost.some(line => countItem(line.typeId) < line.count));
+      });
+    }
+
+    function restoreGameplayCameraAfterBaseBuild() {
+      if (baseBuildState.savedCameraParent) baseBuildState.savedCameraParent.add(camera);
+      else player.add(camera);
+      camera.position.copy(baseBuildState.savedCameraPosition);
+      camera.quaternion.copy(baseBuildState.savedCameraQuaternion);
+      camera.up.copy(baseBuildState.savedCameraUp);
+      camera.fov = baseBuildState.savedCameraFov;
+      camera.updateProjectionMatrix();
+      targetCamPos.copy(playerState.thirdPerson ? CAM_THIRD : CAM_FIRST);
+    }
+
+    function enterBaseBuildMode(base) {
+      if (!base || !playerCanBuildBase(base) || state.gameState !== 'playing' || playerState.inRocket) return false;
+      if (uiState.baseBuildOpen) return true;
+      uiState.baseCoreOpen = false;
+      window.__puActiveBaseCore = null;
+      document.getElementById('baseCoreOverlay')?.classList.add('hidden');
+      document.getElementById('baseCoreOverlay')?.setAttribute('aria-hidden', 'true');
+      document.body.classList.remove('base-core-open');
+      state.paused = false;
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+
+      baseBuildState.savedCameraParent = camera.parent;
+      baseBuildState.savedCameraPosition.copy(camera.position);
+      baseBuildState.savedCameraQuaternion.copy(camera.quaternion);
+      baseBuildState.savedCameraUp.copy(camera.up);
+      baseBuildState.savedCameraFov = camera.fov;
+      scene.attach(camera); // world-space camera; follows the base via updateBaseBuildCamera()
+      camera.fov = 65;
+      camera.updateProjectionMatrix();
+
+      baseBuildState.active = true;
+      baseBuildState.base = base;
+      baseBuildState.typeId = null;
+      baseBuildState.ghost = null;
+      baseBuildState.dragging = false;
+      baseBuildState.cameraPan.set(0,0,0);
+      baseBuildState.doorSides = ['north', 'south'];
+      baseBuildState.doorTwoEnabled = true;
+      baseBuildState.doorSelectionSlot = 0;
+      baseBuildState.interiorMaterial = 'wood';
+      baseBuildState.mirrorLJunction = false;
+      baseBuildState.lastSnapWasElevated = false;
+      baseBuildState.yaw = 0;
+      uiState.baseBuildOpen = true;
+      document.body.classList.add('base-build-mode');
+      document.getElementById('baseBuildHud')?.classList.remove('hidden');
+      document.getElementById('baseBuildHud')?.setAttribute('aria-hidden', 'false');
+      updateBaseBuildCostUi();
+      updateBaseBuildCamera(0);
+      setBaseBuildInteriorMaterial('wood');
+      selectBaseBuildStructure('habitat_room');
+      return true;
+    }
+
+    function exitBaseBuildMode(reason = '') {
+      if (!baseBuildState.active) return;
+      clearBaseConnectionSnapPulses();
+      // This mode intentionally releases pointer lock. Mark that unlock before doing it
+      // so pointerlockchange cannot immediately treat it as a gameplay pause request.
+      suppressPauseAfterBaseBuildPointerUnlock = true;
+      const base = baseBuildState.base;
+      baseBuildState.ghost?.parent?.remove(baseBuildState.ghost);
+      baseBuildState.connectorGroup?.parent?.remove(baseBuildState.connectorGroup);
+      baseBuildState.ghost = null;
+      baseBuildState.connectorGroup = null;
+      baseBuildState.connectorGhostDots.length = 0;
+      baseBuildState.active = false;
+      baseBuildState.dragging = false;
+      baseBuildState.typeId = null;
+      baseBuildState.base = null;
+      baseBuildState.valid = false;
+      baseBuildState.cameraPan.set(0,0,0);
+      baseBuildState.yaw = 0;
+      uiState.baseBuildOpen = false;
+      document.body.classList.remove('base-build-mode', 'base-build-dragging');
+      document.getElementById('baseBuildHud')?.classList.add('hidden');
+      document.getElementById('baseBuildHud')?.setAttribute('aria-hidden', 'true');
+      document.getElementById('baseBuildDoorPicker')?.classList.add('hidden');
+      document.getElementById('baseBuildMaterialPicker')?.classList.add('hidden');
+      document.getElementById('baseBuildMirrorControl')?.classList.add('hidden');
+      document.querySelectorAll('.baseBuildCard').forEach((btn) => btn.classList.remove('active'));
+      clearPhysicalKeys();
+      for (const k in systemState.keys) systemState.keys[k] = false;
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      restoreGameplayCameraAfterBaseBuild();
+      state.paused = false;
+      // Escape/right-click exits build mode and immediately hands control back to gameplay.
+      // Delay only one tick so the camera restoration and pointer-lock change settle first.
+      setTimeout(() => {
+        if (state.gameState === 'playing' && !uiState.baseBuildOpen && !state.paused && document.pointerLockElement !== canvas) attemptPointerLock();
+      }, 0);
+      if (base) updateBaseCoreVisuals(0);
+      if (reason === 'placed') {
+        const prompt = document.getElementById('crystalPrompt');
+        if (prompt && state.gameState === 'playing') {
+          prompt.classList.remove('hidden');
+          prompt.innerHTML = '<span class="promptKey">BUILD</span> Base construction ready';
+          setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 700);
+        }
+      }
+    }
+
+    function syncRocketAndPadState(pad) {
+      if (!pad) return;
+      pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(pad.fuel) || 0));
+      pad.methaneLiters = sanitizeMethaneLiters(pad.methaneLiters);
+      if (!pad.rocket) return;
+      pad.rocket.fuel = pad.fuel;
+      pad.rocket.engineType = pad.engineType || 'standard';
+      pad.rocket.warpDrive = !!pad.warpDrive;
+      pad.rocket.warpDriveType = pad.warpDriveType || null;
+      pad.rocket.gasCollectionInstalled = !!pad.gasCollectionInstalled;
+      pad.rocket.methaneLiters = sanitizeMethaneLiters(pad.methaneLiters);
+    }
+
+    function getLaunchPadWorldTransform(pad, outPosition = new THREE.Vector3(), outQuaternion = new THREE.Quaternion()) {
+      if (!pad?.root) return null;
+      pad.root.getWorldPosition(outPosition);
+      pad.root.getWorldQuaternion(outQuaternion);
+      return { position: outPosition, quaternion: outQuaternion };
+    }
+
+    function registerDockingLaunchPadForStructure(structure, existingPad = null) {
+      if (!structure?.root || structure.typeId !== 'docking_module') return null;
+      const base = baseCores.find(b => String(b.baseId || '') === String(structure.baseId || ''));
+      let pad = existingPad || structure.dockingLaunchPad || null;
+      let visual = structure.root.userData.dockingPadVisual || null;
+
+      if (pad) {
+        if (visual?.parent === structure.root && visual !== pad.root) structure.root.remove(visual);
+        if (pad.root.parent !== structure.root) structure.root.add(pad.root);
+        pad.root.position.set(0, 0.20, 0);
+        pad.root.rotation.set(0, 0, 0);
+        pad.root.scale.setScalar(0.84);
+        pad.root.userData.isDockingLaunchPad = true;
+        pad.root.userData.embeddedStructureId = String(structure.structureId || '');
+        pad.isDockingPad = true;
+        pad.embeddedStructureId = String(structure.structureId || '');
+        pad.dockingStructureId = String(structure.structureId || '');
+        pad.surfaceBodyId = base?.surfaceBodyId || pad.surfaceBodyId || 'ivis';
+        pad.direction = base?.direction?.clone?.() || pad.direction || new THREE.Vector3(0, 1, 0);
+        pad.yaw = 0;
+        structure.dockingLaunchPad = pad;
+        structure.root.userData.dockingPadVisual = null;
+        syncRocketAndPadState(pad);
+        return pad;
+      }
+
+      visual = visual || createLaunchPadVisual(0.84);
+      if (visual.parent !== structure.root) structure.root.add(visual);
+      visual.position.set(0, 0.20, 0);
+      visual.rotation.set(0, 0, 0);
+      visual.scale.setScalar(0.84);
+      visual.userData.isDockingLaunchPad = true;
+      visual.userData.embeddedStructureId = String(structure.structureId || '');
+
+      pad = {
+        root: visual, direction: base?.direction?.clone?.() || new THREE.Vector3(0, 1, 0), yaw: 0,
+        surfaceBodyId: base?.surfaceBodyId || 'ivis', rocket: null, fuel: 0,
+        engineType: 'standard', warpDrive: false, warpDriveType: null,
+        gasCollectionInstalled: false, methaneLiters: 0, networkId: '',
+        ownerUserId: structure.ownerUserId || '',
+        embeddedStructureId: String(structure.structureId || ''),
+        dockingStructureId: String(structure.structureId || ''),
+        isDockingPad: true
+      };
+      launchPads.push(pad);
+      structure.dockingLaunchPad = pad;
+      structure.root.userData.dockingPadVisual = null;
+      return pad;
+    }
+
+    function getBuildModeStructureFromPointerEvent(e) {
+      if (!baseBuildState.active || !baseBuildState.base || !e) return null;
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      baseBuildState.pointerNdc.set(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      baseBuildState.raycaster.setFromCamera(baseBuildState.pointerNdc, camera);
+
+      const roots = [];
+      for (const structure of baseStructures) {
+        if (!structure?.root || !structure.root.parent || structure.root.parent !== baseBuildState.base.root || !structure.root.visible) continue;
+        roots.push(structure.root);
+      }
+      if (!roots.length) return null;
+      const hits = baseBuildState.raycaster.intersectObjects(roots, true);
+      if (!hits.length) return null;
+
+      let node = hits[0].object;
+      while (node && node.parent && node.parent !== baseBuildState.base.root) node = node.parent;
+      if (!node) return null;
+      return baseStructures.find(structure => structure.root === node && String(structure.baseId || '') === String(baseBuildState.base.baseId || '')) || null;
+    }
+
+    function structureHasRemovableContents(structure) {
+      if (!structure) return false;
+      if (Array.isArray(structure.furniture) && structure.furniture.length) return 'furniture';
+      if (structure.typeId === 'storage_module' && Array.isArray(structure.storageContainers)) {
+        for (const container of structure.storageContainers) {
+          if (Array.isArray(container.inventory) && container.inventory.some(Boolean)) return 'storage';
+        }
+      }
+      if (structure.typeId === 'hydroponics_module' && Array.isArray(structure.hydroponicPlots)) {
+        if (structure.hydroponicPlots.some(plot => plot?.crop)) return 'crops';
+      }
+      if (structure.typeId === 'fuel_synthesizer_module' && structure.fuelSynthInventory) {
+        const inv = structure.fuelSynthInventory;
+        if (inv.methane || inv.opal || inv.output) return 'fuel';
+      }
+      if (structure.typeId === 'docking_module' && structure.dockingLaunchPad?.rocket) return 'rocket';
+      return false;
+    }
+
+    function removeBaseStructureFromBuildMode(structure) {
+      if (!baseBuildState.active || !baseBuildState.base || !structure?.root) return false;
+      if (String(structure.baseId || '') !== String(baseBuildState.base.baseId || '')) return false;
+      if (!playerCanBuildBase(baseBuildState.base)) return false;
+
+      const reason = structureHasRemovableContents(structure);
+      if (reason) {
+        const messages = {
+          furniture: 'REMOVE FURNITURE FIRST',
+          storage: 'EMPTY STORAGE FIRST',
+          crops: 'HARVEST HYDROPONICS FIRST',
+          fuel: 'EMPTY FUEL SYNTH FIRST',
+          rocket: 'REMOVE THE DOCKED ROCKET FIRST'
+        };
+        const prompt = document.getElementById('crystalPrompt');
+        if (prompt) {
+          prompt.classList.remove('hidden');
+          prompt.innerHTML = '<span class="promptKey">BLOCKED</span> ' + (messages[reason] || 'EMPTY THE MODULE FIRST');
+          clearTimeout(removeBaseStructureFromBuildMode._promptTimer);
+          removeBaseStructureFromBuildMode._promptTimer = setTimeout(() => {
+            if (state.gameState === 'playing') updateCrystalPrompt();
+          }, 1300);
+        }
+        return false;
+      }
+
+      const def = getBaseStructureDefinition(structure.typeId);
+      if (!def) return false;
+      const refund = getBaseStructureCost(structure.typeId, structure.interiorMaterial);
+      if (state.gameMode !== 'freeplay') {
+        for (const line of refund) {
+          if (!canAddItemToInventory(line.typeId, line.count)) {
+            const prompt = document.getElementById('crystalPrompt');
+            if (prompt) {
+              prompt.classList.remove('hidden');
+              prompt.innerHTML = '<span class="promptKey">FULL</span> Make room for the refunded materials';
+              clearTimeout(removeBaseStructureFromBuildMode._promptTimer);
+              removeBaseStructureFromBuildMode._promptTimer = setTimeout(() => {
+                if (state.gameState === 'playing') updateCrystalPrompt();
+              }, 1300);
+            }
+            return false;
+          }
+        }
+      }
+
+      const structureIndex = baseStructures.indexOf(structure);
+      if (structureIndex < 0) return false;
+      const removedStructureId = String(structure.structureId || '');
+
+      // Remove module-owned world objects before detaching the root.
+      if (Array.isArray(structure.storageContainers)) {
+        for (const container of structure.storageContainers) {
+          const ci = containers.indexOf(container);
+          if (ci >= 0) containers.splice(ci, 1);
+          if (container.root?.parent) container.root.parent.remove(container.root);
+        }
+      }
+      structure.storageContainers = [];
+
+      if (structure.typeId === 'hydroponics_module') {
+        removeHydroponicsPlotsForStructure(structure.structureId);
+        structure.hydroponicPlots = [];
+      }
+
+      if (structure.typeId === 'docking_module' && structure.dockingLaunchPad) {
+        const pad = structure.dockingLaunchPad;
+        const padIndex = launchPads.indexOf(pad);
+        if (padIndex >= 0) launchPads.splice(padIndex, 1);
+        if (pad.root?.parent) pad.root.parent.remove(pad.root);
+        structure.dockingLaunchPad = null;
+      }
+
+      if (structure.root.parent) structure.root.parent.remove(structure.root);
+      baseStructures.splice(structureIndex, 1);
+      if (multiplayerMode && removedStructureId) broadcastMultiplayerBaseStructureRemoved(removedStructureId, 'dismantled');
+
+      if (state.gameMode !== 'freeplay') {
+        for (const line of refund) addItemToInventory(line.typeId, line.count);
+      }
+
+      refreshAllBaseFoundationSupports();
+      updateBaseBuildCostUi();
+      updateBaseBuildConnectorDots();
+      updateBaseBuildGhostAppearance();
+      markMultiplayerWorldDirty('base-structure-removed');
+
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">REMOVED</span> ' + (def.name || 'Module') + ' dismantled · materials refunded';
+        clearTimeout(removeBaseStructureFromBuildMode._promptTimer);
+        removeBaseStructureFromBuildMode._promptTimer = setTimeout(() => {
+          if (state.gameState === 'playing') updateCrystalPrompt();
+        }, 1000);
+      }
+      return true;
+    }
+
+    function tryPlaceBaseStructure() {
+      if (!baseBuildState.active || !baseBuildState.ghost || !baseBuildState.base || baseBuildState.dragging) return false;
+      if (!baseBuildState.valid) { updateBaseBuildGhostAppearance(); if (!baseBuildState.valid) return false; }
+      const def = getBaseStructureDefinition(baseBuildState.typeId);
+      if (!def) return false;
+      if (state.gameMode !== 'freeplay') {
+        const buildCost = getBaseStructureCost(baseBuildState.typeId, baseBuildState.interiorMaterial);
+        for (const line of buildCost) if (countItem(line.typeId) < line.count) return false;
+        for (const line of buildCost) removeItemsFromInventory(line.typeId, line.count);
+      }
+      const structureId = 'structure:local:' + Date.now() + ':' + Math.random().toString(36).slice(2, 9);
+      const isDoorSelectableModule = ['habitat_room', 'observation_module', 'storage_module', 'workshop_module', 'research_module', 'fuel_synthesizer_module', 'hydroponics_module'].includes(baseBuildState.typeId);
+      const placedDoorSides = (baseBuildState.typeId === 'hydroponics_module' || baseBuildState.typeId === 'docking_module')
+        ? ['north']
+        : (isDoorSelectableModule
+          ? (baseBuildState.doorTwoEnabled ? normalizeBaseDoorSides(baseBuildState.doorSides, ['north', 'south']) : [normalizeBaseDoorSides(baseBuildState.doorSides, ['north'])[0] || 'north'])
+          : []);
+      const root = createBaseStructureVisual(baseBuildState.typeId, placedDoorSides, false, baseBuildState.interiorMaterial, baseBuildState.mirrorLJunction);
+      root.position.copy(baseBuildState.ghost.position);
+      root.rotation.y = baseBuildState.yaw;
+      baseBuildState.base.root.add(root);
+      const doorStates = (root.userData.doors || []).map(() => false);
+      const structureElevation = Math.abs(Number(root.position?.y) || 0) > 0.9;
+      const structureConnectionPoints = getBaseStructureConnectionPointsForState(baseBuildState.typeId, placedDoorSides, baseBuildState.mirrorLJunction)
+        .map((point) => ({ ...point, elevated: !!point.elevated || structureElevation }));
+      const structure = {
+        root,
+        structureId,
+        baseId: String(baseBuildState.base.baseId),
+        typeId: baseBuildState.typeId,
+        interiorMaterial: normalizeBaseInteriorMaterial(baseBuildState.interiorMaterial),
+        mirroredX: !!baseBuildState.mirrorLJunction,
+        localPosition: root.position.clone(),
+        yaw: Number(baseBuildState.yaw) || 0,
+        doorSide: placedDoorSides[0] || null,
+        doorSides: placedDoorSides.slice(),
+        ownerUserId: getBaseLocalUserId(),
+        ownerName: getBaseLocalUsername(),
+        connectionPoints: structureConnectionPoints,
+        collisionBoxes: root.userData.collisionBoxes || [],
+        doorStates,
+        doorTargets: doorStates.map(() => 0),
+        doorOpen: false,
+        doorAnimating: false,
+        roofOpen: false,
+        roofTarget: 0,
+        roofAnimating: false,
+        roofLeverTarget: -0.52,
+        roofLeverAnimating: false,
+        storageContainers: [],
+        hydroponicPlots: [],
+        furniture: [],
+        fuelSynthInventory: { methane: null, opal: null, output: null }
+      };
+      baseStructures.push(structure);
+      if (structure.typeId === 'hydroponics_module') createHydroponicPlotsForStructure(structure);
+      if (structure.typeId === 'docking_module') registerDockingLaunchPadForStructure(structure);
+      if (structure.typeId === 'storage_module') {
+        [
+          [ 3.08, 0.20, -2.45, Math.PI / 2 ],
+          [ 3.08, 0.20,  0.00, Math.PI / 2 ],
+          [ 3.08, 0.20,  2.45, Math.PI / 2 ]
+        ].forEach(([x, y, z, yaw]) => createStructureStorageContainer(structure, [x, y, z], yaw));
+      }
+      updateBaseStructureFoundationSupports(structure);
+      if (multiplayerMode) broadcastMultiplayerBaseStructureSync(structure, 'placed');
+      // A short snap pulse marks the newly completed connection. This is feedback only;
+      // the actual socket placement/validation code remains unchanged.
+      if (baseBuildState.lastSnapWasElevated || baseBuildState.snapTargetStructureId || baseBuildState.snapTargetConnectionId) {
+        const placedSource = baseBuildState.sourcePosition.clone();
+        const placedNormal = baseBuildState.sourceNormal.clone();
+        spawnBaseConnectionSnapPulse(baseBuildState.base, placedSource, placedNormal);
+      }
+      updateBaseBuildCostUi();
+      baseBuildState.ghost?.parent?.remove(baseBuildState.ghost);
+      baseBuildState.ghost = null;
+      updateBaseBuildConnectorDots();
+      baseBuildState.typeId = null;
+      baseBuildState.valid = false;
+      baseBuildState.dragging = false;
+      document.getElementById('baseBuildDoorPicker')?.classList.add('hidden');
+      document.querySelectorAll('.baseBuildCard').forEach((btn) => btn.classList.remove('active'));
+      return true;
     }
 
     function createContainerStorage() {
@@ -6531,6 +11577,36 @@
       return container;
     }
 
+    function createStructureStorageContainer(structure, localPosition, yaw = 0, inventory = null, containerId = null) {
+      if (!structure?.root || structure.typeId !== 'storage_module') return null;
+      const group = createContainerVisual(0.98);
+      group.name = 'StorageModuleContainer_' + String(containerId || 'new');
+      group.position.set(Number(localPosition?.[0]) || 0, Number(localPosition?.[1]) || 0.20, Number(localPosition?.[2]) || 0);
+      group.rotation.y = Number(yaw) || 0;
+      structure.root.add(group);
+      const id = containerId || ('container_' + (nextContainerId++));
+      const parsed = /^container_(\d+)$/.exec(id);
+      if (parsed) nextContainerId = Math.max(nextContainerId, Number(parsed[1]) + 1);
+      const safeInventory = Array.isArray(inventory) && inventory.length === 20
+        ? inventory.map(slot => slot ? { ...slot } : null)
+        : createContainerStorage();
+      const base = baseCores.find(candidate => String(candidate?.baseId || '') === String(structure.baseId || ''));
+      const container = {
+        root: group,
+        direction: new THREE.Vector3(0, 1, 0),
+        yaw: Number(yaw) || 0,
+        surfaceBodyId: base?.surfaceBodyId || 'ivis',
+        containerId: id,
+        inventory: safeInventory,
+        embeddedStructureId: String(structure.structureId || ''),
+        localPosition: group.position.clone()
+      };
+      containers.push(container);
+      if (!Array.isArray(structure.storageContainers)) structure.storageContainers = [];
+      structure.storageContainers.push(container);
+      return container;
+    }
+
     function createContainerVisual(scale = 1) {
       if (containerModelTemplate) {
         const actual = containerModelTemplate.clone(true);
@@ -6547,6 +11623,192 @@
       group.add(lid);
       group.scale.setScalar(scale);
       return group;
+    }
+
+    function sanitizeMethaneLiters(value) {
+      return Math.max(0, Math.min(METHANE_CONTAINER_CAPACITY, Number(value) || 0));
+    }
+
+    function createGasCollectionSystemVisual(scale = 1) {
+      const group = new THREE.Group();
+      group.name = 'GasCollectionSystem';
+      const darkMat = new THREE.MeshStandardMaterial({ color: 0x3e464b, roughness: 0.52, metalness: 0.78 });
+      const dark2 = new THREE.MeshStandardMaterial({ color: 0x252c30, roughness: 0.66, metalness: 0.66 });
+      const methaneMat = new THREE.MeshStandardMaterial({ color: 0x78d8ea, emissive: 0x227e95, emissiveIntensity: 0.72, roughness: 0.24, metalness: 0.34 });
+      const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.42, 1.10, 16), darkMat); tank.position.y = 0.62; group.add(tank);
+      const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 0.12, 16), dark2); collar.position.y = 0.16; group.add(collar);
+      const top = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, 0.18, 12), dark2); top.position.y = 1.20; group.add(top);
+      const hose = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.46, 10), dark2); hose.position.set(0.30, 1.30, 0); hose.rotation.z = Math.PI / 2; group.add(hose);
+      const gauge = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8), methaneMat); gauge.position.set(0.40, 1.30, 0); group.add(gauge);
+      group.userData.methaneEmitterLocal = new THREE.Vector3(0.40, 1.30, 0);
+      group.scale.setScalar(scale);
+      return group;
+    }
+
+    function createGasCollectionSystemObject(dir, yaw = Math.random() * Math.PI * 2, surfaceBodyId = 'ivis', networkId = null, methaneLiters = 0) {
+      const ctx = getPlaceableSurfaceContext(surfaceBodyId);
+      const group = createGasCollectionSystemVisual(1.0);
+      const h = ctx.getHeight(dir);
+      group.position.copy(dir).multiplyScalar(ctx.radius + h + 0.04);
+      group.quaternion.setFromUnitVector(new THREE.Vector3(0, 1, 0), dir);
+      group.rotateY(yaw);
+      ctx.parent.add(group);
+      const system = {
+        root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id,
+        networkId: networkId || '', methaneLiters: sanitizeMethaneLiters(methaneLiters), installed: false, installedRocketNetworkId: ''
+      };
+      gasCollectionSystems.push(system);
+      return system;
+    }
+
+    function findNearbyGroundGasCollectionSystem() {
+      if (state.gameState !== 'playing' || playerState.inRocket) return null;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      let best = null, bestDistance = Infinity;
+      for (const system of gasCollectionSystems) {
+        if (!system.root?.visible || system.installed) continue;
+        const pos = system.root.getWorldPosition(new THREE.Vector3());
+        const d = pos.distanceTo(playerWorld);
+        if (d <= 4.6 && d < bestDistance) { best = system; bestDistance = d; }
+      }
+      return best;
+    }
+
+    function getGasCollectorSlotData(slot) {
+      if (!slot || slot.typeId !== 'gas_collection_system') return null;
+      return { methaneLiters: sanitizeMethaneLiters(slot.methaneLiters) };
+    }
+
+    function getNearbyGasCollectionAmountDisplay(slot) {
+      return Math.round(sanitizeMethaneLiters(slot?.methaneLiters));
+    }
+
+    function tryPlaceGasCollectionSystem() {
+      if (uiState.equippedItemType !== 'gas_collection_system' || state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || uiState.shipInventoryOpen || uiState.fuelSynthOpen) return false;
+      if (findNearbyUpgradeableRocket()) {
+        showFlightPrompt('Move away from the spaceship to place the Gas Collection System.');
+        return true;
+      }
+      const idx = getSelectedHotbarInventoryIndex();
+      const slot = inventorySlots[idx];
+      if (!slot || slot.typeId !== 'gas_collection_system') return false;
+      const placement = getActivePlaceablePlacement();
+      const system = createGasCollectionSystemObject(placement.dir, Math.random() * Math.PI * 2, placement.ctx.id, multiplayerMode ? createMultiplayerPlaceableId('gas_collection') : null, slot.methaneLiters);
+      inventorySlots[idx] = null;
+      refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
+      if (multiplayerMode) broadcastMultiplayerPlaceablePlaced('gas_collection_system', system);
+      const prompt = document.getElementById('crystalPrompt');
+      prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">PLACED</span> Gas Collection System · ' + Math.round(system.methaneLiters) + ' / ' + METHANE_CONTAINER_CAPACITY + ' L Methane';
+      markMultiplayerWorldDirty('gas-collector-placed');
+      return true;
+    }
+
+    function tryPickupNearbyGasCollectionSystem() {
+      if (uiState.equippedItemType || state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen) return false;
+      const system = findNearbyGroundGasCollectionSystem();
+      if (!system) return false;
+      if (system.methaneLiters > 0.001) {
+        const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">RMB</span> Extract Methane Container first';
+        return true;
+      }
+      if (!addItemToInventory('gas_collection_system', 1, null, false, { methaneLiters: 0 })) {
+        const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden'); prompt.textContent = 'Inventory full — make room first';
+        return true;
+      }
+      if (system.root?.parent) system.root.parent.remove(system.root);
+      const idx = gasCollectionSystems.indexOf(system); if (idx >= 0) gasCollectionSystems.splice(idx, 1);
+      if (multiplayerMode && system.networkId) broadcastMultiplayerPlaceableRemoved('gas_collection_system', system.networkId);
+      const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">PICKED UP</span> Gas Collection System';
+      markMultiplayerWorldDirty('gas-collector-picked-up');
+      return true;
+    }
+
+    function tryExtractMethaneFromGroundGasCollectionSystem() {
+      if (uiState.equippedItemType || state.gameState !== 'playing' || state.paused) return false;
+      const system = findNearbyGroundGasCollectionSystem();
+      if (!system) return false;
+      if (system.methaneLiters <= 0.001) {
+        const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">EMPTY</span> No Methane collected';
+        return true;
+      }
+      if (!canAddItemToInventory('methane_container', 1)) {
+        const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden'); prompt.textContent = 'Inventory full — make room first';
+        return true;
+      }
+      const liters = sanitizeMethaneLiters(system.methaneLiters);
+      addItemToInventory('methane_container', 1, null, false, { methaneLiters: liters });
+      system.methaneLiters = 0;
+      if (multiplayerMode && system.networkId) broadcastMultiplayerPlaceableInteraction('gas_collection_system', system.networkId, 'methane_extract', { methaneLiters: 0 });
+      markMultiplayerWorldDirty('methane-extracted');
+      updateHotbarUI(); updateInventoryUI(); refreshEquippedItem();
+      const prompt = document.getElementById('crystalPrompt'); prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">+ ' + Math.round(liters) + ' L</span> Methane Container extracted';
+      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 700);
+      return true;
+    }
+
+    function tryInstallGasCollectionNearbyRocket() {
+      if (uiState.equippedItemType !== 'gas_collection_system' || state.gameState !== 'playing' || state.paused || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen) return false;
+      const rocket = findNearbyUpgradeableRocket();
+      if (!rocket || !rocket.pad) return false;
+      if (rocket.gasCollectionInstalled || rocket.pad.gasCollectionInstalled) { showFlightPrompt('Gas Collection System already installed.'); return true; }
+      const idx = getSelectedHotbarInventoryIndex();
+      const slot = inventorySlots[idx];
+      if (!slot || slot.typeId !== 'gas_collection_system') return false;
+      rocket.pad.gasCollectionInstalled = true;
+      rocket.pad.methaneLiters = sanitizeMethaneLiters(slot.methaneLiters);
+      rocket.gasCollectionInstalled = true;
+      rocket.methaneLiters = rocket.pad.methaneLiters;
+      if (rocket.gasCollectorVisual?.parent) rocket.gasCollectorVisual.parent.remove(rocket.gasCollectorVisual);
+      const visual = createGasCollectionSystemVisual(0.48);
+      visual.position.set(0.76, 1.05, 0.10);
+      visual.rotation.z = Math.PI / 2;
+      rocket.root.add(visual);
+      rocket.gasCollectorVisual = visual;
+      inventorySlots[idx] = null;
+      refreshEquippedItem(); updateHotbarUI(); updateInventoryUI();
+      if (multiplayerMode && rocket.networkId) broadcastMultiplayerPlaceableInteraction('rocket', rocket.networkId, 'upgrade', { engineType: rocket.engineType || rocket.pad.engineType || 'standard', fuel: rocket.pad.fuel || 0, warpDrive: !!rocket.pad.warpDrive, warpDriveType: rocket.pad.warpDriveType || null, gasCollectionInstalled: true, methaneLiters: rocket.methaneLiters });
+      showFlightPrompt('GAS COLLECTION SYSTEM INSTALLED · Syspo Methane collection enabled');
+      return true;
+    }
+
+    function ensureGasCollectionVisual(rocket) {
+      if (!rocket?.root) return;
+      if (rocket.gasCollectorVisual?.parent) rocket.gasCollectorVisual.parent.remove(rocket.gasCollectorVisual);
+      rocket.gasCollectorVisual = null;
+      if (!rocket.gasCollectionInstalled) return;
+      const visual = createGasCollectionSystemVisual(0.48);
+      visual.position.set(0.76, 1.05, 0.10);
+      visual.rotation.z = Math.PI / 2;
+      rocket.root.add(visual);
+      rocket.gasCollectorVisual = visual;
+    }
+
+    function tryExtractMethaneFromRocketIfUninstalled(rocket, pad) {
+      if (!rocket?.gasCollectionInstalled && !pad?.gasCollectionInstalled) return false;
+      const liters = sanitizeMethaneLiters(rocket?.methaneLiters ?? pad?.methaneLiters);
+      if (liters <= 0.001) return false;
+      if (!canAddItemToInventory('methane_container', 1)) return false;
+      addItemToInventory('methane_container', 1, null, false, { methaneLiters: liters });
+      rocket.methaneLiters = 0; pad.methaneLiters = 0;
+      return true;
+    }
+
+    function autoCollectSyspoMethane(delta) {
+      if (!flightRocket || !flightPad || !flightRocket.gasCollectionInstalled || !playerState.inRocket || playerState.rocketLanded) return;
+      const pos = flightRocket.root.getWorldPosition(new THREE.Vector3());
+      const center = syspoMesh.getWorldPosition(new THREE.Vector3());
+      const distance = pos.distanceTo(center);
+      if (distance <= SYSP0_RADIUS || distance > SYSP0_METHANE_COLLECTION_RADIUS) return;
+      const current = sanitizeMethaneLiters(flightRocket.methaneLiters ?? flightPad.methaneLiters);
+      if (current >= METHANE_CONTAINER_CAPACITY) return;
+      const next = Math.min(METHANE_CONTAINER_CAPACITY, current + METHANE_COLLECTION_RATE_LPS * Math.max(0, delta));
+      flightRocket.methaneLiters = next;
+      flightPad.methaneLiters = next;
+      if (Math.floor(next) !== Math.floor(current)) {
+        updateCrystalPrompt();
+        if (multiplayerMode && flightRocket.networkId) broadcastMultiplayerPlaceableInteraction('rocket', flightRocket.networkId, 'gas_collection', { methaneLiters: next });
+      }
     }
 
     function findNearbyContainer() {
@@ -6588,7 +11850,8 @@
       return {
         typeId: slot.typeId,
         count: Math.max(1, Math.min(item.maxStack, Math.floor(Number(slot.count) || 1))),
-        ...(item.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(item), Number.isFinite(slot.durability) ? Math.floor(slot.durability) : getToolMaxDurability(item))) } : {})
+        ...(item.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(item), Number.isFinite(slot.durability) ? Math.floor(slot.durability) : getToolMaxDurability(item))) } : {}),
+        ...((slot.typeId === 'gas_collection_system' || slot.typeId === 'methane_container') ? { methaneLiters: sanitizeMethaneLiters(slot.methaneLiters) } : {})
       };
     }
 
@@ -7079,7 +12342,7 @@
       group.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
       group.rotateY(yaw);
       ctx.parent.add(group);
-      const pad = { root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id, rocket: null, fuel: 0, engineType: 'standard', warpDrive: false, warpDriveType: null, networkId: networkId || '', ownerUserId: '' };
+      const pad = { root: group, direction: dir.clone(), yaw, surfaceBodyId: ctx.id, rocket: null, fuel: 0, engineType: 'standard', warpDrive: false, warpDriveType: null, gasCollectionInstalled: false, methaneLiters: 0, networkId: networkId || '', ownerUserId: '' };
       launchPads.push(pad);
       return pad;
     }
@@ -7089,7 +12352,15 @@
       const root = createMountedRocketVisual(0.92);
       root.position.set(0, 0.18, 0);
       pad.root.add(root);
-      pad.rocket = { root, pad, engineType: pad.engineType || 'standard', warpDrive: !!pad.warpDrive, warpDriveType: pad.warpDriveType || null, networkId: networkId || '', ownerUserId: pad.ownerUserId || '' };
+      pad.rocket = {
+        root, pad, fuel: Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(pad.fuel) || 0)),
+        engineType: pad.engineType || 'standard', warpDrive: !!pad.warpDrive,
+        warpDriveType: pad.warpDriveType || null, gasCollectionInstalled: !!pad.gasCollectionInstalled,
+        methaneLiters: sanitizeMethaneLiters(pad.methaneLiters), networkId: networkId || '',
+        ownerUserId: pad.ownerUserId || ''
+      };
+      syncRocketAndPadState(pad);
+      ensureGasCollectionVisual(pad.rocket);
       ensureRocketEngineVisual(pad.rocket);
       return true;
     }
@@ -7193,6 +12464,8 @@
           toolVisual = createHoeVisual(0.50, headType);
         } else if (item.kind === 'drill') {
           toolVisual = createDrillVisual(0.50);
+        } else if (item.kind === 'hammer') {
+          toolVisual = createHammerVisual(0.50);
         }
         if (toolVisual) { toolVisual.rotation.z = 0.35; group.add(toolVisual); }
       } else if (typeId === 'watering_can') {
@@ -7239,6 +12512,11 @@
         group.add(createLaunchPadVisual(0.55));
       } else if (itemById[typeId]?.kind === 'blueprint') {
         group.add(createBlueprintVisual(0.56));
+      } else if (typeId === 'base_core') {
+        fpModel = createBaseCoreVisual(0.60);
+        tpModel = createBaseCoreVisual(0.44);
+        fpModel.position.y -= 0.05;
+        tpModel.position.y -= 0.02;
       } else if (typeId === 'container') {
         fpModel = createContainerVisual(0.78);
         tpModel = createContainerVisual(0.54);
@@ -7249,6 +12527,14 @@
         tpModel.rotation.x = -0.12;
       } else if (typeId === 'jerrycan') {
         group.add(createJerrycanVisual(0.72));
+      } else if (typeId === 'advanced_warp_fuel_jerrycan') {
+        const g = createJerrycanVisual(0.72);
+        g.traverse(node => { if (node.isMesh && node.material?.color) { node.material = node.material.clone(); node.material.color.set(0xb47cff); node.material.emissive?.set(0x5f2ca0); node.material.emissiveIntensity = 0.7; } });
+        group.add(g);
+      } else if (typeId === 'gas_collection_system') {
+        group.add(createGasCollectionSystemVisual(0.56));
+      } else if (typeId === 'methane_container') {
+        const g = createGasCollectionSystemVisual(0.55); g.position.y = 0.02; group.add(g);
       } else if (item.kind === 'crystal' && crystalById[typeId]) {
         group.add(createCrystalVisual(typeId, false, 0.72));
       } else {
@@ -7762,6 +13048,7 @@
     const ivisLandmarkById = Object.fromEntries(IVIS_LANDMARK_DEFS.map(def => [def.id, def]));
     const landmarkById = Object.fromEntries(ALL_LANDMARK_DEFS.map(def => [def.id, def]));
     const journalDiscoveredLandmarks = new Set();
+    const journalResearchedLandmarks = new Set();
     let landmarkDiscoveryPromptTimer = null;
 
     function deterministicUnit(seed, salt = 0) {
@@ -8542,7 +13829,6 @@
       journalDiscoveredLandmarks.add(landmark.id);
       landmark.discovered = true;
       showLandmarkDiscovery(landmarkById[landmark.id] || landmark);
-      if (typeof recordConciergeQuestLandmarkDiscovery === 'function') recordConciergeQuestLandmarkDiscovery(landmark.id);
       persistLocalBackup();
       return true;
     }
@@ -8759,6 +14045,14 @@
     const STONE_TOOL_MAX_DURABILITY = 40;
     const IRON_TOOL_MAX_DURABILITY = 60;
     const ITEM_TYPES = [
+      // Day 22 furniture is intentionally near the top of the Freeplay catalogue so it is
+      // available on the first page of the item browser.
+      { id: 'furniture_bed', name: 'Bed', kind: 'furniture_bed', maxStack: 1 },
+      { id: 'furniture_wardrobe', name: 'Wardrobe', kind: 'furniture_wardrobe', maxStack: 1 },
+      { id: 'furniture_desk', name: 'Desk', kind: 'furniture_desk', maxStack: 1 },
+      { id: 'furniture_chair', name: 'Chair', kind: 'furniture_chair', maxStack: 1 },
+      { id: 'furniture_light', name: 'Floor Light', kind: 'furniture_light', maxStack: 1 },
+      { id: 'hammer', name: 'Hammer', kind: 'hammer', maxStack: 1, tool: true },
       ...CRYSTAL_TYPES.map(t => ({ id: t.id, name: t.name, kind: 'crystal', color: t.color, css: t.css, maxStack: 10 })),
       { id: 'axe', name: 'Starter Axe', kind: 'axe', maxStack: 1, tool: true },
       { id: 'wooden_axe', name: 'Wooden Axe', kind: 'axe', maxStack: 1, tool: true },
@@ -8821,7 +14115,15 @@
       { id: 'rocket', name: 'Rocket', kind: 'rocket', maxStack: 1 },
       { id: 'launch_pad', name: 'Launch Pad', kind: 'launch_pad', maxStack: 1 },
       { id: 'jerrycan', name: 'Jerrycan (Full)', kind: 'jerrycan', maxStack: 1 },
-      { id: 'journal', name: 'Journal', kind: 'journal', maxStack: 1 }
+      { id: 'journal', name: 'Journal', kind: 'journal', maxStack: 1 },
+      { id: 'base_core', name: 'Base Core', kind: 'base_core', maxStack: 1 },
+      { id: 'sand', name: 'Sand', kind: 'sand', css: '#d7bf8c', maxStack: 10 },
+      { id: 'glass', name: 'Glass', kind: 'glass', css: '#9de8f5', maxStack: 10 },
+      { id: 'electronics', name: 'Electronics', kind: 'electronics', css: '#66e6ff', maxStack: 10 },
+      { id: 'advanced_electronics', name: 'Advanced Electronics', kind: 'advanced_electronics', css: '#9b83ff', maxStack: 10 },
+      { id: 'gas_collection_system', name: 'Gas Collection System', kind: 'gas_collection_system', maxStack: 1 },
+      { id: 'methane_container', name: 'Methane Container', kind: 'methane_container', maxStack: 1 },
+      { id: 'advanced_warp_fuel_jerrycan', name: 'Advanced Warp Fuel Jerrycan', kind: 'advanced_warp_fuel_jerrycan', maxStack: 1 }
     ];
     const itemById = Object.fromEntries(ITEM_TYPES.map(t => [t.id, t]));
 
@@ -8852,6 +14154,7 @@
       stone_scythe: { description: 'A sturdier scythe with a stone head.', how: 'Craft it using stone.', used: 'Cuts grass with increased durability.' },
       iron_scythe: { description: 'A durable iron-bladed scythe.', how: 'Craft it after obtaining iron ingots.', used: 'Cuts grass efficiently and lasts longer.' },
       copper_wire: { description: 'Several thin copper wires bundled together.', how: 'Craft wires from copper ingots.', used: 'A key component of Engine Mark 2.' },
+      advanced_electronics: { description: 'A compact high-density electronic assembly with layered circuitry and signal shielding.', how: 'Craft it at a Workshop Module workbench from 2 Electronics, 2 Copper Wires, and 1 Iron Plate.', used: 'Required to construct advanced facilities such as the Research Module.' },
       moon_quartz: { description: 'A pale mineral naturally found on the Moon.', how: 'Collect Moon Quartz from its lunar deposits.', used: 'Can be sold to the merchant and is required for Engine Mark 2.' },
       upgraded_engine: { description: 'Engine Mark 2 is an improved rocket engine with a larger fuel reserve.', how: 'Craft it from a Rocket Engine, Moon Quartz, and Copper Wires.', used: 'Install it into a rocket to increase fuel capacity to 200%.' },
       engine_mark_3: { description: 'A high-performance rocket engine for supersonic flight.', how: 'Craft it from Engine Mark 2, Titanium Ingots, Rainbow Opals, and Tungsten Ingots.', used: 'Install it into a rocket to unlock Supersonic speed at 200u/s, 1% fuel use per second, and a 300% fuel capacity.' },
@@ -8883,6 +14186,10 @@
       raw_beobaka: { description: 'Fresh meat from the blue alien Beobaka.', how: 'Harvest a Beobaka with an axe.', used: 'Eat it for 10 Hunger, or hold it near a campfire and press E to cook it.' },
       cooked_beobaka: { description: 'Cooked Beobaka meat with a smoky campfire aroma.', how: 'Cook Raw Beobaka over a campfire.', used: 'Hold it and press E to eat it for 30 Hunger and 35 Stamina.' },
       container: { description: 'A sturdy portable container with twenty independent item slots.', how: 'Craft it from six Iron Plates.', used: 'Place it on any landable celestial body and open it with Right Click to store items.' },
+      base_core: { description: 'A compact planetary construction command unit that anchors a local base zone and stores its owner and permissions.', how: 'Craft it from 6 Iron Plates, 4 Copper Ingots, and 2 Iron Ingots.', used: 'Place it on a planet to establish a 40m local construction zone and manage base ownership.' },
+      sand: { description: 'Loose mineral grains gathered from sandy shorelines and Cordelia’s surface.', how: 'Collect it near rivers and lakes, or gather it directly on Cordelia.', used: 'Smelt Sand in a furnace to make Glass.' },
+      glass: { description: 'Clear, heat-formed glass for windows and future habitat construction.', how: 'Smelt 1 Sand in a furnace using 1 Plank as fuel.', used: 'Used in Habitat Rooms and other base construction.' },
+      electronics: { description: 'A compact bundle of conductive components and a reinforced iron plate housing.', how: 'Craft it from 2 Copper Ingots and 1 Iron Plate.', used: 'Used in Habitat Rooms and advanced base technology.' },
       woven_grass_fiber: { description: 'Grass fiber woven into a stronger material.', how: 'Craft it from Grass Fiber.', used: 'Used in more advanced crafting and utility items.' },
       sleeping_bag: { description: 'A compact bedroll made from woven plant fibers.', how: 'Craft it from Woven Grass Fiber and Grass Fiber.', used: 'Place it on Ivis, Aurora, or Cordelia and right-click it at night to sleep for three in-game minutes.' },
       backpack: { description: 'A wearable storage pack that gives you more room for supplies.', how: 'Craft or obtain a Backpack when its recipe becomes available.', used: 'Provides extra storage space for your adventure.' },
@@ -8900,6 +14207,7 @@
       titanium_plate: { description: 'A strong lightweight plate made from refined titanium.', how: 'Craft 2 Titanium Plates from 1 Titanium Ingot.', used: 'Used to craft the Titanium Wrench.' },
       iron_wrench: { description: 'A reusable tool for installing standard rocket components.', how: 'Craft it from 1 Iron Ingot and 1 Iron Plate.', used: 'Required to install the standard Warp Drive and Engine Mark 2.' },
       titanium_wrench: { description: 'A reinforced wrench for advanced rocket technology.', how: 'Craft it from 1 Titanium Ingot and 1 Titanium Plate.', used: 'Required to install Warp Drive Mark 2 and Engine Mark 3.' },
+      hammer: { description: 'A sturdy construction hammer used to dismantle placed furniture.', how: 'Craft it from 2 Iron Ingots and 1 Stick.', used: 'Equip it and left-click placed furniture to remove the piece and return it to your inventory.' },
       launch_pad: { description: 'A flat platform designed to hold a rocket during launch.', how: 'Craft it from Iron Ingots.', used: 'Provides the launch and landing point for a rocket.' },
       jerrycan: { description: 'A full can of rocket fuel for refilling a spacecraft.', how: 'Order it from the Galactic Concierge by telephone.', used: 'Adds fuel to a rocket; each can provides 100% of a tank refill.' },
       rocket_engine_blueprint: { description: 'A permanent construction blueprint for the standard rocket engine.', how: 'Order it from the Galactic Concierge by telephone.', used: 'Unlocks the Rocket Engine recipe in the crafting menu. The blueprint is never consumed.' },
@@ -9014,6 +14322,7 @@
     }
     function journalLandmarkCard(landmarkId) {
       const info = JOURNAL_LANDMARK_INFO[landmarkId];
+      const researched = journalResearchedLandmarks.has(landmarkId);
       if (!info) return null;
       const card = document.createElement('article'); card.className = 'journalEntry';
       const icon = document.createElement('div'); icon.className = 'journalBodyIcon'; icon.textContent = info.icon;
@@ -9022,7 +14331,10 @@
       const rarity = document.createElement('p'); rarity.innerHTML = '<strong>RARITY:</strong> ' + info.rarity;
       const desc = document.createElement('p'); desc.textContent = info.description;
       const how = document.createElement('p'); how.innerHTML = '<strong>DISCOVERY:</strong> ' + info.how;
-      body.append(title, rarity, desc, how); card.append(icon, body); return card;
+      const research = document.createElement('p');
+      research.className = 'journalResearchState';
+      research.innerHTML = researched ? '<strong>RESEARCH COMPLETE:</strong> ' + getLandmarkResearchNote(landmarkId) : '<strong>RESEARCH:</strong> Unresearched · visit a Research Station to learn more.';
+      body.append(title, rarity, desc, how, research); card.append(icon, body); return card;
     }
     function journalPersonCard(personId) {
       const info = JOURNAL_PERSON_INFO[personId];
@@ -10079,24 +15391,33 @@
       if(!cosmeticColorGrid||!cosmeticHatGrid)return;
       cosmeticGemAmount.textContent=String(accountGems);
       cosmeticColorGrid.replaceChildren(); cosmeticHatGrid.replaceChildren();
-      for(const color of COSMETIC_COLORS){
-        const b=document.createElement('button'); b.type='button'; b.className='cosmeticColorCard'+(accountCosmetics.ownedColors.includes(color.id)?' owned':'')+(accountCosmetics.equippedColor===color.id?' equipped':'');
+      const colors = cosmeticWardrobeMode ? COSMETIC_COLORS.filter(color => accountCosmetics.ownedColors.includes(color.id)) : COSMETIC_COLORS;
+      for(const color of colors){
+        const owned=accountCosmetics.ownedColors.includes(color.id);
+        const b=document.createElement('button'); b.type='button'; b.className='cosmeticColorCard'+(owned?' owned':'')+(accountCosmetics.equippedColor===color.id?' equipped':'');
         const sw=document.createElement('span'); sw.className='cosmeticColorSwatch'+(color.rainbow?' cosmeticRainbowSwatch':''); if(!color.rainbow) sw.style.background='#'+color.hex.toString(16).padStart(6,'0');
         const title=document.createElement('span'); title.className='cosmeticCardTitle'; title.textContent=color.name;
-        const sub=document.createElement('span'); sub.className='cosmeticCardSub'; sub.textContent=accountCosmetics.ownedColors.includes(color.id)?(accountCosmetics.equippedColor===color.id?'EQUIPPED':'Click to equip'):'Buy this color';
-        const price=document.createElement('span'); price.className='cosmeticPrice'; price.textContent=color.free?'FREE':'◆ '+(color.cost||0);
-        b.append(sw,title,price,sub); b.onclick=()=>purchaseOrEquipColor(color.id); cosmeticColorGrid.appendChild(b);
+        const sub=document.createElement('span'); sub.className='cosmeticCardSub'; sub.textContent=accountCosmetics.equippedColor===color.id?'EQUIPPED':'Click to equip';
+        const price=document.createElement('span'); price.className='cosmeticPrice'; price.textContent=cosmeticWardrobeMode?'OWNED':(color.free?'FREE':'◆ '+(color.cost||0));
+        b.append(sw,title,price,sub); b.onclick=()=>cosmeticWardrobeMode?equipCosmeticColor(color.id):purchaseOrEquipColor(color.id); cosmeticColorGrid.appendChild(b);
       }
-      for(const hat of COSMETIC_HATS){
-        if(hat.colored){
-          for(const color of COSMETIC_COLORS){
-            const id=cosmeticHatKey(hat.id,color.id); const owned=accountCosmetics.ownedHats.includes(id); const equipped=accountCosmetics.equippedHat===id; const b=makeCosmeticHatCard(hat,color,id,owned,equipped); cosmeticHatGrid.appendChild(b);
+      if(cosmeticWardrobeMode && !colors.length){ const empty=document.createElement('div'); empty.className='cosmeticCardSub'; empty.textContent='No owned shirt colors yet.'; cosmeticColorGrid.appendChild(empty); }
+      if(cosmeticWardrobeMode){
+        for(const ownedHatId of accountCosmetics.ownedHats){
+          const [baseId,colorId]=String(ownedHatId).split(':'); const hat=cosmeticHatById[baseId]; if(!hat) continue;
+          const color=hat.fixedColor?cosmeticColorById[hat.fixedColor]:(colorId?cosmeticColorById[colorId]:null);
+          cosmeticHatGrid.appendChild(makeCosmeticHatCard(hat,color,ownedHatId,true,accountCosmetics.equippedHat===ownedHatId));
+        }
+        if(!accountCosmetics.ownedHats.length){ const empty=document.createElement('div'); empty.className='cosmeticCardSub'; empty.textContent='No owned hats yet.'; cosmeticHatGrid.appendChild(empty); }
+      } else {
+        for(const hat of COSMETIC_HATS){
+          if(hat.colored){
+            for(const color of COSMETIC_COLORS){ const id=cosmeticHatKey(hat.id,color.id); const owned=accountCosmetics.ownedHats.includes(id); const equipped=accountCosmetics.equippedHat===id; cosmeticHatGrid.appendChild(makeCosmeticHatCard(hat,color,id,owned,equipped)); }
+          } else if(hat.fixedColor){
+            const color=cosmeticColorById[hat.fixedColor]; const id=hat.id; const owned=accountCosmetics.ownedHats.includes(id); const equipped=accountCosmetics.equippedHat===id; cosmeticHatGrid.appendChild(makeCosmeticHatCard(hat,color,id,owned,equipped));
+          } else {
+            const id=hat.id; const owned=accountCosmetics.ownedHats.includes(id); const equipped=accountCosmetics.equippedHat===id; cosmeticHatGrid.appendChild(makeCosmeticHatCard(hat,null,id,owned,equipped));
           }
-        } else if(hat.fixedColor) {
-          const color=cosmeticColorById[hat.fixedColor];
-          const id=hat.id; const owned=accountCosmetics.ownedHats.includes(id); const equipped=accountCosmetics.equippedHat===id; cosmeticHatGrid.appendChild(makeCosmeticHatCard(hat,color,id,owned,equipped));
-        } else {
-          const id=hat.id; const owned=accountCosmetics.ownedHats.includes(id); const equipped=accountCosmetics.equippedHat===id; cosmeticHatGrid.appendChild(makeCosmeticHatCard(hat,null,id,owned,equipped));
         }
       }
     }
@@ -10123,13 +15444,36 @@
     }
     function equipCosmeticHat(hatId){ accountCosmetics.equippedHat = accountCosmetics.equippedHat===hatId ? null : hatId; applyPlayerCosmetics(); persistAchievementState(); updateHomeGemsAndCosmeticsUI(); }
     function openCosmeticShop(){
+      cosmeticWardrobeMode=false;
       chooseHelnaLine();
       if(!currentAccountUser){ openAccount(); return true; }
       cosmeticShopOpen=true; state.paused=true; if(document.pointerLockElement===canvas)document.exitPointerLock();
-      cosmeticOverlay.classList.remove('hidden'); cosmeticOverlay.setAttribute('aria-hidden','false'); ensureCosmeticPreview(); renderCosmeticShop(); updateCosmeticPreview();
+      cosmeticOverlay.classList.remove('hidden'); cosmeticOverlay.setAttribute('aria-hidden','false');
+      document.getElementById('cosmeticShopView')?.classList.remove('wardrobeMode');
+      document.querySelector('#cosmeticPanel .cosmeticShopTitle')?.replaceChildren(document.createTextNode('SHOP'));
+      document.getElementById('helnaNpcBubble')?.classList.remove('hidden');
+      document.getElementById('cosmeticGemBalance')?.classList.remove('hidden');
+      ensureCosmeticPreview(); renderCosmeticShop(); updateCosmeticPreview();
       return true;
     }
-    function closeCosmeticShop(){ cosmeticShopOpen=false; cosmeticOverlay.classList.add('hidden'); cosmeticOverlay.setAttribute('aria-hidden','true'); if(state.gameState==='playing'){ if(uiState.telephoneOpen){ state.paused=true; if(document.pointerLockElement===canvas)document.exitPointerLock(); } else { state.paused=false; attemptPointerLock(); } } }
+    function openWardrobeCustomization(){
+      if(!currentAccountUser){ openAccount(); return true; }
+      cosmeticWardrobeMode=true; cosmeticShopOpen=true; state.paused=true;
+      if(document.pointerLockElement===canvas)document.exitPointerLock();
+      cosmeticOverlay.classList.remove('hidden'); cosmeticOverlay.setAttribute('aria-hidden','false');
+      document.getElementById('cosmeticShopView')?.classList.add('wardrobeMode');
+      document.querySelector('#cosmeticPanel .cosmeticShopTitle')?.replaceChildren(document.createTextNode('WARDROBE'));
+      document.getElementById('helnaNpcBubble')?.classList.add('hidden');
+      document.getElementById('cosmeticGemBalance')?.classList.add('hidden');
+      ensureCosmeticPreview(); renderCosmeticShop(); updateCosmeticPreview();
+      return true;
+    }
+    function closeCosmeticShop(){
+      cosmeticShopOpen=false; cosmeticWardrobeMode=false;
+      cosmeticOverlay.classList.add('hidden'); cosmeticOverlay.setAttribute('aria-hidden','true');
+      document.getElementById('cosmeticShopView')?.classList.remove('wardrobeMode');
+      if(state.gameState==='playing'){ if(uiState.telephoneOpen){ state.paused=true; if(document.pointerLockElement===canvas)document.exitPointerLock(); } else { state.paused=false; attemptPointerLock(); } }
+    }
     const findNearbyHatMerchant=()=>{
       const merchant=hatStall?.userData?.merchantNPC; if(!merchant||!hatStall||!hatStall.visible)return null;
       const world=new THREE.Vector3(); merchant.getWorldPosition(world); const local=planetSystem.worldToLocal(world); return player.position.distanceTo(local)<=7.5?merchant:null;
@@ -11137,7 +16481,9 @@
     const thirdPersonCameraPlayerLocalOffset = new THREE.Vector3();
     const thirdPersonCameraPitchQuat = new THREE.Quaternion();
     const thirdPersonCameraYawQuat = new THREE.Quaternion();
-    const spawnDir = new THREE.Vector3(0, 1, 0);
+    // Ivis home/spawn: deliberately away from the pole so the full day/night cycle is
+    // visible from the starting area. This direction is safely on the daytime side at startup.
+    const spawnDir = IVIS_HOME_DIR.clone();
     player.position.copy(spawnDir).multiplyScalar(PLANET_RADIUS + heightAt(spawnDir) + EYE_HEIGHT);
     planetSystem.add(player);
 
@@ -11245,9 +16591,6 @@
     let conciergeActiveQuestIds = [];
     let conciergeQuestLastWorldKey = '';
     let conciergeQuestUiTimer = 0;
-    // Every fresh game starts with three immediately available requests. Once the
-    // initial batch has been shown, the normal 30-minute rotation takes over.
-    let conciergeQuestInitialOffersReady = false;
 
     function conciergeQuestWorldKey() {
       return String((typeof MULTIPLAYER_WORLD_ID !== 'undefined' && MULTIPLAYER_WORLD_ID) || 'ivis-sector');
@@ -11281,7 +16624,7 @@
 
     function generateConciergeQuestOffers(rotationKey, worldKey) {
       const rng = conciergeQuestRng(conciergeQuestHash(worldKey + '|' + rotationKey));
-      const pool = CONCIERGE_QUEST_TEMPLATES.filter(q => !(q.special && conciergeCompletedSpecialQuestIds.has(q.id))).map(q => q.id);
+      const pool = CONCIERGE_QUEST_TEMPLATES.map(q => q.id);
       for (let i = pool.length - 1; i > 0; i--) {
         const j = Math.floor(rng() * (i + 1));
         [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -11293,25 +16636,15 @@
       const key = getConciergeQuestRotationKey();
       const worldKey = conciergeQuestWorldKey();
       const worldChanged = conciergeQuestLastWorldKey !== worldKey;
-      if (!conciergeQuestInitialOffersReady || !conciergeQuestOfferedIds.length) {
-        // Guarantee a full starter set immediately instead of making a fresh game
-        // wait for any rotation boundary. Keep it deterministic for the shared world.
-        const starterPool = CONCIERGE_QUEST_TEMPLATES
-          .filter(q => !(q.special && conciergeCompletedSpecialQuestIds.has(q.id)))
-          .slice(0, CONCIERGE_QUEST_OFFER_COUNT)
-          .map(q => q.id);
-        conciergeQuestLastWorldKey = worldKey;
-        conciergeQuestRotationKey = key;
-        conciergeQuestOfferedIds = starterPool;
-        conciergeQuestInitialOffersReady = true;
-      } else {
-        if (!force && !worldChanged && conciergeQuestRotationKey === key && conciergeQuestOfferedIds.length) return false;
-        conciergeQuestLastWorldKey = worldKey;
-        conciergeQuestRotationKey = key;
-        conciergeQuestOfferedIds = generateConciergeQuestOffers(key, worldKey);
-      }
-      // Rotation/state updates must not recursively re-render the quest board.
-      // The caller that owns the visible quest screen is responsible for rendering.
+      if (!force && !worldChanged && conciergeQuestRotationKey === key && conciergeQuestOfferedIds.length) return false;
+      conciergeQuestLastWorldKey = worldKey;
+      conciergeQuestRotationKey = key;
+      conciergeQuestOfferedIds = generateConciergeQuestOffers(key, worldKey);
+      // Rotation/state updates should never force the quest panel open while the
+      // Concierge is still speaking. The panel is rendered only when explicitly
+      // entered through the quest dialogue node.
+      const questPanel = document.getElementById('telephoneConciergeQuestPanel');
+      if (questPanel && !questPanel.classList.contains('hidden')) renderConciergeQuestMenu();
       updateActiveQuestTracker();
       return true;
     }
@@ -11328,426 +16661,8 @@
       return minutes + ':' + String(seconds).padStart(2, '0');
     }
 
-    const CONCIERGE_QUEST_CONFIG = Object.freeze({
-      sanctuary_survey: { kind:'landmark', target:'ivis_beobaka_sanctuary' },
-      ancient_forest_survey: { kind:'landmark', target:'ivis_ancient_forest' },
-      explorer_camp_search: { kind:'landmark', target:'ivis_abandoned_explorer_camp' },
-      probe_recovery: { kind:'landmark', target:'cordelia_crashed_probe' },
-      crystal_basin_survey: { kind:'landmark', target:'cordelia_desert_crystal_basin' },
-      buried_history: { kind:'landmark', target:'cordelia_buried_ruins' },
-      glowfish_census: { kind:'landmark', target:'aurora_giant_glowfish_lake' },
-      underwater_ruins: { kind:'landmark', target:'aurora_underwater_ruins' },
-      research_station_check: { kind:'landmark', target:'aurora_abandoned_research_station' },
-      iron_shipment: { kind:'item', target:'iron_ore', amount:20 },
-      iron_plate_order: { kind:'craft', target:'iron_plate', amount:10 },
-      copper_collection: { kind:'item', target:'copper_ore', amount:15 },
-      rare_mineral_request: { kind:'rare_mineral', amount:5 },
-      rainbow_opal_request: { kind:'item', target:'rainbow_opal', amount:3 },
-      syspo_methane_survey: { kind:'syspo_methane', amount:5 },
-      fresh_harvest: { kind:'crop_harvest', amount:15 },
-      fruit_delivery: { kind:'edible_fruit', amount:10 },
-      farmers_variety_box: { kind:'crop_variety', amount:5 },
-      freshly_grown: { kind:'self_crop_harvest', amount:5 },
-      beobaka_observation: { kind:'wildlife', bodyId:'ivis', amount:3, wildlifeType:'bunny' },
-      wildlife_survey: { kind:'wildlife_dynamic', amount:3 },
-      rare_wildlife_report: { kind:'landmark', target:'ivis_beobaka_sanctuary' },
-      cordelia_expedition: { kind:'visit', target:'cordelia' },
-      aurora_expedition: { kind:'visit', target:'aurora' },
-      system_explorer: { kind:'roundtrip', amount:1 },
-      unusual_signal: { kind:'investigate_landmark', target:'aurora_underwater_ruins' },
-      missing_supplies: { kind:'investigate_landmark', target:'ivis_abandoned_explorer_camp' },
-      lost_survey_data: { kind:'investigate_landmark', target:'cordelia_buried_ruins' },
-      unidentified_object: { kind:'investigate_landmark', target:'cordelia_crashed_probe' },
-      first_contact: { kind:'first_contact' },
-      lost_expedition: { kind:'lost_expedition', target:'ivis_abandoned_explorer_camp' },
-      silent_probe: { kind:'investigate_landmark', target:'cordelia_crashed_probe' }
-    });
-    let conciergeQuestStates = {};
-    let conciergeCompletedSpecialQuestIds = new Set();
-    let conciergeQuestPersistTimer = 0;
-    let conciergeQuestWildlifeTimer = 0;
-    let syspoMethaneQuestSampleAccumulator = 0;
-
-    function getConciergeQuestConfig(id) {
-      return CONCIERGE_QUEST_CONFIG[id] || null;
-    }
-
-    function getConciergeQuestCurrentUserKey() {
-      return String(currentAccountUser?.id || 'local-player');
-    }
-
-    function chooseConciergeQuestWildlifeBody(questId) {
-      const bodies = ['ivis', 'cordelia', 'aurora'];
-      const rotation = getConciergeQuestRotationKey();
-      return bodies[conciergeQuestHash(conciergeQuestWorldKey() + '|' + rotation + '|' + questId) % bodies.length];
-    }
-
-    function createConciergeQuestState(id) {
-      const quest = getConciergeQuestById(id);
-      const cfg = getConciergeQuestConfig(id) || {};
-      const origin = String(playerState.currentPlanetId || (typeof getPlanetMapBodyId === 'function' ? getPlanetMapBodyId() : 'ivis') || 'ivis');
-      const state = {
-        progress: 0,
-        stage: 0,
-        acceptedAtMs: Date.now(),
-        originBodyId: origin,
-        targetBodyId: cfg.bodyId || (cfg.kind === 'wildlife_dynamic' ? chooseConciergeQuestWildlifeBody(id) : (cfg.target && landmarkById[cfg.target]?.surfaceBodyId) || null),
-        target: cfg.target || null,
-        observedIds: [],
-        harvestedCropTypes: [],
-        investigatedAtMs: 0,
-        stageReadyAtMs: 0
-      };
-      if (cfg.kind === 'roundtrip') {
-        state.originBodyId = origin;
-        state.targetBodyId = null;
-      }
-      if (quest?.special && id === 'first_contact') state.stage = 0;
-      return state;
-    }
-
-    function sanitizeConciergeQuestState(id, raw) {
-      const base = createConciergeQuestState(id);
-      const cfg = getConciergeQuestConfig(id) || {};
-      const out = { ...base, ...(raw && typeof raw === 'object' ? raw : {}) };
-      out.progress = Math.max(0, Math.floor(Number(out.progress) || 0));
-      out.stage = Math.max(0, Math.floor(Number(out.stage) || 0));
-      out.acceptedAtMs = Math.max(0, Number(out.acceptedAtMs) || Date.now());
-      out.originBodyId = String(out.originBodyId || base.originBodyId || 'ivis');
-      out.targetBodyId = String(out.targetBodyId || base.targetBodyId || '');
-      out.target = String(out.target || cfg.target || '');
-      out.observedIds = Array.isArray(out.observedIds) ? [...new Set(out.observedIds.map(String))].slice(0, 64) : [];
-      out.harvestedCropTypes = Array.isArray(out.harvestedCropTypes) ? [...new Set(out.harvestedCropTypes.filter(id => cropById?.[id]))].slice(0, CROP_TYPES.length) : [];
-      out.investigatedAtMs = Math.max(0, Number(out.investigatedAtMs) || 0);
-      out.stageReadyAtMs = Math.max(0, Number(out.stageReadyAtMs) || 0);
-      if (cfg.kind === 'wildlife_dynamic' && !out.targetBodyId) out.targetBodyId = chooseConciergeQuestWildlifeBody(id);
-      return out;
-    }
-
-    function getConciergeQuestState(id) {
-      return conciergeQuestStates[id] || null;
-    }
-
-    // True when a quest is currently in the player's active quest slots.
-    // The quest board, acceptance flow, and completion checks all use this
-    // shared helper so the UI can render reliably.
     function isConciergeQuestActive(id) {
-      return conciergeActiveQuestIds.includes(String(id));
-    }
-
-    function setConciergeQuestState(id, next) {
-      conciergeQuestStates[id] = sanitizeConciergeQuestState(id, next);
-      return conciergeQuestStates[id];
-    }
-
-    function serializeConciergeQuestState() {
-      return {
-        activeQuestIds: [...conciergeActiveQuestIds],
-        completedSpecialQuestIds: [...conciergeCompletedSpecialQuestIds],
-        questStates: Object.fromEntries(conciergeActiveQuestIds.map(id => [id, sanitizeConciergeQuestState(id, conciergeQuestStates[id] || null)])),
-        initialOffersReady: !!conciergeQuestInitialOffersReady
-      };
-    }
-
-    function persistConciergeQuestState(options = {}) {
-      persistLocalBackup();
-      if (options.secure === false) return;
-      if (conciergeQuestPersistTimer) clearTimeout(conciergeQuestPersistTimer);
-      if (multiplayerMode && secureAccountAuthorityEnabled && pocketSupabase && currentAccountUser) {
-        conciergeQuestPersistTimer = setTimeout(() => {
-          conciergeQuestPersistTimer = 0;
-          void saveMultiplayerCurrentState({ showToast:false });
-        }, 900);
-      }
-    }
-
-    function showConciergeQuestCompletion(quest, reward) {
-      const prompt = document.getElementById('crystalPrompt');
-      if (!prompt) return;
-      prompt.classList.remove('hidden');
-      prompt.innerHTML = '<span class="promptKey">QUEST COMPLETE</span> ' + quest.title + ' · +¢' + reward;
-      setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 3000);
-    }
-
-    function completeConciergeQuest(id, options = {}) {
-      const quest = getConciergeQuestById(id);
-      if (!quest || !isConciergeQuestActive(id)) return false;
-      conciergeActiveQuestIds = conciergeActiveQuestIds.filter(activeId => activeId !== id);
-      delete conciergeQuestStates[id];
-      if (quest.special) conciergeCompletedSpecialQuestIds.add(id);
-      const reward = Math.max(0, Math.floor(Number(quest.reward) || 0));
-      economyState.credits = Math.max(0, Math.floor(Number(economyState.credits) || 0) + reward);
-      if (currentAccountUser && reward > 0) {
-        accountStatistics.totalCreditsEarned += reward;
-        renderAccountStatistics();
-        persistAchievementState();
-      }
-      updateCreditsUI();
-      updateActiveQuestTracker();
-      const questPanel = document.getElementById('telephoneConciergeQuestPanel');
-      if (telephoneDialogueContact === 'concierge' && questPanel && !questPanel.classList.contains('hidden')) renderConciergeQuestMenu();
-      if (options.showNotice !== false && state.gameState === 'playing') showConciergeQuestCompletion(quest, reward);
-      persistConciergeQuestState();
-      return true;
-    }
-
-    function getConciergeQuestTargetAmount(id) {
-      const cfg = getConciergeQuestConfig(id) || {};
-      return Math.max(0, Math.floor(Number(cfg.amount) || 0));
-    }
-
-    function getConciergeQuestProgressText(id, fallbackObjective = '') {
-      const quest = getConciergeQuestById(id);
-      const cfg = getConciergeQuestConfig(id) || {};
-      const state = getConciergeQuestState(id);
-      if (!quest || !state) return fallbackObjective;
-      const amount = getConciergeQuestTargetAmount(id);
-      switch (cfg.kind) {
-        case 'landmark': return journalDiscoveredLandmarks.has(cfg.target) ? 'DISCOVERED' : '0/1 discovered';
-        case 'item': return Math.min(amount, state.progress) + '/' + amount + ' collected';
-        case 'craft': return Math.min(amount, state.progress) + '/' + amount + ' crafted';
-        case 'rare_mineral': return Math.min(amount, state.progress) + '/' + amount + ' collected';
-        case 'syspo_methane': return Math.min(amount, state.progress) + '/' + amount + ' samples';
-        case 'crop_harvest': return Math.min(amount, state.progress) + '/' + amount + ' harvested';
-        case 'edible_fruit': return Math.min(amount, state.progress) + '/' + amount + ' fruits';
-        case 'crop_variety': return Math.min(amount, state.harvestedCropTypes.length) + '/' + amount + ' crop types';
-        case 'self_crop_harvest': return Math.min(amount, state.progress) + '/' + amount + ' self-grown crops';
-        case 'wildlife':
-        case 'wildlife_dynamic': return Math.min(amount, state.observedIds.length) + '/' + amount + (cfg.kind === 'wildlife_dynamic' ? ' observed on ' + (JOURNAL_BODY_INFO?.[state.targetBodyId]?.name || state.targetBodyId || 'requested planet') : ' observed');
-        case 'visit': return state.progress >= 1 ? 'ARRIVED' : '0/1 visit';
-        case 'roundtrip': return state.stage >= 1 ? '1/2 travel legs complete' : '0/2 travel legs complete';
-        case 'investigate_landmark': return state.stage >= 1 ? (state.stage >= 2 ? 'INVESTIGATED' : 'LOCATION FOUND · INVESTIGATE') : '0/1 investigation';
-        case 'lost_expedition': return state.stage >= 2 ? 'COMPLETE' : (state.stage >= 1 ? 'CAMP FOUND · RETURN TO TELEPHONE' : '0/2 stages');
-        case 'first_contact': return state.stage >= 1 ? 'COMPLETE' : 'READY';
-        default: return fallbackObjective;
-      }
-    }
-
-    function getConciergeQuestObjectiveText(id) {
-      const quest = getConciergeQuestById(id);
-      const cfg = getConciergeQuestConfig(id) || {};
-      if (!quest) return '';
-      const state = getConciergeQuestState(id);
-      if (cfg.kind === 'wildlife_dynamic') {
-        const bodyName = (state && JOURNAL_BODY_INFO?.[state.targetBodyId]?.name) || String(state?.targetBodyId || 'requested planet');
-        return 'Observe 3 wildlife on ' + bodyName + '.';
-      }
-      if (cfg.kind === 'roundtrip' && state) return 'Travel to another planet and return to ' + String(state.originBodyId || 'your starting world') + '.';
-      if (cfg.kind === 'lost_expedition' && state?.stage >= 1 && state?.stage < 2) return 'Return to the telephone booth.';
-      if (cfg.kind === 'investigate_landmark' && state?.stage >= 1 && state?.stage < 2) {
-        const name = landmarkById[cfg.target]?.name || quest.title;
-        return 'Stay near ' + name + ' until the investigation is complete.';
-      }
-      return quest.objective;
-    }
-
-    function isConciergeQuestObjectiveReady(id) {
-      const cfg = getConciergeQuestConfig(id) || {};
-      const state = getConciergeQuestState(id);
-      if (!state) return false;
-      const amount = getConciergeQuestTargetAmount(id);
-      switch (cfg.kind) {
-        case 'landmark': return journalDiscoveredLandmarks.has(cfg.target);
-        case 'item':
-        case 'craft':
-        case 'rare_mineral':
-        case 'syspo_methane':
-        case 'crop_harvest':
-        case 'edible_fruit': return state.progress >= amount;
-        case 'crop_variety': return state.harvestedCropTypes.length >= amount;
-        case 'self_crop_harvest': return state.progress >= amount;
-        case 'wildlife':
-        case 'wildlife_dynamic': return state.observedIds.length >= amount;
-        case 'visit': return state.progress >= 1;
-        case 'roundtrip': return state.stage >= 2;
-        case 'investigate_landmark': return state.stage >= 2;
-        case 'lost_expedition': return state.stage >= 2;
-        case 'first_contact': return state.stage >= 1;
-        default: return false;
-      }
-    }
-
-    function maybeCompleteConciergeQuest(id) {
-      if (!getConciergeQuestState(id) || !isConciergeQuestActive(id)) return false;
-      if (!isConciergeQuestObjectiveReady(id)) return false;
-      return completeConciergeQuest(id);
-    }
-
-    function evaluateAllConciergeQuestStates() {
-      for (const id of [...conciergeActiveQuestIds]) {
-        if (!getConciergeQuestState(id)) setConciergeQuestState(id, createConciergeQuestState(id));
-        maybeCompleteConciergeQuest(id);
-      }
-      updateActiveQuestTracker();
-      const panel = document.getElementById('telephoneConciergeQuestPanel');
-      if (telephoneDialogueContact === 'concierge' && panel && !panel.classList.contains('hidden')) renderConciergeQuestMenu();
-    }
-
-    function recordConciergeQuestLandmarkDiscovery(landmarkId) {
-      if (!landmarkId) return;
-      let changed = false;
-      for (const id of [...conciergeActiveQuestIds]) {
-        const cfg = getConciergeQuestConfig(id);
-        const state = getConciergeQuestState(id);
-        if (!cfg || !state) continue;
-        if (cfg.kind === 'landmark' && cfg.target === landmarkId) changed = true;
-        if ((cfg.kind === 'investigate_landmark' || cfg.kind === 'lost_expedition') && cfg.target === landmarkId && state.stage === 0) {
-          state.stage = 1;
-          state.investigatedAtMs = performance.now();
-          state.stageReadyAtMs = performance.now() + 1400;
-          changed = true;
-        }
-      }
-      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
-    }
-
-    function recordConciergeQuestItemCollected(typeId, amount = 1) {
-      const qty = Math.max(0, Math.floor(Number(amount) || 0));
-      if (!qty) return;
-      let changed = false;
-      for (const id of [...conciergeActiveQuestIds]) {
-        const cfg = getConciergeQuestConfig(id);
-        const state = getConciergeQuestState(id);
-        if (!cfg || !state) continue;
-        if (cfg.kind === 'item' && cfg.target === typeId) { state.progress += qty; changed = true; }
-        if (cfg.kind === 'rare_mineral' && typeId !== 'rainbow_opal' && crystalById?.[typeId]) { state.progress += qty; changed = true; }
-      }
-      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
-    }
-
-    function recordConciergeQuestCrafted(typeId, amount = 1) {
-      const qty = Math.max(0, Math.floor(Number(amount) || 0));
-      if (!qty) return;
-      let changed = false;
-      for (const id of [...conciergeActiveQuestIds]) {
-        const cfg = getConciergeQuestConfig(id);
-        const state = getConciergeQuestState(id);
-        if (cfg?.kind === 'craft' && cfg.target === typeId && state) { state.progress += qty; changed = true; }
-      }
-      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
-    }
-
-    function recordConciergeQuestCropHarvest(cropId, amount = 1, selfGrown = false) {
-      const qty = Math.max(0, Math.floor(Number(amount) || 0));
-      if (!qty) return;
-      let changed = false;
-      for (const id of [...conciergeActiveQuestIds]) {
-        const cfg = getConciergeQuestConfig(id);
-        const state = getConciergeQuestState(id);
-        if (!cfg || !state) continue;
-        if (cfg.kind === 'crop_harvest') { state.progress += qty; changed = true; }
-        if (cfg.kind === 'crop_variety' && cropById?.[cropId] && !state.harvestedCropTypes.includes(cropId)) { state.harvestedCropTypes.push(cropId); changed = true; }
-        if (cfg.kind === 'self_crop_harvest' && selfGrown) { state.progress += qty; changed = true; }
-      }
-      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
-    }
-
-    function recordConciergeQuestEdibleFruit(amount = 1) {
-      const qty = Math.max(0, Math.floor(Number(amount) || 0));
-      if (!qty) return;
-      let changed = false;
-      for (const id of [...conciergeActiveQuestIds]) {
-        const cfg = getConciergeQuestConfig(id);
-        const state = getConciergeQuestState(id);
-        if (cfg?.kind === 'edible_fruit' && state) { state.progress += qty; changed = true; }
-      }
-      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
-    }
-
-    function recordConciergeQuestVisit(bodyId) {
-      const visited = String(bodyId || '');
-      if (!visited) return;
-      let changed = false;
-      for (const id of [...conciergeActiveQuestIds]) {
-        const cfg = getConciergeQuestConfig(id);
-        const state = getConciergeQuestState(id);
-        if (!cfg || !state) continue;
-        if (cfg.kind === 'visit' && cfg.target === visited && state.progress < 1) { state.progress = 1; changed = true; }
-        if (cfg.kind === 'roundtrip') {
-          const origin = String(state.originBodyId || 'ivis');
-          if (state.stage === 0 && visited !== origin) { state.stage = 1; state.targetBodyId = visited; changed = true; }
-          else if (state.stage === 1 && visited === origin) { state.stage = 2; changed = true; }
-        }
-      }
-      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
-    }
-
-    function recordConciergeQuestWildlifeObservation(bodyId, wildlifeId, wildlifeType = '') {
-      const b = String(bodyId || '');
-      const w = String(wildlifeId || '');
-      if (!b || !w) return;
-      let changed = false;
-      for (const id of [...conciergeActiveQuestIds]) {
-        const cfg = getConciergeQuestConfig(id);
-        const state = getConciergeQuestState(id);
-        if (!cfg || !state) continue;
-        const key = b + ':' + w;
-        if (cfg.kind === 'wildlife' && cfg.bodyId === b && (!cfg.wildlifeType || cfg.wildlifeType === wildlifeType) && !state.observedIds.includes(key)) { state.observedIds.push(key); changed = true; }
-        if (cfg.kind === 'wildlife_dynamic' && state.targetBodyId === b && !state.observedIds.includes(key)) { state.observedIds.push(key); changed = true; }
-      }
-      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
-    }
-
-    function recordConciergeQuestSyspoMethaneSample(amount = 1) {
-      const qty = Math.max(0, Math.floor(Number(amount) || 0));
-      if (!qty) return;
-      let changed = false;
-      for (const id of [...conciergeActiveQuestIds]) {
-        const cfg = getConciergeQuestConfig(id);
-        const state = getConciergeQuestState(id);
-        if (cfg?.kind === 'syspo_methane' && state) { state.progress += qty; changed = true; }
-      }
-      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
-    }
-
-    function updateConciergeQuestInvestigationProximity() {
-      if (state.gameState !== 'playing' || state.paused || playerState.inRocket) return;
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
-      const now = performance.now();
-      let changed = false;
-      for (const id of [...conciergeActiveQuestIds]) {
-        const cfg = getConciergeQuestConfig(id);
-        const stateForQuest = getConciergeQuestState(id);
-        if (!cfg || !stateForQuest || (cfg.kind !== 'investigate_landmark' && cfg.kind !== 'lost_expedition')) continue;
-        if (stateForQuest.stage !== 1) continue;
-        const target = landmarkSpawns.find(landmark => landmark?.id === cfg.target);
-        if (!target?.root?.visible) continue;
-        const targetWorld = target.root.getWorldPosition(new THREE.Vector3());
-        if (playerWorld.distanceTo(targetWorld) > 7.5) { stateForQuest.stageReadyAtMs = 0; continue; }
-        if (!stateForQuest.stageReadyAtMs) stateForQuest.stageReadyAtMs = now + 1400;
-        if (now >= stateForQuest.stageReadyAtMs) { stateForQuest.stage = 2; changed = true; }
-      }
-      if (changed) { evaluateAllConciergeQuestStates(); persistConciergeQuestState(); }
-    }
-
-    function handleConciergeQuestPhoneInteraction() {
-      for (const id of [...conciergeActiveQuestIds]) {
-        const cfg = getConciergeQuestConfig(id);
-        const state = getConciergeQuestState(id);
-        if (cfg?.kind === 'lost_expedition' && state?.stage === 2) completeConciergeQuest(id);
-      }
-    }
-
-    function updateConciergeQuestWildlifeObservations(delta = 0) {
-      if (state.gameState !== 'playing' || state.paused || playerState.inRocket) return;
-      conciergeQuestWildlifeTimer -= Math.max(0, Number(delta) || 0);
-      if (conciergeQuestWildlifeTimer > 0) return;
-      conciergeQuestWildlifeTimer = 0.45;
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
-      const scan = (bodyId, entries, type) => {
-        if (!Array.isArray(entries)) return;
-        entries.forEach((entry, index) => {
-          if (!entry?.root?.visible) return;
-          const pos = entry.root.getWorldPosition(new THREE.Vector3());
-          if (playerWorld.distanceTo(pos) <= 12) recordConciergeQuestWildlifeObservation(bodyId, type + '-' + index, type);
-        });
-      };
-      scan('ivis', ivisBirds, 'bird');
-      scan('ivis', ivisButterflies, 'butterfly');
-      scan('ivis', ivisBunnies, 'bunny');
-      scan('cordelia', cordeliaSilverfish, 'silverfish');
-      scan('aurora', auroraGlowfish, 'glowfish');
-      scan('mileria', mileriaRockCrawlers, 'crawler');
+      return conciergeActiveQuestIds.includes(id);
     }
 
     function acceptConciergeQuest(id) {
@@ -11758,10 +16673,7 @@
       if (conciergeActiveQuestIds.length >= CONCIERGE_QUEST_MAX_ACTIVE) return false;
       conciergeActiveQuestIds.push(id);
       conciergeActiveQuestIds = [...new Set(conciergeActiveQuestIds)].slice(0, CONCIERGE_QUEST_MAX_ACTIVE);
-      setConciergeQuestState(id, createConciergeQuestState(id));
-      if (getConciergeQuestConfig(id)?.kind === 'first_contact') getConciergeQuestState(id).stage = 1;
-      evaluateAllConciergeQuestStates();
-      persistConciergeQuestState();
+      persistLocalBackup();
       renderConciergeQuestMenu();
       updateActiveQuestTracker();
       return true;
@@ -11771,18 +16683,10 @@
       conciergeActiveQuestIds = Array.isArray(saved?.activeQuestIds)
         ? saved.activeQuestIds.filter(id => !!getConciergeQuestById(id)).slice(0, CONCIERGE_QUEST_MAX_ACTIVE)
         : [];
-      conciergeCompletedSpecialQuestIds = new Set(Array.isArray(saved?.completedSpecialQuestIds)
-        ? saved.completedSpecialQuestIds.filter(id => !!getConciergeQuestById(id) && getConciergeQuestById(id).special)
-        : []);
-      conciergeQuestStates = {};
-      const rawStates = saved?.questStates && typeof saved.questStates === 'object' ? saved.questStates : {};
-      for (const id of conciergeActiveQuestIds) conciergeQuestStates[id] = sanitizeConciergeQuestState(id, rawStates[id] || null);
       conciergeQuestRotationKey = null;
       conciergeQuestOfferedIds = [];
       conciergeQuestLastWorldKey = '';
-      conciergeQuestInitialOffersReady = !!saved?.initialOffersReady;
       ensureConciergeQuestRotation(true);
-      evaluateAllConciergeQuestStates();
       updateActiveQuestTracker();
     }
 
@@ -11794,17 +16698,6 @@
       const timer = document.getElementById('telephoneQuestRotationTimer');
       if (!panel || !list) return;
       ensureConciergeQuestRotation();
-      // Always have a visible starter set when the board opens. This guards against
-      // older saves that may have persisted the initial-offers flag without the offer IDs.
-      if (!Array.isArray(conciergeQuestOfferedIds) || conciergeQuestOfferedIds.length === 0) {
-        conciergeQuestOfferedIds = CONCIERGE_QUEST_TEMPLATES
-          .filter(q => !(q.special && conciergeCompletedSpecialQuestIds.has(q.id)))
-          .slice(0, CONCIERGE_QUEST_OFFER_COUNT)
-          .map(q => q.id);
-        conciergeQuestInitialOffersReady = true;
-        conciergeQuestRotationKey = getConciergeQuestRotationKey();
-        conciergeQuestLastWorldKey = conciergeQuestWorldKey();
-      }
       list.replaceChildren();
       if (counter) counter.textContent = conciergeActiveQuestIds.length + '/' + CONCIERGE_QUEST_MAX_ACTIVE + ' ACTIVE';
       if (timer) timer.textContent = 'NEW REQUESTS IN ' + formatConciergeQuestCountdown(getConciergeQuestTimeUntilRotation());
@@ -11818,9 +16711,8 @@
         const title = document.createElement('strong'); title.textContent = quest.title;
         const location = document.createElement('small'); location.textContent = quest.destination;
         const description = document.createElement('p'); description.textContent = quest.description;
-        const objective = document.createElement('div'); objective.className = 'telephoneQuestObjective'; objective.textContent = getConciergeQuestObjectiveText(quest.id);
-        const progressLine = document.createElement('div'); progressLine.className = 'telephoneQuestProgress'; progressLine.textContent = getConciergeQuestProgressText(quest.id, quest.objective);
-        copy.append(title, location, description, objective, progressLine);
+        const objective = document.createElement('div'); objective.className = 'telephoneQuestObjective'; objective.textContent = quest.objective;
+        copy.append(title, location, description, objective);
         const side = document.createElement('div'); side.className = 'telephoneQuestSide';
         const reward = document.createElement('div'); reward.className = 'telephoneQuestReward'; reward.textContent = '¢' + quest.reward;
         const button = document.createElement('button'); button.type = 'button'; button.className = 'telephoneQuestAccept';
@@ -11840,14 +16732,7 @@
         card.append(icon, copy, side);
         list.appendChild(card);
       }
-      // Force the quest board visible. The telephone dialogue uses a generic
-      // `.hidden`/dialogue layout and those rules can otherwise win over the
-      // post-dialogue quest screen after quest offers are initialized.
       panel.classList.remove('hidden');
-      panel.style.display = 'block';
-      panel.style.visibility = 'visible';
-      panel.style.opacity = '1';
-      panel.style.pointerEvents = 'auto';
       if (status && !status.textContent) status.textContent = '';
     }
 
@@ -11870,7 +16755,7 @@
         const icon = document.createElement('span'); icon.className = 'activeQuestTrackerIcon'; icon.textContent = quest.icon;
         const text = document.createElement('div'); text.className = 'activeQuestTrackerText';
         const title = document.createElement('strong'); title.textContent = quest.title;
-        const objective = document.createElement('span'); objective.textContent = getConciergeQuestProgressText(quest.id, getConciergeQuestObjectiveText(quest.id));
+        const objective = document.createElement('span'); objective.textContent = quest.objective;
         text.append(title, objective); row.append(icon, text); list.appendChild(row);
       }
     }
@@ -11879,14 +16764,6 @@
       const panel = document.getElementById('telephoneConciergeQuestPanel');
       const status = document.getElementById('telephoneConciergeQuestStatus');
       panel?.classList.add('hidden');
-      if (panel) {
-        panel.style.display = '';
-        panel.style.visibility = '';
-        panel.style.opacity = '';
-        panel.style.pointerEvents = '';
-      }
-      if (telephoneDialoguePanel) telephoneDialoguePanel.classList.remove('quest-mode');
-      if (telephoneDialogueMain) telephoneDialogueMain.classList.remove('quest-mode-main');
       if (status) status.textContent = '';
     }
 
@@ -12055,7 +16932,6 @@
 
     function openTelephone() {
       if (!telephoneOverlay || !telephoneBooth || state.gameState !== 'playing' || uiState.telephoneOpen) return false;
-      if (typeof handleConciergeQuestPhoneInteraction === 'function') handleConciergeQuestPhoneInteraction();
       uiState.telephoneOpen = true;
       state.paused = true;
       clearPhysicalKeys();
@@ -12092,7 +16968,10 @@
       }
       booth.scale.setScalar(1.15);
       booth.traverse(node => { if (node.isMesh) { node.frustumCulled = false; node.userData.telephoneBooth = true; } });
-      const boothDir = new THREE.Vector3(0.052, 1, 0.0).normalize();
+      // Keep the telephone booth in the same mid-Ivis home region as the spawn, but offset
+      // it ~20u along the surface so the player does not spawn directly inside the booth.
+      const boothTangentAxis = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), IVIS_HOME_DIR).normalize();
+      const boothDir = rotateAroundAxis(IVIS_HOME_DIR, boothTangentAxis, 0.09).normalize();
       const groundRadius = PLANET_RADIUS + heightAt(boothDir);
       booth.position.copy(boothDir).multiplyScalar(groundRadius + 0.02);
       const tangent = new THREE.Vector3(0,1,0).sub(boothDir.clone().multiplyScalar(boothDir.y)).normalize();
@@ -12711,29 +17590,14 @@
       if (node.sell) { openConciergeSell(); return; }
       if (node.seedShop) { openTelephoneSeedShop(); return; }
       if (node.questMenu) {
-        // The quest board is a distinct post-dialogue screen. The typewriter above
-        // has fully completed before this branch is reached; hide the speech UI
-        // and expand the conversation column so the board is always visible.
-        await new Promise(resolve => setTimeout(resolve, 180));
-        const questPanel = document.getElementById('telephoneConciergeQuestPanel');
-        telephoneDialoguePanel?.classList.add('quest-mode');
-        telephoneDialogueMain?.classList.add('quest-mode-main');
-        // This is the explicit transition point from the completed typewriter
-        // dialogue into the quest board. Force visibility here as well so the
-        // panel cannot be hidden behind dialogue/combat UI styling.
-        questPanel?.classList.remove('hidden');
-        if (questPanel) {
-          questPanel.style.display = 'block';
-          questPanel.style.visibility = 'visible';
-          questPanel.style.opacity = '1';
-          questPanel.style.pointerEvents = 'auto';
-        }
+        // Let the Concierge's final line finish before opening the quest board.
+        // The quest panel itself includes a dedicated Back to Conversation button.
+        await new Promise(resolve => setTimeout(resolve, 360));
         renderConciergeQuestMenu();
-        requestAnimationFrame(() => {
-          const firstAccept = document.querySelector('#telephoneConciergeQuestPanel .telephoneQuestAccept:not(:disabled)');
-          const questBack = document.getElementById('telephoneConciergeQuestBack');
-          (firstAccept || questBack)?.focus({ preventScroll: true });
-        });
+        const questBack = document.getElementById('telephoneConciergeQuestBack');
+        if (questBack) {
+          questBack.focus({ preventScroll: true });
+        }
         return;
       }
       if (node.cosmeticShop) {
@@ -13708,6 +18572,14 @@
         placedDrills.splice(i, 1);
         removed = true;
       }
+      for (let i = gasCollectionSystems.length - 1; i >= 0; i--) {
+        if (String(gasCollectionSystems[i]?.networkId || '') !== id) continue;
+        const gas = gasCollectionSystems[i];
+        if (gas.root?.parent) gas.root.parent.remove(gas.root);
+        gasCollectionSystems.splice(i, 1);
+        removed = true;
+      }
+      if (removeBaseCoreById(id)) removed = true;
       // Rocket IDs live on the rocket attached to a launch pad.
       for (const pad of launchPads) {
         if (!pad?.rocket || String(pad.rocket.networkId || '') !== id) continue;
@@ -13723,16 +18595,317 @@
       return launchPads.find(pad => String(pad?.networkId || '') === id) || null;
     }
 
+
+    const multiplayerPendingBaseStructureSnapshots = [];
+
+    function serializeMultiplayerBaseStructureRecord(structure) {
+      if (!structure?.root) return null;
+      const base = baseCores.find((item) => String(item?.baseId || '') === String(structure.baseId || ''));
+      return {
+        objectId: String(structure.structureId || ''),
+        baseId: String(structure.baseId || ''),
+        typeId: String(structure.typeId || ''),
+        interiorMaterial: normalizeBaseInteriorMaterial(structure.interiorMaterial),
+        mirroredX: !!structure.mirroredX,
+        localPosition: structure.root.position?.toArray?.() || [0, 0.06, 0],
+        yaw: Number(structure.yaw ?? structure.root.rotation?.y) || 0,
+        doorSide: String(structure.doorSide || structure.doorSides?.[0] || 'north'),
+        doorSides: normalizeBaseDoorSides(structure.doorSides || structure.doorSide, ['north', 'south']),
+        doorStates: Array.isArray(structure.doorStates) ? structure.doorStates.map(Boolean) : [],
+        roofOpen: !!structure.roofOpen,
+        furniture: Array.isArray(structure.furniture) ? structure.furniture.map((item) => ({
+          furnitureId: String(item?.furnitureId || ''),
+          typeId: String(item?.typeId || ''),
+          localPosition: item?.root?.position?.toArray?.() || item?.localPosition?.toArray?.() || [0, 0.2, 0],
+          yaw: Number(item?.yaw ?? item?.root?.rotation?.y) || 0,
+          lampOn: item?.lampOn !== false
+        })).filter((item) => item.furnitureId && isFurnitureType(item.typeId)) : [],
+        ownerUserId: String(structure.ownerUserId || base?.ownerUserId || ''),
+        ownerName: String(structure.ownerName || base?.ownerName || 'Explorer').slice(0, 24),
+        surfaceBodyId: String(base?.surfaceBodyId || 'ivis')
+      };
+    }
+
+    function findMultiplayerBaseStructureById(structureId) {
+      const id = String(structureId || '');
+      if (!id) return null;
+      return baseStructures.find((structure) => String(structure?.structureId || '') === id) || null;
+    }
+
+    function removeMultiplayerBaseStructureById(structureId) {
+      const structure = findMultiplayerBaseStructureById(structureId);
+      if (!structure) return false;
+
+      if (Array.isArray(structure.furniture)) {
+        for (const furniture of structure.furniture) {
+          if (furniture?.root?.parent) furniture.root.parent.remove(furniture.root);
+        }
+      }
+      structure.furniture = [];
+
+      if (Array.isArray(structure.storageContainers)) {
+        for (const container of structure.storageContainers) {
+          const index = containers.indexOf(container);
+          if (index >= 0) containers.splice(index, 1);
+          if (container?.root?.parent) container.root.parent.remove(container.root);
+        }
+      }
+      structure.storageContainers = [];
+
+      if (structure.typeId === 'hydroponics_module') {
+        removeHydroponicsPlotsForStructure(structure.structureId);
+        structure.hydroponicPlots = [];
+      }
+      if (structure.typeId === 'docking_module' && structure.dockingLaunchPad) {
+        const pad = structure.dockingLaunchPad;
+        const index = launchPads.indexOf(pad);
+        if (index >= 0) launchPads.splice(index, 1);
+        if (pad.root?.parent) pad.root.parent.remove(pad.root);
+        structure.dockingLaunchPad = null;
+      }
+
+      if (structure.root?.parent) structure.root.parent.remove(structure.root);
+      const index = baseStructures.indexOf(structure);
+      if (index >= 0) baseStructures.splice(index, 1);
+      return true;
+    }
+
+    function applyMultiplayerBaseStructureRecord(record, sourceUserId = '') {
+      if (!record || !record.objectId || !record.baseId || !record.typeId) return false;
+      const base = baseCores.find((item) => String(item?.baseId || '') === String(record.baseId || ''));
+      if (!base) {
+        const id = String(record.objectId);
+        if (!multiplayerPendingBaseStructureSnapshots.some((item) => String(item?.objectId || '') === id)) {
+          multiplayerPendingBaseStructureSnapshots.push({ ...record, _sourceUserId: String(sourceUserId || '') });
+        }
+        return false;
+      }
+
+      const def = getBaseStructureDefinition(record.typeId);
+      if (!def) return false;
+      const structureId = String(record.objectId);
+      const isDoorSelectableModule = ['habitat_room', 'observation_module', 'storage_module', 'workshop_module', 'research_module', 'fuel_synthesizer_module', 'hydroponics_module', 'fuel_synthesizer_module'].includes(def.id);
+      const doorSides = (def.id === 'hydroponics_module' || def.id === 'docking_module')
+        ? ['north']
+        : (isDoorSelectableModule ? normalizeBaseDoorSides(record.doorSides || record.doorSide, ['north', 'south']) : []);
+      let structure = findMultiplayerBaseStructureById(structureId);
+
+      if (!structure) {
+        const root = createBaseStructureVisual(def.id, doorSides, false, normalizeBaseInteriorMaterial(record.interiorMaterial), !!record.mirroredX);
+        if (Array.isArray(record.localPosition) && record.localPosition.length >= 3) root.position.fromArray(record.localPosition);
+        root.rotation.y = Number(record.yaw) || 0;
+        base.root.add(root);
+        const doorStates = (root.userData.doors || []).map((_, index) => Array.isArray(record.doorStates) ? !!record.doorStates[index] : false);
+        const structureElevation = Math.abs(Number(root.position?.y) || 0) > 0.9;
+        structure = {
+          root,
+          structureId,
+          baseId: String(base.baseId),
+          typeId: def.id,
+          interiorMaterial: normalizeBaseInteriorMaterial(record.interiorMaterial),
+          mirroredX: !!record.mirroredX,
+          localPosition: root.position.clone(),
+          yaw: Number(record.yaw) || 0,
+          doorSide: doorSides[0] || null,
+          doorSides: doorSides.slice(),
+          ownerUserId: String(record.ownerUserId || sourceUserId || base.ownerUserId || ''),
+          ownerName: String(record.ownerName || base.ownerName || 'Explorer').slice(0, 24),
+          connectionPoints: getBaseStructureConnectionPointsForState(def.id, doorSides, !!record.mirroredX).map((point) => ({ ...point, elevated: !!point.elevated || structureElevation })),
+          collisionBoxes: root.userData.collisionBoxes || [],
+          doorStates,
+          doorTargets: doorStates.map((open, index) => open ? (root.userData.doors?.[index]?.openRotation || Math.PI / 2) : 0),
+          doorOpen: doorStates.some(Boolean),
+          doorAnimating: false,
+          roofOpen: !!record.roofOpen,
+          roofTarget: !!record.roofOpen ? 1 : 0,
+          roofAnimating: false,
+          roofLeverTarget: !!record.roofOpen ? 0.52 : -0.52,
+          roofLeverAnimating: false,
+          storageContainers: [],
+          hydroponicPlots: [],
+          furniture: [],
+          fuelSynthInventory: { methane: null, opal: null, output: null }
+        };
+        baseStructures.push(structure);
+
+        if (structure.typeId === 'docking_module') {
+          registerDockingLaunchPadForStructure(structure);
+        }
+        if (structure.typeId === 'storage_module') {
+          [[3.08,0.20,-2.45,Math.PI/2],[3.08,0.20,0,Math.PI/2],[3.08,0.20,2.45,Math.PI/2]].forEach(([x,y,z,yaw]) => {
+            createStructureStorageContainer(structure, [x,y,z], yaw);
+          });
+        }
+        if (structure.typeId === 'hydroponics_module') createHydroponicPlotsForStructure(structure);
+      }
+
+      // Reapply the saved transform/material metadata without changing any build/snap logic.
+      if (Array.isArray(record.localPosition) && record.localPosition.length >= 3) {
+        structure.root.position.fromArray(record.localPosition);
+        structure.localPosition = structure.root.position.clone();
+      }
+      structure.root.rotation.y = Number(record.yaw) || 0;
+      structure.yaw = Number(record.yaw) || 0;
+      structure.mirroredX = !!record.mirroredX;
+      structure.interiorMaterial = normalizeBaseInteriorMaterial(record.interiorMaterial);
+      structure.doorSide = doorSides[0] || null;
+      structure.doorSides = doorSides.slice();
+      structure.connectionPoints = getBaseStructureConnectionPointsForState(structure.typeId, doorSides, !!record.mirroredX)
+        .map((point) => ({ ...point, elevated: !!point.elevated || Math.abs(Number(structure.root.position?.y) || 0) > 0.9 }));
+
+      if (Array.isArray(record.doorStates)) {
+        structure.doorStates = record.doorStates.map(Boolean);
+        structure.doorTargets = structure.doorStates.map((open, index) => open ? (structure.root.userData.doors?.[index]?.openRotation || Math.PI / 2) : 0);
+        structure.doorOpen = structure.doorStates.some(Boolean);
+        structure.doorStates.forEach((open, index) => { if (open) setBaseDoorOpen(structure, index, true, false); });
+      }
+      if (structure.typeId === 'observation_module' && typeof setObservationRoofOpen === 'function') setObservationRoofOpen(structure, !!record.roofOpen, false);
+      if (structure.typeId === 'docking_module' && typeof setDockingRoofOpen === 'function') setDockingRoofOpen(structure, !!record.roofOpen, false);
+
+      // Full furniture reconcile. This makes furniture placements/removals immediately visible to peers.
+      if (Array.isArray(structure.furniture)) {
+        for (const furniture of structure.furniture) {
+          if (furniture?.root?.parent) furniture.root.parent.remove(furniture.root);
+        }
+      }
+      structure.furniture = [];
+      for (const savedFurniture of (Array.isArray(record.furniture) ? record.furniture : [])) {
+        if (!isFurnitureType(savedFurniture?.typeId) || !Array.isArray(savedFurniture.localPosition)) continue;
+        const placed = createPlacedFurnitureVisual(savedFurniture.typeId);
+        placed.position.fromArray(savedFurniture.localPosition);
+        placed.rotation.set(0, Number(savedFurniture.yaw) || 0, 0);
+        placed.userData.furnitureId = String(savedFurniture.furnitureId || ('furniture:' + Date.now() + ':' + Math.random().toString(36).slice(2,9)));
+        structure.root.add(placed);
+        const furnitureRecord = {
+          furnitureId: placed.userData.furnitureId,
+          typeId: savedFurniture.typeId,
+          localPosition: placed.position.clone(),
+          yaw: Number(savedFurniture.yaw) || 0,
+          lampOn: savedFurniture.lampOn !== false,
+          root: placed,
+          collisionBox: null
+        };
+        structure.furniture.push(furnitureRecord);
+        refreshFurnitureCollisionData(structure, furnitureRecord);
+        if (savedFurniture.typeId === 'furniture_light') applyFurnitureLampState(furnitureRecord, furnitureRecord.lampOn);
+      }
+
+      updateBaseStructureFoundationSupports(structure);
+      return true;
+    }
+
+    function flushMultiplayerPendingBaseStructureSnapshots(baseId = '') {
+      for (let i = multiplayerPendingBaseStructureSnapshots.length - 1; i >= 0; i--) {
+        const pending = multiplayerPendingBaseStructureSnapshots[i];
+        if (baseId && String(pending?.baseId || '') !== String(baseId)) continue;
+        if (applyMultiplayerBaseStructureRecord(pending, pending?._sourceUserId || '')) multiplayerPendingBaseStructureSnapshots.splice(i, 1);
+      }
+    }
+
+    function broadcastMultiplayerBaseStructureSync(structure, reason = 'structure-sync') {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser || !structure) return false;
+      const record = serializeMultiplayerBaseStructureRecord(structure);
+      if (!record?.objectId) return false;
+      const payload = {
+        kind: 'base_structure_sync_v1',
+        sourceUserId: String(currentAccountUser.id),
+        worldId: String(MULTIPLAYER_WORLD_ID),
+        reason: String(reason || 'structure-sync'),
+        structure: record,
+        sentAt: Date.now()
+      };
+      multiplayerChannel.send({ type: 'broadcast', event: 'world_base_structure_sync', payload }).catch((error) => {
+        console.warn('Multiplayer base structure sync failed', error);
+      });
+      return true;
+    }
+
+    function broadcastMultiplayerBaseStructureRemoved(structureId, reason = 'structure-removed') {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser || !structureId) return false;
+      const payload = {
+        kind: 'base_structure_remove_v1',
+        sourceUserId: String(currentAccountUser.id),
+        worldId: String(MULTIPLAYER_WORLD_ID),
+        structureId: String(structureId),
+        reason: String(reason || 'structure-removed'),
+        sentAt: Date.now()
+      };
+      multiplayerChannel.send({ type: 'broadcast', event: 'world_base_structure_remove', payload }).catch((error) => {
+        console.warn('Multiplayer base structure removal broadcast failed', error);
+      });
+      return true;
+    }
+
+    function broadcastMultiplayerBaseDoorSync(structure, doorIndex = 0, open = false) {
+      if (!multiplayerMode || !multiplayerConnected || !multiplayerChannel || !currentAccountUser || !structure) return false;
+      const structureId = String(structure.structureId || '');
+      if (!structureId) return false;
+      const index = Math.max(0, Math.floor(Number(doorIndex) || 0));
+      const payload = {
+        kind: 'base_door_sync_v1',
+        sourceUserId: String(currentAccountUser.id),
+        worldId: String(MULTIPLAYER_WORLD_ID),
+        structureId,
+        doorIndex: index,
+        open: !!open,
+        sentAt: Date.now()
+      };
+      multiplayerChannel.send({ type: 'broadcast', event: 'world_base_door_sync', payload }).catch((error) => {
+        console.warn('Multiplayer base door sync failed', error);
+      });
+      return true;
+    }
+
+    function applyMultiplayerBaseStructureSync(payload) {
+      if (!payload || payload.kind !== 'base_structure_sync_v1') return;
+      if (String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return;
+      const sourceUserId = String(payload.sourceUserId || '');
+      if (!sourceUserId || sourceUserId === String(currentAccountUser?.id || '')) return;
+      applyMultiplayerBaseStructureRecord(payload.structure, sourceUserId);
+      markMultiplayerWorldDirty('remote-base-structure-sync');
+      updateCrystalPrompt();
+    }
+
+    function applyMultiplayerBaseDoorSync(payload) {
+      if (!payload || payload.kind !== 'base_door_sync_v1') return;
+      if (String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return;
+      const sourceUserId = String(payload.sourceUserId || '');
+      if (!sourceUserId || sourceUserId === String(currentAccountUser?.id || '')) return;
+      const structure = findMultiplayerBaseStructureById(payload.structureId);
+      if (!structure) return;
+      const doorIndex = Math.max(0, Math.floor(Number(payload.doorIndex) || 0));
+      const open = !!payload.open;
+      if (!setBaseDoorOpen(structure, doorIndex, open, true)) return;
+      markMultiplayerWorldDirty('remote-base-door-sync');
+      updateCrystalPrompt();
+    }
+
+    function applyMultiplayerBaseStructureRemoved(payload) {
+      if (!payload || payload.kind !== 'base_structure_remove_v1') return;
+      if (String(payload.worldId || '') !== String(MULTIPLAYER_WORLD_ID || '')) return;
+      const sourceUserId = String(payload.sourceUserId || '');
+      if (!sourceUserId || sourceUserId === String(currentAccountUser?.id || '')) return;
+      const structureId = String(payload.structureId || '');
+      if (!structureId) return;
+      for (let i = multiplayerPendingBaseStructureSnapshots.length - 1; i >= 0; i--) {
+        if (String(multiplayerPendingBaseStructureSnapshots[i]?.objectId || '') === structureId) multiplayerPendingBaseStructureSnapshots.splice(i, 1);
+      }
+      removeMultiplayerBaseStructureById(structureId);
+      refreshAllBaseFoundationSupports();
+      markMultiplayerWorldDirty('remote-base-structure-removed');
+      updateCrystalPrompt();
+    }
+
     function applyMultiplayerPlaceablePlaced(payload) {
       if (!payload || payload.kind !== 'placeable_v1') return;
       const sourceUserId = String(payload.sourceUserId || payload.userId || '');
       if (!sourceUserId || sourceUserId === currentAccountUser?.id) return;
       const objectType = String(payload.objectType || '');
       const networkId = String(payload.objectId || '');
-      if (!networkId || !['launch_pad', 'rocket', 'furnace', 'campfire', 'drill'].includes(objectType)) return;
+      if (!networkId || !['launch_pad', 'rocket', 'furnace', 'campfire', 'drill', 'gas_collection_system', 'base_core'].includes(objectType)) return;
       if (multiplayerRemovedPlaceableIds.has(networkId)) return;
       if (objectType !== 'rocket' &&
-          [launchPads, furnaces, campfires, placedDrills].some(list => list.some(obj => String(obj?.networkId || '') === networkId))) return;
+          [launchPads, furnaces, campfires, placedDrills, gasCollectionSystems, baseCores].some(list => list.some(obj => String(obj?.networkId || obj?.baseId || '') === networkId))) return;
       if (objectType === 'rocket') {
         const pad = findMultiplayerLaunchPadById(payload.parentPadId);
         if (!pad) {
@@ -13747,12 +18920,34 @@
         if (payload.engineType) rocket.engineType = String(payload.engineType);
         rocket.warpDrive = !!payload.warpDrive;
         rocket.warpDriveType = payload.warpDriveType || null;
+        rocket.gasCollectionInstalled = !!payload.gasCollectionInstalled;
+        rocket.methaneLiters = sanitizeMethaneLiters(payload.methaneLiters);
+        pad.gasCollectionInstalled = rocket.gasCollectionInstalled;
+        pad.methaneLiters = rocket.methaneLiters;
         pad.engineType = rocket.engineType;
         pad.warpDrive = rocket.warpDrive;
         pad.warpDriveType = rocket.warpDriveType;
         pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(payload.fuel) || 0));
         ensureRocketEngineVisual(rocket);
         markMultiplayerWorldDirty('rocket-placed');
+        return;
+      }
+
+      if (objectType === 'base_core') {
+        if (!Array.isArray(payload.direction) || payload.direction.length < 3) return;
+        const direction = new THREE.Vector3().fromArray(payload.direction).normalize();
+        if (direction.lengthSq() < 0.5) return;
+        const forward = Array.isArray(payload.constructionForward) && payload.constructionForward.length >= 3
+          ? new THREE.Vector3().fromArray(payload.constructionForward).normalize() : null;
+        const bodyId = ['ivis', 'aurora', 'cordelia', 'moon', 'mileria'].includes(String(payload.surfaceBodyId || '')) ? String(payload.surfaceBodyId) : 'ivis';
+        const base = createBaseCoreObject(direction, forward, Number(payload.yaw) || 0, bodyId, networkId, {
+          baseId: networkId, networkId, ownerUserId: sourceUserId, ownerName: String(payload.ownerName || 'Explorer'),
+          name: payload.name, permissions: payload.permissions, permissionNames: payload.permissionNames
+        });
+        if (payload.homeBaseUserId && String(payload.homeBaseUserId) === String(sourceUserId)) baseHomeByUserId[sourceUserId] = networkId;
+        markMultiplayerWorldDirty('base-core-placed');
+        flushMultiplayerPendingBaseStructureSnapshots(base.baseId);
+        if (window.__puActiveBaseCore?.baseId === base.baseId) renderBaseCoreMenu();
         return;
       }
 
@@ -13792,6 +18987,11 @@
       if (objectType === 'drill') {
         createDrillObject(direction, yaw, Math.max(0, Math.min(100, Number(payload.durability) || 0)), bodyId, networkId);
         markMultiplayerWorldDirty('drill-placed');
+        return;
+      }
+      if (objectType === 'gas_collection_system') {
+        createGasCollectionSystemObject(direction, yaw, bodyId, networkId, payload.methaneLiters);
+        markMultiplayerWorldDirty('gas-collector-placed');
       }
     }
 
@@ -13820,7 +19020,9 @@
       if (objectType === 'furnace') return furnaces.find(obj => String(obj?.networkId || '') === id) || null;
       if (objectType === 'campfire') return campfires.find(obj => String(obj?.networkId || '') === id) || null;
       if (objectType === 'drill') return placedDrills.find(obj => String(obj?.networkId || '') === id) || null;
+      if (objectType === 'gas_collection_system') return gasCollectionSystems.find(obj => String(obj?.networkId || '') === id) || null;
       if (objectType === 'launch_pad') return launchPads.find(obj => String(obj?.networkId || '') === id) || null;
+      if (objectType === 'base_core') return baseCores.find(obj => String(obj?.networkId || obj?.baseId || '') === id || String(obj?.baseId || '') === id) || null;
       if (objectType === 'rocket') {
         for (const pad of launchPads) if (pad?.rocket && String(pad.rocket.networkId || '') === id) return pad.rocket;
       }
@@ -13924,6 +19126,30 @@
           object.durability = Math.max(0, Math.min(100, Number(payload.durability) || 0));
           return;
         }
+      } else if (objectType === 'gas_collection_system') {
+        if (action === 'methane_extract' || action === 'gas_collect') {
+          object.methaneLiters = sanitizeMethaneLiters(payload.methaneLiters);
+          return;
+        }
+      } else if (objectType === 'base_core') {
+        if (action === 'base_update') {
+          if (payload.name != null) object.name = sanitizeBaseName(payload.name);
+          object.ownerUserId = String(payload.ownerUserId || object.ownerUserId || sourceUserId);
+          object.ownerName = String(payload.ownerName || object.ownerName || 'Explorer').slice(0, 24);
+          const normalized = normalizeBasePermissions(payload.permissions, object.ownerUserId, object.ownerName, payload.permissionNames);
+          object.permissions = normalized.permissions;
+          object.permissionNames = normalized.permissionNames;
+          renderBaseCoreMenu();
+          markMultiplayerWorldDirty('remote-base-updated');
+          return;
+        }
+        if (action === 'base_home') {
+          const homeBaseId = String(payload.homeBaseId || object.baseId || object.networkId || '');
+          if (homeBaseId) baseHomeByUserId[sourceUserId] = homeBaseId;
+          renderBaseCoreMenu();
+          markMultiplayerWorldDirty('remote-base-home-updated');
+          return;
+        }
       } else if (objectType === 'launch_pad') {
         if (action === 'rocket_fuel') {
           object.fuel = Math.max(0, Math.min(getRocketFuelCapacity(object), Number(payload.fuel) || 0));
@@ -13942,11 +19168,23 @@
           pad.warpDriveType = payload.warpDriveType || null;
           object.warpDrive = !!payload.warpDrive;
           object.warpDriveType = payload.warpDriveType || null;
+          object.gasCollectionInstalled = !!payload.gasCollectionInstalled;
+          object.methaneLiters = sanitizeMethaneLiters(payload.methaneLiters);
+          pad.gasCollectionInstalled = object.gasCollectionInstalled;
+          pad.methaneLiters = object.methaneLiters;
           ensureRocketEngineVisual(object);
+          ensureGasCollectionVisual(object);
           return;
         }
         if (action === 'rocket_fuel') {
           pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(payload.fuel) || 0));
+          return;
+        }
+        if (action === 'gas_collection') {
+          pad.gasCollectionInstalled = !!object.gasCollectionInstalled;
+          object.methaneLiters = sanitizeMethaneLiters(payload.methaneLiters);
+          pad.methaneLiters = object.methaneLiters;
+          ensureGasCollectionVisual(object);
           return;
         }
       }
@@ -13979,12 +19217,25 @@
         payload.engineType = object.engineType || 'standard';
         payload.warpDrive = !!object.warpDrive;
         payload.warpDriveType = object.warpDriveType || null;
+        payload.gasCollectionInstalled = !!object.gasCollectionInstalled;
+        payload.methaneLiters = sanitizeMethaneLiters(object.methaneLiters);
       } else if (objectType === 'furnace') {
         // Milestone 2 only syncs the placed furnace itself, not its contents/smelting.
       } else if (objectType === 'campfire') {
         // Milestone 2 only syncs the placed campfire itself, not cooking state yet.
       } else if (objectType === 'drill') {
         payload.durability = Math.max(0, Math.min(100, Number(object.durability) || 0));
+      } else if (objectType === 'gas_collection_system') {
+        payload.methaneLiters = sanitizeMethaneLiters(object.methaneLiters);
+      } else if (objectType === 'base_core') {
+        payload.constructionForward = object.constructionForward?.toArray?.() || null;
+        payload.name = sanitizeBaseName(object.name);
+        payload.ownerUserId = String(object.ownerUserId || currentAccountUser?.id || '');
+        payload.ownerName = String(object.ownerName || getBaseLocalUsername()).slice(0, 24);
+        payload.permissions = { ...(object.permissions || {}) };
+        payload.permissionNames = { ...(object.permissionNames || {}) };
+        const homeKey = String(object.ownerUserId || currentAccountUser?.id || '');
+        if (homeKey && String(baseHomeByUserId[homeKey] || '') === String(object.baseId || object.networkId || '')) payload.homeBaseUserId = homeKey;
       }
       multiplayerChannel.send({ type: 'broadcast', event: 'world_placeable_place', payload }).catch((error) => {
         console.warn('Multiplayer placeable placement broadcast failed', error);
@@ -14006,6 +19257,8 @@
         engineType: rocket.engineType || pad.engineType || 'standard',
         warpDrive: !!(rocket.warpDrive || pad.warpDrive),
         warpDriveType: rocket.warpDriveType || pad.warpDriveType || null,
+        gasCollectionInstalled: !!(rocket.gasCollectionInstalled || pad.gasCollectionInstalled),
+        methaneLiters: sanitizeMethaneLiters(rocket.methaneLiters ?? pad.methaneLiters),
         sentAt: Date.now()
       };
       multiplayerChannel.send({ type: 'broadcast', event: 'world_placeable_place', payload }).catch((error) => {
@@ -15004,13 +20257,13 @@
             growthProgressSec: Math.max(0, Number(plot.crop.growthProgressSec) || 0),
             growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())),
             wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)),
-            wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0)),
-            plantedByUserId: String(plot.crop.plantedByUserId || 'local-player')
+            wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0))
           } : null
         };
       });
       const flowerState = cordeliaFlowers.map(flower => ({ cactusIndex: flower.cactusIndex, picked: !!flower.picked, regrowAtMs: Math.max(0, Number(flower.regrowAtMs) || 0), generation: Math.max(0, Math.floor(Number(flower.generation) || 0)) }));
-      return { trees, rocks, ironOres, plots, cordeliaFlowers: flowerState };
+      const baseStructureState = baseStructures.map(serializeMultiplayerBaseStructureRecord).filter(Boolean);
+      return { trees, rocks, ironOres, plots, cordeliaFlowers: flowerState, baseStructures: baseStructureState };
     }
 
     function applyMultiplayerTreeChopped(payload) {
@@ -15194,7 +20447,7 @@
           const existing = findTilledPlotByKey(plotKey);
           if (existing && saved.crop && cropById[String(saved.crop.cropId || '')]) {
             existing.cropGeneration = Math.max(0, Math.floor(Number(saved.cropGeneration) || Number(saved.crop.generation) || 0));
-            existing.crop = { cropId: String(saved.crop.cropId), plantedAtMs: Math.max(0, Number(saved.crop.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(saved.crop.stage) || 0))), cropKey: String(saved.crop.cropKey || getFarmPlotCropKey(existing)), growthProgressSec: Math.max(0, Number(saved.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(saved.crop.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(saved.crop.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(saved.crop.wateredUntilMs) || 0), plantedByUserId: String(saved.crop.plantedByUserId || 'local-player') };
+            existing.crop = { cropId: String(saved.crop.cropId), plantedAtMs: Math.max(0, Number(saved.crop.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(saved.crop.stage) || 0))), cropKey: String(saved.crop.cropKey || getFarmPlotCropKey(existing)), growthProgressSec: Math.max(0, Number(saved.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(saved.crop.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(saved.crop.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(saved.crop.wateredUntilMs) || 0) };
             hydrateCropGrowthState(existing.crop);
             updateTilledPlotCropVisual(existing);
           }
@@ -15203,7 +20456,7 @@
         const created = createTilledPlot({ ctx, dir, forward: projected }, plotKey);
         if (created && saved.crop && cropById[String(saved.crop.cropId || '')]) {
           created.cropGeneration = Math.max(0, Math.floor(Number(saved.cropGeneration) || Number(saved.crop.generation) || 0));
-          created.crop = { cropId: String(saved.crop.cropId), plantedAtMs: Math.max(0, Number(saved.crop.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(saved.crop.stage) || 0))), cropKey: String(saved.crop.cropKey || getFarmPlotCropKey(created)), growthProgressSec: Math.max(0, Number(saved.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(saved.crop.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(saved.crop.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(saved.crop.wateredUntilMs) || 0), plantedByUserId: String(saved.crop.plantedByUserId || 'local-player') };
+          created.crop = { cropId: String(saved.crop.cropId), plantedAtMs: Math.max(0, Number(saved.crop.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(saved.crop.stage) || 0))), cropKey: String(saved.crop.cropKey || getFarmPlotCropKey(created)), growthProgressSec: Math.max(0, Number(saved.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(saved.crop.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(saved.crop.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(saved.crop.wateredUntilMs) || 0) };
           hydrateCropGrowthState(created.crop);
           updateTilledPlotCropVisual(created);
         }
@@ -15214,7 +20467,10 @@
         const flower = cordeliaFlowers.find(f => f.cactusIndex === Math.max(0, Math.floor(Number(savedFlower?.cactusIndex) || 0)));
         if (flower) applyCordeliaFlowerState(flower, savedFlower);
       }
+      const savedBaseStructures = Array.isArray(payload.baseStructures) ? payload.baseStructures : [];
+      for (const savedStructure of savedBaseStructures) applyMultiplayerBaseStructureRecord(savedStructure, sourceUserId);
       if (typeof relocateBunniesFromTrees === 'function') relocateBunniesFromTrees();
+      refreshAllBaseFoundationSupports();
       updateCrystalPrompt();
     }
 
@@ -15299,6 +20555,8 @@
             engineType: pad.engineType === 'mark3' ? 'mark3' : (pad.engineType === 'upgraded' ? 'upgraded' : 'standard'),
             warpDrive: !!pad.warpDrive,
             warpDriveType: pad.warpDriveType || null,
+            gasCollectionInstalled: !!pad.gasCollectionInstalled,
+            methaneLiters: sanitizeMethaneLiters(pad.methaneLiters ?? pad.rocket?.methaneLiters),
             hasRocket: !!pad.rocket,
             rocketObjectId: pad.rocket ? String(pad.rocket.networkId || '') : '',
             ownerUserId: String(pad.ownerUserId || pad.rocket?.ownerUserId || '')
@@ -15317,14 +20575,52 @@
             yaw: Number(campfire.yaw) || 0,
             surfaceBodyId: campfire.surfaceBodyId || 'ivis'
           })).filter(p => p.objectId),
+          gasCollectionSystems: gasCollectionSystems.map((g) => ({ objectId: String(g.networkId || ''), direction: vectorArray(g.direction), yaw: Number(g.yaw) || 0, surfaceBodyId: g.surfaceBodyId || 'ivis', methaneLiters: sanitizeMethaneLiters(g.methaneLiters) })).filter(p => p.objectId),
           drills: placedDrills.map((drill) => ({
             objectId: String(drill.networkId || ''),
             direction: vectorArray(drill.direction),
             yaw: Number(drill.yaw) || 0,
             durability: Math.max(0, Math.min(100, Number(drill.durability) || 0)),
             surfaceBodyId: drill.surfaceBodyId || 'ivis'
-          })).filter(p => p.objectId)
-        }
+          })).filter(p => p.objectId),
+          baseCores: baseCores.map((base) => ({
+            objectId: String(base.baseId || base.networkId || ''),
+            direction: vectorArray(base.direction),
+            constructionForward: vectorArray(base.constructionForward, [0, 0, 1]),
+            yaw: Number(base.yaw) || 0,
+            surfaceBodyId: base.surfaceBodyId || 'ivis',
+            name: sanitizeBaseName(base.name),
+            ownerUserId: String(base.ownerUserId || ''),
+            ownerName: String(base.ownerName || 'Explorer').slice(0, 24),
+            permissions: { ...(base.permissions || {}) },
+            permissionNames: { ...(base.permissionNames || {}) }
+          })).filter(p => p.objectId),
+          baseStructures: baseStructures.map((structure) => ({
+            objectId: String(structure.structureId || ''),
+            baseId: String(structure.baseId || ''),
+            typeId: String(structure.typeId || ''),
+            interiorMaterial: normalizeBaseInteriorMaterial(structure.interiorMaterial),
+            localPosition: structure.root?.position?.toArray?.() || [0,0.06,0],
+            yaw: Number(structure.yaw) || 0,
+            doorSide: String(structure.doorSide || structure.doorSides?.[0] || 'north'),
+            doorSides: normalizeBaseDoorSides(structure.doorSides || structure.doorSide, ['north', 'south']),
+            doorStates: Array.isArray(structure.doorStates) ? structure.doorStates.map(Boolean) : [],
+            doorOpen: !!structure.doorOpen,
+            fuelSynthInventory: structure.typeId === 'fuel_synthesizer_module' ? cloneFuelSynthInventory(structure.fuelSynthInventory) : null,
+            roofOpen: !!structure.roofOpen,
+            roofTarget: structure.typeId === 'observation_module' ? (structure.roofOpen ? 1 : 0) : 0,
+            furniture: Array.isArray(structure.furniture) ? structure.furniture.map(item => ({
+              furnitureId: String(item.furnitureId || ''),
+              typeId: String(item.typeId || ''),
+              localPosition: item.root?.position?.toArray?.() || item.localPosition?.toArray?.() || [0, 0.2, 0],
+              yaw: Number(item.yaw) || Number(item.root?.rotation?.y) || 0,
+              lampOn: item.lampOn !== false
+            })).filter(item => item.furnitureId && isFurnitureType(item.typeId)) : [],
+            ownerUserId: String(structure.ownerUserId || ''),
+            ownerName: String(structure.ownerName || 'Explorer').slice(0,24)
+          })).filter(p => p.objectId && p.baseId && getBaseStructureDefinition(p.typeId))
+        },
+        baseHomeByUserId: { ...baseHomeByUserId }
       };
     }
 
@@ -15333,6 +20629,9 @@
       for (const furnace of [...furnaces]) if (furnace?.networkId) removeMultiplayerPlaceableById(furnace.networkId);
       for (const campfire of [...campfires]) if (campfire?.networkId) removeMultiplayerPlaceableById(campfire.networkId);
       for (const drill of [...placedDrills]) if (drill?.networkId) removeMultiplayerPlaceableById(drill.networkId);
+      for (const gas of [...gasCollectionSystems]) if (gas?.networkId) removeMultiplayerPlaceableById(gas.networkId);
+      for (const base of [...baseCores]) if (base?.baseId || base?.networkId) removeMultiplayerPlaceableById(base.baseId || base.networkId);
+      for (const key of Object.keys(baseHomeByUserId)) delete baseHomeByUserId[key];
     }
 
     function applyPersistentMultiplayerWorld(snapshot) {
@@ -15367,6 +20666,22 @@
         return dir.lengthSq() > 0.5 ? dir : null;
       };
 
+      if (snapshot.baseHomeByUserId && typeof snapshot.baseHomeByUserId === 'object') {
+        for (const [userId, baseId] of Object.entries(snapshot.baseHomeByUserId)) {
+          const id = String(userId || ''), target = String(baseId || '');
+          if (id && target) baseHomeByUserId[id] = target;
+        }
+      }
+      for (const rec of (Array.isArray(placeables.baseCores) ? placeables.baseCores : [])) {
+        const dir = safeDir(rec.direction);
+        if (!dir || !rec.objectId) continue;
+        const forward = safeDir(rec.constructionForward);
+        createBaseCoreObject(dir, forward, Number(rec.yaw) || 0, safeBodyId(rec.surfaceBodyId), String(rec.objectId), {
+          baseId: String(rec.objectId), networkId: String(rec.objectId), name: rec.name, ownerUserId: rec.ownerUserId, ownerName: rec.ownerName,
+          permissions: rec.permissions, permissionNames: rec.permissionNames
+        });
+      }
+
       const padRecords = Array.isArray(placeables.launchPads) ? placeables.launchPads : [];
       for (const rec of padRecords) {
         const dir = safeDir(rec.direction);
@@ -15374,9 +20689,14 @@
         const pad = createLaunchPadObject(dir, Number(rec.yaw) || 0, safeBodyId(rec.surfaceBodyId), String(rec.objectId));
         pad.ownerUserId = String(rec.ownerUserId || '');
         pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(rec.fuel) || 0));
+        if (rec.embeddedStructureId) { pad.isDockingPad = true; pad.embeddedStructureId = String(rec.embeddedStructureId); pad.dockingStructureId = String(rec.embeddedStructureId); pad.root.userData.isDockingLaunchPad = true; }
         pad.engineType = rec.engineType === 'mark3' ? 'mark3' : (rec.engineType === 'upgraded' ? 'upgraded' : 'standard');
         pad.warpDrive = !!rec.warpDrive;
         pad.warpDriveType = rec.warpDriveType || null;
+        pad.gasCollectionInstalled = !!rec.gasCollectionInstalled;
+        pad.methaneLiters = sanitizeMethaneLiters(rec.methaneLiters);
+        pad.embeddedStructureId = String(rec.embeddedStructureId || pad.embeddedStructureId || '');
+        if (Array.isArray(rec.localPosition)) pad._savedEmbeddedLocalPosition = rec.localPosition.slice(0,3);
         if (rec.hasRocket && rec.rocketObjectId && !pad.rocket && typeof placeRocketOnLaunchPad === 'function') {
           if (placeRocketOnLaunchPad(pad, String(rec.rocketObjectId))) {
             pad.rocket.ownerUserId = pad.ownerUserId;
@@ -15384,6 +20704,9 @@
             pad.rocket.engineType = pad.engineType;
             pad.rocket.warpDrive = pad.warpDrive;
             pad.rocket.warpDriveType = pad.warpDriveType;
+            pad.rocket.gasCollectionInstalled = !!pad.gasCollectionInstalled;
+            pad.rocket.methaneLiters = sanitizeMethaneLiters(pad.methaneLiters);
+            ensureGasCollectionVisual(pad.rocket);
             pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(rec.fuel) || 0));
             ensureRocketEngineVisual(pad.rocket);
           }
@@ -15406,6 +20729,12 @@
         const dir = safeDir(rec.direction);
         if (!dir || !rec.objectId) continue;
         createDrillObject(dir, Number(rec.yaw) || 0, Math.max(0, Math.min(100, Number(rec.durability) || 0)), safeBodyId(rec.surfaceBodyId), String(rec.objectId));
+      }
+      // Restore deployed Gas Collection Systems and their stored Methane on multiplayer reconnect.
+      for (const rec of (Array.isArray(placeables.gasCollectionSystems) ? placeables.gasCollectionSystems : [])) {
+        const dir = safeDir(rec.direction);
+        if (!dir || !rec.objectId) continue;
+        createGasCollectionSystemObject(dir, Number(rec.yaw) || 0, safeBodyId(rec.surfaceBodyId), String(rec.objectId), rec.methaneLiters);
       }
       updateCrystalPrompt();
       return true;
@@ -15926,9 +21255,12 @@
         if (!pad) pad = createLaunchPadObject(dir, Number(rec.yaw) || 0, safeBodyId(rec.surfaceBodyId), id);
         pad.ownerUserId = String(rec.ownerUserId || pad.ownerUserId || '');
         pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(rec.fuel) || 0));
+        if (rec.embeddedStructureId) { pad.isDockingPad = true; pad.embeddedStructureId = String(rec.embeddedStructureId); pad.dockingStructureId = String(rec.embeddedStructureId); pad.root.userData.isDockingLaunchPad = true; }
         pad.engineType = rec.engineType === 'mark3' ? 'mark3' : (rec.engineType === 'upgraded' ? 'upgraded' : 'standard');
         pad.warpDrive = !!rec.warpDrive;
         pad.warpDriveType = rec.warpDriveType || null;
+        pad.gasCollectionInstalled = !!rec.gasCollectionInstalled;
+        pad.methaneLiters = sanitizeMethaneLiters(rec.methaneLiters);
         if (rec.hasRocket && rec.rocketObjectId && !pad.rocket) {
           if (placeRocketOnLaunchPad(pad, String(rec.rocketObjectId))) {
             pad.rocket.ownerUserId = pad.ownerUserId;
@@ -16110,6 +21442,18 @@
           multiplayerDebugRecordReceived('world_environment_snapshot', payload);
           multiplayerDebugStats.lastEnvironmentReceivedAt = performance.now();
           applyMultiplayerEnvironmentSnapshot(payload);
+        })
+        .on('broadcast', { event: 'world_base_structure_sync' }, ({ payload }) => {
+          multiplayerDebugRecordReceived('world_base_structure_sync', payload);
+          applyMultiplayerBaseStructureSync(payload);
+        })
+        .on('broadcast', { event: 'world_base_structure_remove' }, ({ payload }) => {
+          multiplayerDebugRecordReceived('world_base_structure_remove', payload);
+          applyMultiplayerBaseStructureRemoved(payload);
+        })
+        .on('broadcast', { event: 'world_base_door_sync' }, ({ payload }) => {
+          multiplayerDebugRecordReceived('world_base_door_sync', payload);
+          applyMultiplayerBaseDoorSync(payload);
         })
         .on('broadcast', { event: 'entity_state_v1' }, ({ payload }) => {
           multiplayerDebugRecordReceived('entity_state_v1', payload);
@@ -16313,11 +21657,11 @@
     function triggerEmote(emoteId) {
       const id = String(emoteId || '');
       const def = EMOTE_DEFINITIONS[id];
-      if (!def || state.gameState !== 'playing' || state.paused || playerState.inRocket || sleepingActive) return false;
+      if (!def || state.gameState !== 'playing' || state.paused || playerState.inRocket || sleepingActive || sittingFurniture) return false;
       activeEmoteId = id;
       activeEmoteStartedAt = performance.now();
       activeEmoteSequence += 1;
-      closeEmoteWheel();
+      closeEmoteWheel({ relock: true });
       return true;
     }
 
@@ -16407,15 +21751,16 @@
       return true;
     }
 
-    function closeEmoteWheel() {
+    function closeEmoteWheel(options = {}) {
+      const shouldRelock = options.relock !== false;
+      const wasOpen = emoteWheelOpen;
       emoteWheelOpen = false;
       document.getElementById('emoteWheel')?.classList.add('hidden');
       clearPhysicalKeys();
       for (const k in systemState.keys) systemState.keys[k] = false;
-    }
-
-    function toggleEmoteWheel() {
-      return emoteWheelOpen ? (closeEmoteWheel(), true) : openEmoteWheel();
+      if (shouldRelock && wasOpen && state.gameState === 'playing' && !state.paused && !playerState.inRocket) {
+        attemptPointerLock();
+      }
     }
 
     function buildEmoteWheel() {
@@ -16443,6 +21788,7 @@
         moving,
         sprinting: !playerCrouchBlend && isActionDown('sprint') && playerState.stamina > 0 && !playerState.exhausted,
         crouching: playerCrouchBlend > 0.02,
+        sitting: !!sittingFurniture,
         airborne: playerState.heightOffset > 0.06 || Math.abs(playerState.verticalVelocity) > 0.6,
         toolActive,
         toolSwing: !!toolSwingState.active || !!toolImpactState.active,
@@ -16563,7 +21909,32 @@
           parts.head.rotation.copy(base.head);
           parts.head.rotation.z += crouch * -0.06;
         }
-        if (remoteEmoteDef && remote.state.emoteId) {
+        if (anim.sitting) {
+          if (parts.body && base.body && basePos.body) {
+            parts.body.position.copy(basePos.body); parts.body.position.y -= 0.12;
+            parts.body.rotation.copy(base.body); parts.body.rotation.z -= 0.04;
+          }
+          if (parts.head && base.head && basePos.head) {
+            parts.head.position.copy(basePos.head); parts.head.position.y -= 0.15; parts.head.position.x += 0.05;
+            parts.head.rotation.copy(base.head); parts.head.rotation.z -= 0.03;
+          }
+          if (parts.leftLeg && base.leftLeg && basePos.leftLeg) {
+            parts.leftLeg.position.copy(basePos.leftLeg); parts.leftLeg.position.y -= 0.12;
+            parts.leftLeg.rotation.copy(base.leftLeg); parts.leftLeg.rotation.z += 1.02;
+          }
+          if (parts.rightLeg && base.rightLeg && basePos.rightLeg) {
+            parts.rightLeg.position.copy(basePos.rightLeg); parts.rightLeg.position.y -= 0.12;
+            parts.rightLeg.rotation.copy(base.rightLeg); parts.rightLeg.rotation.z -= 1.02;
+          }
+          if (parts.leftArm && base.leftArm && basePos.leftArm) {
+            parts.leftArm.position.copy(basePos.leftArm); parts.leftArm.position.y -= 0.16;
+            parts.leftArm.rotation.copy(base.leftArm); parts.leftArm.rotation.z += 0.12;
+          }
+          if (parts.rightArm && base.rightArm && basePos.rightArm) {
+            parts.rightArm.position.copy(basePos.rightArm); parts.rightArm.position.y -= 0.16;
+            parts.rightArm.rotation.copy(base.rightArm); parts.rightArm.rotation.z -= 0.12;
+          }
+        } else if (remoteEmoteDef && remote.state.emoteId) {
           applyEmotePose(parts, base, basePos, String(remote.state.emoteId), remoteEmoteT, false);
         }
         if (remote.nameTag) remote.nameTag.position.y = 2.55 + (anim.crouching ? -0.16 : 0);
@@ -16622,7 +21993,7 @@
     }
 
     function updatePlayerCrouchState(delta) {
-      const canCrouch = state.gameState === 'playing' && !state.paused && !playerState.inRocket && !sleepingActive;
+      const canCrouch = state.gameState === 'playing' && !state.paused && !playerState.inRocket && !sleepingActive && !sittingFurniture;
       const grounded = playerState.heightOffset <= 0.06 && Math.abs(playerState.verticalVelocity) < 0.7;
       const wanted = canCrouch && grounded && isActionDown('crouch');
       const target = wanted ? 1 : 0;
@@ -16672,7 +22043,7 @@
       const legForward = playerCrouchBlend * 0.10;
       const legCrouchBend = playerCrouchBlend * -0.26;
       const armCrouchBend = playerCrouchBlend * -0.10;
-      const emote = updateEmoteState();
+      const emote = sittingFurniture ? null : updateEmoteState();
 
       // Keep the model at its original scale. The body parts themselves do the crouching.
       playerVisual.scale.copy(playerModelBaseScale || new THREE.Vector3(PLAYER_MODEL_SCALE, PLAYER_MODEL_SCALE, PLAYER_MODEL_SCALE));
@@ -16739,6 +22110,33 @@
           emote.t,
           true
         );
+      }
+
+      if (sittingFurniture) {
+        if (playerModelParts?.body && base.body && basePos?.body) {
+          playerModelParts.body.position.copy(basePos.body); playerModelParts.body.position.y -= 0.12;
+          playerModelParts.body.rotation.copy(base.body); playerModelParts.body.rotation.z -= 0.04;
+        }
+        if (playerModelParts?.head && base.head && basePos?.head) {
+          playerModelParts.head.position.copy(basePos.head); playerModelParts.head.position.y -= 0.15; playerModelParts.head.position.x += 0.05;
+          playerModelParts.head.rotation.copy(base.head); playerModelParts.head.rotation.z -= 0.03;
+        }
+        if (playerModelParts?.leftLeg && base.leftLeg && basePos?.leftLeg) {
+          playerModelParts.leftLeg.position.copy(basePos.leftLeg); playerModelParts.leftLeg.position.y -= 0.12;
+          playerModelParts.leftLeg.rotation.copy(base.leftLeg); playerModelParts.leftLeg.rotation.z += 1.02;
+        }
+        if (playerModelParts?.rightLeg && base.rightLeg && basePos?.rightLeg) {
+          playerModelParts.rightLeg.position.copy(basePos.rightLeg); playerModelParts.rightLeg.position.y -= 0.12;
+          playerModelParts.rightLeg.rotation.copy(base.rightLeg); playerModelParts.rightLeg.rotation.z -= 1.02;
+        }
+        if (playerModelParts?.leftArm && base.leftArm && basePos?.leftArm) {
+          playerModelParts.leftArm.position.copy(basePos.leftArm); playerModelParts.leftArm.position.y -= 0.16;
+          playerModelParts.leftArm.rotation.copy(base.leftArm); playerModelParts.leftArm.rotation.z += 0.12;
+        }
+        if (playerModelParts?.rightArm && base.rightArm && basePos?.rightArm) {
+          playerModelParts.rightArm.position.copy(basePos.rightArm); playerModelParts.rightArm.position.y -= 0.16;
+          playerModelParts.rightArm.rotation.copy(base.rightArm); playerModelParts.rightArm.rotation.z -= 0.12;
+        }
       }
 
       if (playerHatVisual) {
@@ -17209,23 +22607,33 @@
       return out.copy(ivisSolarOrbitPosition);
     }
 
+    const compassHudEl = document.getElementById('compassHud');
+    const compassHeadingEl = document.getElementById('compassHeading');
+    const compassStripSpans = [...document.querySelectorAll('#compassStrip span')];
+    const compassCenterTemp = new THREE.Vector3();
+    const compassPlayerWorldTemp = new THREE.Vector3();
+    const compassSurfaceNormalTemp = new THREE.Vector3();
+    const compassNorthTemp = new THREE.Vector3();
+    const compassEastTemp = new THREE.Vector3();
+    const compassForwardTemp = new THREE.Vector3();
+    const compassBodyQuatTemp = new THREE.Quaternion();
+
     function getPlanetCompassState() {
       if (state.gameState !== 'playing' || playerState.inRocket || sleepingActive) return null;
       const bodyId = omegaWalkingBodyId || (moonWalking ? 'moon' : (cordeliaWalking ? 'cordelia' : 'ivis'));
-      const center = getSurfaceBodyWorldCenter(bodyId, new THREE.Vector3());
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
-      const surfaceNormal = playerWorld.clone().sub(center);
+      const center = getSurfaceBodyWorldCenter(bodyId, compassCenterTemp);
+      const playerWorld = player.getWorldPosition(compassPlayerWorldTemp);
+      const surfaceNormal = compassSurfaceNormalTemp.copy(playerWorld).sub(center);
       if (surfaceNormal.lengthSq() < 0.0001) return null;
       surfaceNormal.normalize();
       const parent = bodyId === 'ivis' ? planetSystem : (bodyId === 'moon' ? moonMesh : (bodyId === 'cordelia' ? cordeliaMesh : getOmegaMesh(bodyId)));
       if (!parent) return null;
-      const bodyWorldQuat = parent.getWorldQuaternion(new THREE.Quaternion());
-      const north = new THREE.Vector3(0, 1, 0).applyQuaternion(bodyWorldQuat).normalize();
+      const north = compassNorthTemp.set(0, 1, 0).applyQuaternion(parent.getWorldQuaternion(compassBodyQuatTemp)).normalize();
       north.addScaledVector(surfaceNormal, -north.dot(surfaceNormal));
       if (north.lengthSq() < 0.0001) return null;
       north.normalize();
-      const east = new THREE.Vector3().crossVectors(surfaceNormal, north).normalize();
-      const forward = camera.getWorldDirection(new THREE.Vector3());
+      const east = compassEastTemp.crossVectors(surfaceNormal, north).normalize();
+      const forward = camera.getWorldDirection(compassForwardTemp);
       forward.addScaledVector(surfaceNormal, -forward.dot(surfaceNormal));
       if (forward.lengthSq() < 0.0001) forward.copy(north);
       forward.normalize();
@@ -17235,16 +22643,13 @@
     }
 
     function updateCompassHud() {
-      const hud = document.getElementById('compassHud');
-      if (!hud) return;
       const info = getPlanetCompassState();
-      if (!info) { hud.classList.add('hidden'); return; }
-      hud.classList.remove('hidden');
+      if (!info) { compassHudEl?.classList.add('hidden'); return; }
+      compassHudEl?.classList.remove('hidden');
       const labels = ['N','NE','E','SE','S','SW','W','NW'];
       const sector = Math.round(info.heading / 45) % 8;
-      document.querySelectorAll('#compassStrip span').forEach((el, i) => el.classList.toggle('active', i === sector));
-      const headingEl = document.getElementById('compassHeading');
-      if (headingEl) headingEl.textContent = labels[sector] + ' · ' + Math.round(info.heading) + '°';
+      for (let i = 0; i < compassStripSpans.length; i++) compassStripSpans[i].classList.toggle('active', i === sector);
+      if (compassHeadingEl) compassHeadingEl.textContent = labels[sector] + ' · ' + Math.round(info.heading) + '°';
     }
 
     function canPlaceSleepingBagHere(ctx = getPlaceableSurfaceContext()) {
@@ -17299,6 +22704,7 @@
       const overlay = document.getElementById('sleepOverlay');
       if (overlay) overlay.classList.add('hidden');
       sleepingBagInUse = null;
+      sittingFurniture = null;
       sleepingRealElapsed = 0;
       sleepingGameRemaining = 0;
       setHeldItem(uiState.equippedItemType);
@@ -17704,7 +23110,7 @@
       visual.userData.cropStage = stage;
       visual.userData.cropId = plot.crop.cropId;
       visual.userData.cropWet = wet;
-      visual.position.y = 0.055;
+      visual.position.y = plot.hydroponic ? 0.325 : 0.055;
       if (wet) addCropWateredMarker(visual);
       plot.root.add(visual);
       plot.cropVisual = visual;
@@ -17716,8 +23122,23 @@
       let changed = false;
       const now = Date.now();
       farmCropPromptTimer += Math.max(0, Number(delta) || 0);
-      for (const plot of tilledPlots) {
-        if (!plot?.crop) { updateTilledPlotWetVisual(plot, now); continue; }
+      for (const plot of tilledPlots.concat(hydroponicsPlots)) {
+        if (!plot?.crop) {
+          updateTilledPlotWetVisual(plot, now);
+          if (plot.hydroponic) {
+            const particles = plot.root?.userData?.hydroEmitterParticles || [];
+            const t = performance.now() * 0.0018;
+            for (const particle of particles) {
+              const cycle = (t + Number(particle.phase || 0)) % 1.0;
+              particle.mesh.position.y = 1.68 - cycle * 0.95;
+              particle.mesh.position.x = Math.sin((cycle + Number(particle.phase || 0)) * Math.PI * 2) * 0.05;
+              const pulse = 0.72 + Math.sin((t + Number(particle.phase || 0)) * 5.5) * 0.18;
+              particle.mesh.scale.setScalar(Math.max(0.42, pulse));
+              if (particle.mesh.material?.opacity !== undefined) particle.mesh.material.opacity = 0.28 + (1 - cycle) * 0.58;
+            }
+          }
+          continue;
+        }
         hydrateCropGrowthState(plot.crop, now);
         const beforeStage = Number(plot.crop.stage) || 0;
         const beforeWet = isCropWet(plot.crop, now);
@@ -17728,6 +23149,20 @@
         if (stage >= 3) recordCropGrown(plot.crop.cropId);
         if (stage !== beforeStage || wet !== beforeWet) { updateTilledPlotCropVisual(plot); changed = true; }
         else updateTilledPlotWetVisual(plot, now);
+        if (plot.hydroponic) {
+          const particles = plot.root?.userData?.hydroEmitterParticles || [];
+          const t = performance.now() * 0.0018;
+          for (const particle of particles) {
+            const cycle = (t + Number(particle.phase || 0)) % 1.0;
+            particle.mesh.position.y = 1.68 - cycle * 0.95;
+            particle.mesh.position.x = Math.sin((cycle + Number(particle.phase || 0)) * Math.PI * 2) * 0.05;
+            const pulse = 0.72 + Math.sin((t + Number(particle.phase || 0)) * 5.5) * 0.18;
+            particle.mesh.scale.setScalar(Math.max(0.42, pulse));
+            if (particle.mesh.material?.opacity !== undefined) particle.mesh.material.opacity = 0.28 + (1 - cycle) * 0.58;
+          }
+          const nozzle = plot.root?.userData?.hydroNozzle;
+          if (nozzle) nozzle.material.emissiveIntensity = 1.0 + Math.sin(t * 3.8 + Number(plot.hydroSlotIndex || 0)) * 0.28;
+        }
         if (plot.cropVisual?.userData?.wetMarker && wet) {
           const pulse = 1 + Math.sin(performance.now() * 0.0035) * 0.06;
           plot.cropVisual.userData.wetMarker.scale.setScalar(pulse);
@@ -17744,27 +23179,8 @@
       const cameraWorld = camera.getWorldPosition(new THREE.Vector3());
       const lookDir = camera.getWorldDirection(new THREE.Vector3()).normalize();
       let best = null, bestScore = Infinity;
-      for (const plot of tilledPlots) {
-        if (!plot?.root?.visible) continue;
-        if (requireEmpty && plot.crop) continue;
-        const world = plot.root.getWorldPosition(new THREE.Vector3());
-        const to = world.clone().sub(cameraWorld);
-        const distance = to.length();
-        if (distance > 4.8 || distance < 0.2) continue;
-        to.normalize();
-        const facing = lookDir.dot(to);
-        if (facing < 0.12) continue;
-        const score = distance - facing * 1.05;
-        if (score < bestScore) { bestScore = score; best = plot; }
-      }
-      return best;
-    }
-
-    function findNearbyFarmPlotForInteraction(requireEmpty = false) {
-      const cameraWorld = camera.getWorldPosition(new THREE.Vector3());
-      const lookDir = camera.getWorldDirection(new THREE.Vector3()).normalize();
-      let best = null, bestScore = Infinity;
-      for (const plot of tilledPlots) {
+      const plots = tilledPlots.concat(hydroponicsPlots);
+      for (const plot of plots) {
         if (!plot?.root?.visible) continue;
         if (requireEmpty && plot.crop) continue;
         const world = plot.root.getWorldPosition(new THREE.Vector3());
@@ -17800,17 +23216,22 @@
             const wet = occupied.crop ? isCropWet(occupied.crop) : false;
             const remain = occupied.crop ? Math.ceil(getCropSecondsRemaining(occupied.crop)) : 0;
             prompt.classList.remove('hidden');
-            prompt.innerHTML = ready ? '<span class="promptKey">READY</span> ' + (occupiedCrop?.name || 'Crop') + ' is ready to harvest' : (wet ? '<span class="promptKey">GROWING</span> ' + (occupiedCrop?.name || 'Crop') + ' · wet ' + Math.ceil(Math.max(0, Number(occupied.crop.wateredUntilMs || 0) - Date.now()) / 1000) + 's · ' + remain + 's left' : '<span class="promptKey">DRY</span> Water ' + (occupiedCrop?.name || 'Crop') + ' to resume growth · ' + remain + 's left');
+            if (occupied.hydroponic) {
+              prompt.innerHTML = ready ? '<span class="promptKey">READY</span> ' + (occupiedCrop?.name || 'Crop') + ' is ready to harvest' : '<span class="promptKey">GROWING</span> ' + (occupiedCrop?.name || 'Crop') + ' · auto-watered · ' + remain + 's left';
+            } else {
+              prompt.innerHTML = ready ? '<span class="promptKey">READY</span> ' + (occupiedCrop?.name || 'Crop') + ' is ready to harvest' : (wet ? '<span class="promptKey">GROWING</span> ' + (occupiedCrop?.name || 'Crop') + ' · wet ' + Math.ceil(Math.max(0, Number(occupied.crop.wateredUntilMs || 0) - Date.now()) / 1000) + 's · ' + remain + 's left' : '<span class="promptKey">DRY</span> Water ' + (occupiedCrop?.name || 'Crop') + ' to resume growth · ' + remain + 's left');
+            }
           }
           return true;
         }
-        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">E</span> Plant ' + crop.name + ' Seeds on tilled soil'; }
+        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">E</span> Plant ' + crop.name + ' Seeds on soil or hydroponic bed'; }
         return true;
       }
       if (!removeItemsFromInventory(crop.seedId, 1)) return true;
       plot.cropGeneration = Math.max(1, Math.floor(Number(plot.cropGeneration || 0)) + 1);
       const plantedAtMs = Date.now();
-      plot.crop = { cropId: crop.id, plantedAtMs, stage: 0, cropKey: getFarmPlotCropKey(plot), growthProgressSec: 0, growthUpdatedAtMs: plantedAtMs, wateredAtMs: 0, wateredUntilMs: 0, plantedByUserId: String(currentAccountUser?.id || 'local-player') };
+      const autoWaterUntil = plot.hydroponic ? plantedAtMs + HYDROPONICS_AUTO_WATER_MS : 0;
+      plot.crop = { cropId: crop.id, plantedAtMs, stage: 0, cropKey: getFarmPlotCropKey(plot), growthProgressSec: 0, growthUpdatedAtMs: plantedAtMs, wateredAtMs: plot.hydroponic ? plantedAtMs : 0, wateredUntilMs: autoWaterUntil };
       updateTilledPlotCropVisual(plot);
       updateHotbarUI(); updateInventoryUI(); refreshEquippedItem();
       markJournalItemDiscovered(crop.seedId);
@@ -17820,7 +23241,7 @@
       scheduleMultiplayerEnvironmentSnapshot();
       playAudio('chop', 0.24, 1.28, 350);
       spawnImpactParticles(plot.root.getWorldPosition(new THREE.Vector3()).add(plot.direction.clone().multiplyScalar(0.06)), 0x5f9c52, { count: 7, life: 0.38, speed: 0.55, size: 0.045, gravity: 0.4, spread: 0.7, upward: 0.75 });
-      if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">PLANTED</span> ' + crop.name + ' · ' + Math.ceil(crop.growSeconds) + 's'; }
+      if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = plot.hydroponic ? '<span class="promptKey">PLANTED</span> ' + crop.name + ' · Hydroponics auto-watering enabled · ' + Math.ceil(crop.growSeconds) + 's' : '<span class="promptKey">PLANTED</span> ' + crop.name + ' · ' + Math.ceil(crop.growSeconds) + 's'; }
       setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 650);
       return true;
     }
@@ -17872,6 +23293,11 @@
       const prompt = document.getElementById('crystalPrompt');
       const plot = findNearbyFarmPlotForInteraction(false);
       if (!plot?.crop) return false;
+      if (plot.hydroponic) {
+        const crop = cropById[plot.crop.cropId];
+        if (prompt) { prompt.classList.remove('hidden'); prompt.innerHTML = '<span class="promptKey">AUTO-WATERED</span> ' + (crop?.name || 'Crop') + ' does not need manual watering'; }
+        return true;
+      }
       const crop = cropById[plot.crop.cropId];
       if (!crop) return false;
       advanceCropGrowth(plot.crop, Date.now());
@@ -17924,10 +23350,8 @@
       const cropKey = String(plot.crop.cropKey || getFarmPlotCropKey(plot));
       if (!addItemToInventory(crop.id, crop.harvestCount, null, true)) return true;
       markJournalItemDiscovered(crop.id);
-      const selfGrownHarvest = String(plot.crop.plantedByUserId || 'local-player') === getConciergeQuestCurrentUserKey();
       recordCropGrown(crop.id);
       recordCropHarvested(crop.id);
-      if (typeof recordConciergeQuestCropHarvest === 'function') recordConciergeQuestCropHarvest(crop.id, crop.harvestCount, selfGrownHarvest);
       plot.crop = null;
       updateTilledPlotCropVisual(plot);
       if (multiplayerMode) broadcastMultiplayerCropHarvested(plot, cropKey, crop.id, crop.harvestCount);
@@ -17953,7 +23377,6 @@
         growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())),
         wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)),
         wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0)),
-        plantedByUserId: String(plot.crop.plantedByUserId || 'local-player'),
         stage: Math.max(0, Math.min(3, Math.floor(Number(plot.crop.stage) || 0))),
         generation: Math.max(1, Math.floor(Number(plot.cropGeneration) || 1)), sentAt: Date.now()
       };
@@ -18014,7 +23437,7 @@
       const generation = Math.max(1, Math.floor(Number(payload.generation) || 1));
       if (generation <= Math.floor(Number(plot.cropGeneration || 0))) return;
       plot.cropGeneration = generation;
-      plot.crop = { cropId, plantedAtMs: Math.max(0, Number(payload.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(payload.stage) || 0))), cropKey: String(payload.cropKey || (String(plot.plotKey || '') + ':crop:g' + generation)), growthProgressSec: Math.max(0, Number(payload.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(payload.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(payload.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(payload.wateredUntilMs) || 0), plantedByUserId: String(payload.plantedByUserId || 'local-player') };
+      plot.crop = { cropId, plantedAtMs: Math.max(0, Number(payload.plantedAtMs) || Date.now()), stage: Math.max(0, Math.min(3, Math.floor(Number(payload.stage) || 0))), cropKey: String(payload.cropKey || (String(plot.plotKey || '') + ':crop:g' + generation)), growthProgressSec: Math.max(0, Number(payload.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Number(payload.growthUpdatedAtMs) || Date.now()), wateredAtMs: Math.max(0, Number(payload.wateredAtMs) || 0), wateredUntilMs: Math.max(0, Number(payload.wateredUntilMs) || 0) };
       hydrateCropGrowthState(plot.crop);
       updateTilledPlotCropVisual(plot);
       markMultiplayerWorldDirty('remote-crop-planted');
@@ -18074,6 +23497,11 @@
       } else if (typeId === 'drill') {
         fpModel = createDrillVisual(0.90);
         tpModel = createDrillVisual(0.64);
+      } else if (typeId === 'hammer') {
+        fpModel = createHammerVisual(0.90);
+        tpModel = createHammerVisual(0.64);
+        fpModel.position.y -= 0.08;
+        tpModel.position.y -= 0.04;
       } else if (typeId === 'iron_wrench' || typeId === 'titanium_wrench') {
         const tier = typeId === 'titanium_wrench' ? 'titanium' : 'iron';
         fpModel = createWrenchVisual(0.86, tier);
@@ -18107,6 +23535,11 @@
       } else if (typeId === 'journal') {
         fpModel = createJournalVisual(0.86);
         tpModel = createJournalVisual(0.62);
+      } else if (typeId.startsWith('furniture_')) {
+        // Furniture is a placement item, not a hand-held prop.  During this staged
+        // implementation it is deliberately represented by no first/third-person
+        // mesh.  The important contract is that selecting it is safe and deterministic.
+        return;
       } else if (typeId === 'raw_beobaka' || typeId === 'cooked_beobaka') {
         const cooked = typeId === 'cooked_beobaka';
         fpModel = createBeobakaMeatVisual(0.82, cooked);
@@ -18352,6 +23785,29 @@
       return fallback;
     }
 
+    function createHammerVisual(scale = 1) {
+      const group = new THREE.Group();
+      const handleMat = new THREE.MeshStandardMaterial({ color: 0x8b5a32, roughness: 0.84 });
+      const metalMat = new THREE.MeshStandardMaterial({ color: 0x7f8790, roughness: 0.34, metalness: 0.86 });
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.095, 1.10, 8), handleMat);
+      handle.position.y = -0.05;
+      handle.rotation.z = -0.08;
+      group.add(handle);
+      const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.11, 0.26, 8), handleMat);
+      grip.position.set(-0.05, -0.57, 0);
+      grip.rotation.z = -0.08;
+      group.add(grip);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.26, 0.22), metalMat);
+      head.position.set(0.10, 0.52, 0);
+      head.rotation.z = 0.03;
+      group.add(head);
+      const face = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.30, 0.30), metalMat);
+      face.position.set(0.42, 0.52, 0);
+      group.add(face);
+      group.scale.setScalar(scale);
+      return group;
+    }
+
     function createWrenchVisual(scale = 1, tier = 'iron') {
       if (wrenchModelTemplate) {
         const group = wrenchModelTemplate.clone(true);
@@ -18484,7 +23940,7 @@
       const selected = uiState.equippedItemType;
       const isTool = selected === 'axe' || selected === 'wooden_axe' || selected === 'stone_axe' || selected === 'iron_axe' ||
         selected === 'wooden_pickaxe' || selected === 'stone_pickaxe' || selected === 'iron_pickaxe' ||
-        selected === 'wooden_scythe' || selected === 'stone_scythe' || selected === 'iron_scythe' || selected === 'wooden_hoe' || selected === 'stone_hoe' || selected === 'iron_hoe' || selected === 'drill';
+        selected === 'wooden_scythe' || selected === 'stone_scythe' || selected === 'iron_scythe' || selected === 'wooden_hoe' || selected === 'stone_hoe' || selected === 'iron_hoe' || selected === 'drill' || selected === 'hammer';
 
       // Always restore the exact resting pose when no tool action is active.
       if (!toolSwingState.active || !isTool) {
@@ -18817,7 +24273,7 @@
       return capacity >= amount;
     }
 
-    function addItemToInventory(typeId, amount = 1, durability = null, pickupFeedback = false) {
+    function addItemToInventory(typeId, amount = 1, durability = null, pickupFeedback = false, extra = null) {
       const item = itemById[typeId];
       if (!item || amount <= 0) return false;
       // Any successful pickup/craft/purchase becomes a permanent journal discovery.
@@ -18861,7 +24317,8 @@
         inventorySlots[i] = {
           typeId,
           count: moved,
-          ...(item.tool ? { durability: durability == null ? getToolMaxDurability(item) : Math.max(0, Math.min(getToolMaxDurability(item), Math.floor(durability))) } : {})
+          ...(item.tool ? { durability: durability == null ? getToolMaxDurability(item) : Math.max(0, Math.min(getToolMaxDurability(item), Math.floor(durability))) } : {}),
+          ...(extra && (typeId === 'gas_collection_system' || typeId === 'methane_container') ? { methaneLiters: sanitizeMethaneLiters(extra.methaneLiters) } : {})
         };
         remaining -= moved;
       }
@@ -18871,11 +24328,6 @@
       const success = remaining === 0;
       if (success && journalWasNew) markJournalItemDiscovered(typeId);
       if (success && pickupFeedback) showInventoryPickupPopup(typeId, amount);
-      if (success && typeof recordConciergeQuestItemCollected === 'function') {
-        recordConciergeQuestItemCollected(typeId, amount);
-        const isEdibleFruit = typeId === 'veyra_fruit' || CROP_TYPES.some(crop => crop.id === typeId);
-        if (isEdibleFruit) recordConciergeQuestEdibleFruit(amount);
-      }
       return success;
     }
 
@@ -18921,6 +24373,7 @@
       const slot = inventorySlots[getSelectedHotbarInventoryIndex()];
       uiState.equippedItemType = slot ? slot.typeId : null;
       setHeldItem(uiState.equippedItemType);
+      if (!isFurnitureType(uiState.equippedItemType) && typeof exitFurniturePlacementMode === 'function') exitFurniturePlacementMode();
       updateHotbarUI();
       if (uiState.inventoryOpen) updateInventoryUI();
       scheduleSecureHotbarPersistence();
@@ -18955,6 +24408,13 @@
       if (data.kind === 'titanium_ore') { icon.style.background = 'linear-gradient(135deg,#d7e6f2 0%,#8196a8 38%,#c4d8e6 56%,#5d7182 100%)'; icon.style.boxShadow = '0 0 10px rgba(160,200,230,.45)'; }
       if (data.kind === 'titanium_ingot') { icon.style.background = 'linear-gradient(145deg,#eef7ff,#9eb0bf 65%,#dce8f0)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.45),0 0 10px rgba(190,220,240,.36)'; }
       if (data.kind === 'iron_plate') { icon.style.background = 'linear-gradient(145deg,#cbd0d5 0%,#6e747a 62%,#aeb5bb 100%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.25),0 0 8px rgba(160,170,180,.24)'; }
+      if (data.kind === 'sand') { icon.style.background = 'radial-gradient(circle at 36% 34%,#f1dfb5 0%,#d5bd87 44%,#a58b5c 100%)'; icon.style.boxShadow = '0 0 9px rgba(214,190,132,.30)'; }
+      if (data.kind === 'glass') { icon.style.background = 'linear-gradient(145deg,#e4fbff 0%,#8eddea 42%,#4c9fb0 100%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.55),0 0 10px rgba(112,226,244,.38)'; }
+      if (data.kind === 'electronics') { icon.style.background = 'linear-gradient(145deg,#e8fdff 0%,#5edfee 35%,#17697d 70%,#102a33 100%)'; icon.style.boxShadow = '0 0 11px rgba(76,224,245,.45), inset 0 1px 0 rgba(255,255,255,.34)'; }
+      if (data.kind === 'advanced_electronics') { icon.style.background = 'linear-gradient(145deg,#f5efff 0%,#b89cff 35%,#6245c1 70%,#21163b 100%)'; icon.style.boxShadow = '0 0 12px rgba(155,131,255,.50), inset 0 1px 0 rgba(255,255,255,.42)'; }
+      if (data.kind === 'gas_collection_system') { icon.style.background = 'linear-gradient(145deg,#c7d2d8 0%,#58656d 52%,#252c30 100%)'; icon.style.boxShadow = '0 0 9px rgba(105,170,190,.24)'; }
+      if (data.kind === 'methane_container') { icon.style.background = 'linear-gradient(145deg,#bff7ff 0%,#4eb9ce 42%,#27454d 100%)'; icon.style.boxShadow = '0 0 12px rgba(80,205,230,.42)'; }
+      if (data.kind === 'advanced_warp_fuel_jerrycan') { icon.style.background = 'linear-gradient(145deg,#efe0ff 0%,#ad75ef 44%,#482e75 100%)'; icon.style.boxShadow = '0 0 12px rgba(170,115,240,.45)'; }
       if (data.kind === 'titanium_plate') { icon.style.background = 'linear-gradient(145deg,#f7fcff 0%,#9eb2c1 58%,#dce8ef 100%)'; icon.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,.4),0 0 9px rgba(180,215,235,.34)'; }
       if (data.kind === 'charcoal') { icon.style.background = 'radial-gradient(circle at 35% 30%,#5a5652 0%,#2f2c2a 48%,#171614 100%)'; icon.style.boxShadow = '0 0 8px rgba(30,28,26,.32)'; }
       if (data.kind === 'fruit') { icon.style.background = data.css; icon.style.boxShadow = '0 0 12px rgba(192,255,204,.42)'; }
@@ -18966,6 +24426,7 @@
       }
       if (data.kind === 'campfire') { icon.style.background = 'radial-gradient(circle at 50% 48%,#ffd36d 0%,#ff7b22 24%,#7b3a1f 27%,#3f2d23 54%,#1b1816 100%)'; icon.style.boxShadow = '0 0 12px rgba(255,124,50,.48)'; }
       if (data.kind === 'wrench') { icon.classList.add(data.wrenchTier === 'titanium' ? 'titaniumWrench' : 'ironWrench'); icon.innerHTML = '<span class="wrenchIconGlyph"></span>'; }
+      if (data.kind === 'hammer') { icon.innerHTML = '<span class="hammerIconGlyph"></span>'; }
       if (typeId === 'sleeping_bag') {
         const tex = getSleepingBagIconDataURL();
         if (tex) {
@@ -19013,6 +24474,30 @@
       if (data.kind === 'crop') {
         icon.style.background = 'radial-gradient(circle at 38% 34%, ' + data.css + ' 0%, ' + data.css + 'cc 42%, #2c4b32 43%, #203523 100%)';
         icon.style.boxShadow = '0 0 10px ' + data.css + '55';
+      }
+      if (data.kind === 'base_core') {
+        icon.style.background = 'radial-gradient(circle at 50% 38%, #b7fbff 0 10%, #52e5ff 12% 24%, #1b8398 26% 42%, #26333b 44% 100%)';
+        icon.style.boxShadow = '0 0 15px rgba(77,228,255,.62), inset 0 0 7px rgba(220,255,255,.34)';
+      }
+      if (data.kind === 'furniture_bed') {
+        icon.style.background = 'linear-gradient(160deg,#d9b48b 0 34%,#f2eee8 35% 63%,#8e5e3d 64% 100%)';
+        icon.style.boxShadow = '0 0 8px rgba(210,175,135,.26)';
+      }
+      if (data.kind === 'furniture_wardrobe') {
+        icon.style.background = 'linear-gradient(145deg,#7a5134 0 48%,#b97945 49% 54%,#6a452e 55% 100%)';
+        icon.style.boxShadow = '0 0 8px rgba(170,115,70,.22)';
+      }
+      if (data.kind === 'furniture_desk') {
+        icon.style.background = 'linear-gradient(145deg,#9a6138 0 34%,#6c4329 35% 69%,#bd8050 70% 100%)';
+        icon.style.boxShadow = '0 0 8px rgba(185,125,76,.24)';
+      }
+      if (data.kind === 'furniture_chair') {
+        icon.style.background = 'linear-gradient(155deg,#b57a48 0 46%,#74472d 47% 100%)';
+        icon.style.boxShadow = '0 0 8px rgba(181,122,70,.22)';
+      }
+      if (data.kind === 'furniture_light') {
+        icon.style.background = 'radial-gradient(circle at 50% 35%,#fff5b8 0 22%,#f0c95e 24% 46%,#6d5a32 48% 100%)';
+        icon.style.boxShadow = '0 0 12px rgba(255,227,125,.38)';
       }
       if (data.kind === 'watering_can') { icon.classList.add('wateringCanIcon'); }
       if (data.kind === 'edible_flower') { icon.style.background = 'radial-gradient(circle at 45% 40%,#ffd1e3 0 16%,#ff82b3 18% 42%,#a13d68 44% 100%)'; icon.style.boxShadow = '0 0 10px rgba(255,130,179,.34)'; }
@@ -19261,14 +24746,17 @@
       if (ref.type === 'inventory') return inventorySlots[ref.index] || null;
       if (ref.type === 'backpack') return backpackSlots[ref.index] || null;
       if (ref.type === 'furnace') return activeFurnace ? activeFurnace.inventory[ref.key] || null : null;
+      if (ref.type === 'fuelSynth') return activeFuelSynth ? getFuelSynthStructureInventory(activeFuelSynth.structure)[ref.key] || null : null;
       if (ref.type === 'container') return activeContainer && activeContainer.containerId === ref.containerId ? activeContainer.inventory[ref.index] || null : null;
       return null;
     }
 
     function setDragRefData(ref, value) {
+      if (!ref) return;
       if (ref.type === 'inventory') inventorySlots[ref.index] = value;
       else if (ref.type === 'backpack') backpackSlots[ref.index] = value;
       else if (ref.type === 'furnace' && activeFurnace) activeFurnace.inventory[ref.key] = value;
+      else if (ref.type === 'fuelSynth' && activeFuelSynth) getFuelSynthStructureInventory(activeFuelSynth.structure)[ref.key] = value ? { ...value } : null;
       else if (ref.type === 'container' && activeContainer && activeContainer.containerId === ref.containerId) activeContainer.inventory[ref.index] = value;
     }
 
@@ -19277,6 +24765,7 @@
       if (ref.type === 'inventory') return true;
       if (ref.type === 'backpack') return item.typeId !== 'backpack';
       if (ref.type === 'container') return item.typeId !== 'container';
+      if (ref.type === 'fuelSynth') return canDropItemOnFuelSynthRef(item, ref);
       if (ref.type !== 'furnace' || !activeFurnace) return false;
       if (ref.key === 'fuel') return item.typeId === 'planks';
       if (ref.key === 'input') return item.typeId === 'planks' || item.typeId === 'iron_ore' || item.typeId === 'copper_ore' || item.typeId === 'tungsten_ore' || item.typeId === 'titanium_ore';
@@ -19310,6 +24799,10 @@
       if (slotEl.closest('#containerPlayerInventoryGrid')) {
         const index = Number(slotEl.dataset.inventoryIndex);
         if (Number.isInteger(index)) return { ref: { type: 'inventory', index }, el: slotEl };
+      }
+      if (slotEl.closest('#fuelSynthesizerOverlay')) {
+        const key = slotEl.dataset.fuelSynthKey;
+        if (key) return { ref: { type: 'fuelSynth', key }, el: slotEl };
       }
       if (slotEl.closest('#furnaceTop')) {
         const key = slotEl.dataset.furnaceKey;
@@ -19384,6 +24877,7 @@
       slotEl.dataset.inventoryIndex = ref.type === 'inventory' ? String(ref.index) : '';
       slotEl.dataset.backpackIndex = ref.type === 'backpack' ? String(ref.index) : '';
       if (ref.type === 'furnace') slotEl.dataset.furnaceKey = ref.key;
+      if (ref.type === 'fuelSynth') slotEl.dataset.fuelSynthKey = ref.key;
       if (ref.type === 'container') { slotEl.dataset.containerId = ref.containerId; slotEl.dataset.containerIndex = String(ref.index); }
       slotEl.addEventListener('mouseenter', () => { hoveredItemRef = { ...ref }; });
       slotEl.addEventListener('mouseleave', () => { if (hoveredItemRef && refsEqual(hoveredItemRef, ref)) hoveredItemRef = null; });
@@ -19393,7 +24887,7 @@
       slotEl.style.cursor = 'grab';
       slotEl.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
-        if (state.gameState !== 'playing' || !uiState.inventoryOpen && !uiState.furnaceOpen && !uiState.containerOpen) return;
+        if (state.gameState !== 'playing' || !uiState.inventoryOpen && !uiState.furnaceOpen && !uiState.containerOpen && !uiState.fuelSynthOpen) return;
         if (!getDragRefData(ref)) return;
         itemDrag = { sourceRef: { ...ref }, startX: e.clientX, startY: e.clientY, moved: false };
         lastDragMoved = false;
@@ -19409,6 +24903,7 @@
       if (backpackOpen) updateBackpackUI();
       if (uiState.furnaceOpen) updateFurnaceUI();
       if (uiState.containerOpen) updateContainerUI();
+      if (uiState.fuelSynthOpen) updateFuelSynthUI();
       updateHotbarUI();
       refreshEquippedItem();
     }
@@ -19476,6 +24971,7 @@
       if (includeStarterSeedPack) inventorySlots[INVENTORY_MAIN_SLOTS + 2] = { typeId: 'starter_seed_pack', count: 1 };
       journalDiscoveredItems = new Set(['journal', 'axe']);
       journalDiscoveredLandmarks.clear();
+      journalResearchedLandmarks.clear();
       for (const landmark of landmarkSpawns) landmark.discovered = false;
       if (includeStarterSeedPack) journalDiscoveredItems.add('starter_seed_pack');
       uiState.selectedHotbarSlot = 0;
@@ -19488,6 +24984,7 @@
       const selected = inventorySlots[getSelectedHotbarInventoryIndex()];
       uiState.equippedItemType = selected ? selected.typeId : null;
       setHeldItem(uiState.equippedItemType);
+      if (!isFurnitureType(uiState.equippedItemType) && typeof exitFurniturePlacementMode === 'function') exitFurniturePlacementMode();
     }
 
 
@@ -19606,6 +25103,7 @@
       if (engineType === 'mark3') upgrades.push('engine_mark_3');
       else if (engineType === 'upgraded') upgrades.push('upgraded_engine');
       if ((pad?.warpDrive) || (rocket?.warpDrive)) upgrades.push((pad?.warpDriveType || rocket?.warpDriveType) === 'mk2' ? 'warp_drive_mk2' : 'warp_drive');
+      if (pad?.gasCollectionInstalled || rocket?.gasCollectionInstalled) upgrades.push('gas_collection_system');
       return upgrades;
     }
 
@@ -19672,7 +25170,9 @@
             ? 'Engine Mark 3 · 300% fuel capacity and Supersonic speed'
             : typeId === 'warp_drive_mk2'
               ? 'Warp Drive Mark 2 · 4,000u/s-class warp timing and Rainbow Opal fuel'
-              : 'Unlocks the Space Navigation Map and long-distance warp travel';
+              : typeId === 'gas_collection_system'
+                ? 'Collects Syspo Methane · capacity ' + Math.round(sanitizeMethaneLiters(pad?.methaneLiters ?? rocket?.methaneLiters)) + ' / ' + METHANE_CONTAINER_CAPACITY + ' L'
+                : 'Unlocks the Space Navigation Map and long-distance warp travel';
         body.append(name, description);
 
         const button = document.createElement('button');
@@ -19717,11 +25217,17 @@
         pad.warpDriveType = null;
         rocket.warpDrive = false;
         rocket.warpDriveType = null;
+      } else if (typeId === 'gas_collection_system') {
+        const liters = sanitizeMethaneLiters(rocket.methaneLiters ?? pad.methaneLiters);
+        pad.gasCollectionInstalled = false; pad.methaneLiters = 0;
+        rocket.gasCollectionInstalled = false; rocket.methaneLiters = 0;
+        if (rocket.gasCollectorVisual?.parent) rocket.gasCollectorVisual.parent.remove(rocket.gasCollectorVisual);
+        if (!addItemToInventory('gas_collection_system', 1, null, false, { methaneLiters: liters })) return true;
       } else {
         return false;
       }
 
-      addItemToInventory(typeId, 1);
+      if (typeId !== 'gas_collection_system') addItemToInventory(typeId, 1);
       playAudio('uiClick', 0.72, 1.04, 350);
       updateHotbarUI();
       updateInventoryUI();
@@ -19733,7 +25239,7 @@
 
     // ---------- inventory window ----------
     function openInventory() {
-      if (state.gameState !== 'playing' || uiState.craftingOpen || uiState.freeplayInventoryOpen || playerState.inRocket) return;
+      if (state.gameState !== 'playing' || uiState.craftingOpen || uiState.freeplayInventoryOpen || uiState.baseCoreOpen || playerState.inRocket) return;
       uiState.inventoryOpen = true;
       closeBackpackStorage();
       state.paused = true;
@@ -19757,7 +25263,7 @@
     }
 
     function toggleInventory() {
-      if (uiState.craftingOpen || uiState.freeplayInventoryOpen) return;
+      if (uiState.craftingOpen || uiState.freeplayInventoryOpen || uiState.baseCoreOpen) return;
       if (uiState.inventoryOpen) closeInventory();
       else openInventory();
     }
@@ -19844,10 +25350,35 @@
         output: { typeId: 'iron_scythe', count: 1 }
       },
       {
+        id: 'hammer',
+        name: 'Hammer',
+        ingredients: [{ typeId: 'iron_ingot', count: 2 }, { typeId: 'sticks', count: 1 }],
+        output: { typeId: 'hammer', count: 1 }
+      },
+      {
         id: 'copper_wire',
         name: 'Copper Wire',
         ingredients: [{ typeId: 'copper_ingot', count: 1 }],
         output: { typeId: 'copper_wire', count: 3 }
+      },
+      {
+        id: 'electronics',
+        name: 'Electronics',
+        ingredients: [{ typeId: 'copper_ingot', count: 2 }, { typeId: 'iron_plate', count: 1 }],
+        output: { typeId: 'electronics', count: 1 }
+      },
+      {
+        id: 'advanced_electronics',
+        name: 'Advanced Electronics',
+        station: 'workbench',
+        ingredients: [{ typeId: 'electronics', count: 2 }, { typeId: 'copper_wire', count: 2 }, { typeId: 'iron_plate', count: 1 }],
+        output: { typeId: 'advanced_electronics', count: 1 }
+      },
+      {
+        id: 'gas_collection_system',
+        name: 'Gas Collection System',
+        ingredients: [{ typeId: 'iron_plate', count: 4 }, { typeId: 'copper_wire', count: 2 }, { typeId: 'container', count: 1 }, { typeId: 'advanced_electronics', count: 1 }],
+        output: { typeId: 'gas_collection_system', count: 1 }
       },
       {
         id: 'iron_plate',
@@ -19932,6 +25463,12 @@
         output: { typeId: 'container', count: 1 }
       },
       {
+        id: 'base_core',
+        name: 'Base Core',
+        ingredients: [{ typeId: 'iron_plate', count: 6 }, { typeId: 'copper_ingot', count: 4 }, { typeId: 'iron_ingot', count: 2 }],
+        output: { typeId: 'base_core', count: 1 }
+      },
+      {
         id: 'rocket_engine',
         name: 'Rocket Engine',
         ingredients: [{ typeId: 'iron_ingot', count: 5 }, { typeId: 'sticks', count: 2 }, { typeId: 'stone', count: 1 }],
@@ -19971,9 +25508,13 @@
     const craftingRecipesEl = document.getElementById('craftingRecipes');
     const craftingStatusEl = document.getElementById('craftingStatus');
     const craftingClose = document.getElementById('craftingClose');
+    const craftingPrevPage = document.getElementById('craftingPrevPage');
     const craftingNextPage = document.getElementById('craftingNextPage');
     const inventoryCraftButton = document.getElementById('inventoryCraftButton');
     let craftTooltipEl = null;
+    document.getElementById('researchClose')?.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); closeResearchStation(); });
+
+    let craftingStationContext = 'inventory';
 
     function hasCraftingIngredients(recipe) {
       return recipe.ingredients.every(input => countItem(input.typeId) >= input.count);
@@ -19986,6 +25527,7 @@
     function canCraft(recipe) {
       // A blueprint is a permanent unlock and is required in every game mode.
       if (!hasBlueprintForRecipe(recipe)) return false;
+      if (recipe.station && craftingStationContext !== recipe.station) return false;
       // Freeplay ignores ingredient costs, but inventory space still matters.
       if (state.gameMode === "freeplay") return canAddItemToInventory(recipe.output.typeId, recipe.output.count);
       if (!hasCraftingIngredients(recipe)) return false;
@@ -20006,6 +25548,10 @@
     }
 
     async function craftRecipe(recipe) {
+      if (recipe?.station && craftingStationContext !== recipe.station) {
+        craftingStatusEl.textContent = 'This recipe requires a Workshop workbench.';
+        return;
+      }
       if (multiplayerMode && secureAccountAuthorityEnabled) {
         await craftRecipeSecureMultiplayer(recipe);
         return;
@@ -20029,7 +25575,6 @@
       addItemToInventory(recipe.output.typeId, recipe.output.count, craftedItem.tool ? getToolMaxDurability(craftedItem) : null);
 
       const outputName = itemById[recipe.output.typeId].name;
-      if (typeof recordConciergeQuestCrafted === 'function') recordConciergeQuestCrafted(recipe.output.typeId, recipe.output.count);
       if (itemById[recipe.output.typeId] && itemById[recipe.output.typeId].tool) awardAchievement('first_tool');
       if (recipe.output.typeId === 'rocket') awardAchievement('first_rocket');
       if (/^stone_/.test(recipe.output.typeId) && itemById[recipe.output.typeId] && itemById[recipe.output.typeId].tool) awardAchievement('first_stone_tool');
@@ -20080,7 +25625,7 @@
     function updateCraftingUI() {
       if (!craftingRecipesEl) return;
       craftingRecipesEl.innerHTML = '';
-      const availableRecipes = CRAFTING_RECIPES.filter(hasBlueprintForRecipe);
+      const availableRecipes = CRAFTING_RECIPES.filter(recipe => (!recipe.station || craftingStationContext === recipe.station) && hasBlueprintForRecipe(recipe));
       const pageCount = Math.max(1, Math.ceil(availableRecipes.length / CRAFTING_PAGE_SIZE));
       craftingPage = Math.max(0, Math.min(craftingPage, pageCount - 1));
       const filteredStart = craftingPage * CRAFTING_PAGE_SIZE;
@@ -20115,19 +25660,27 @@
         craftingRecipesEl.appendChild(card);
       }
 
+      if (craftingPrevPage) {
+        craftingPrevPage.disabled = pageCount <= 1;
+        craftingPrevPage.textContent = '‹';
+        craftingPrevPage.title = pageCount > 1 ? 'Previous page' : 'No previous page';
+      }
       craftingNextPage.disabled = pageCount <= 1;
       craftingNextPage.textContent = '›';
       craftingNextPage.title = pageCount > 1 ? 'Next page' : 'No more pages';
     }
 
-    function openCrafting() {
+    function openCrafting(station = 'inventory') {
       if (state.gameState !== 'playing' || playerState.inRocket) return;
       uiState.craftingOpen = true;
+      craftingStationContext = station === 'workbench' ? 'workbench' : 'inventory';
       craftingPage = 0;
       state.paused = true;
       for (const k in systemState.keys) systemState.keys[k] = false;
       clearPhysicalKeys();
       craftingStatusEl.textContent = '';
+      const craftingHeaderTitle = document.querySelector('#craftingHeader h1');
+      if (craftingHeaderTitle) craftingHeaderTitle.textContent = craftingStationContext === 'workbench' ? 'Workbench' : 'Crafting';
       updateCraftingUI();
       craftingOverlay.classList.remove('hidden');
       document.getElementById('inventoryOverlay').classList.add('hidden');
@@ -20139,11 +25692,13 @@
     function closeCrafting() {
       removeCraftTooltip();
       uiState.craftingOpen = false;
+      const wasWorkbench = craftingStationContext === 'workbench';
+      craftingStationContext = 'inventory';
       craftingOverlay.classList.add('hidden');
       craftingStatusEl.textContent = '';
       if (state.gameState === 'playing') {
         state.paused = false;
-        openInventory();
+        if (wasWorkbench) attemptPointerLock(); else openInventory();
       }
     }
 
@@ -20160,6 +25715,7 @@
     const freeplayInventoryItemsEl = document.getElementById('freeplayInventoryItems');
     const freeplayInventoryStatusEl = document.getElementById('freeplayInventoryStatus');
     const freeplayInventoryClose = document.getElementById('freeplayInventoryClose');
+    const freeplayInventoryPrevPage = document.getElementById('freeplayInventoryPrevPage');
     const freeplayInventoryNextPage = document.getElementById('freeplayInventoryNextPage');
 
     function openFreeplayInventory() {
@@ -20220,6 +25776,11 @@
         card.addEventListener('click', (e) => { e.stopPropagation(); addFreeplayItem(item.id); });
         freeplayInventoryItemsEl.appendChild(card);
       }
+      if (freeplayInventoryPrevPage) {
+        freeplayInventoryPrevPage.disabled = pageCount <= 1;
+        freeplayInventoryPrevPage.textContent = '‹';
+        freeplayInventoryPrevPage.title = pageCount > 1 ? 'Previous page' : 'No previous page';
+      }
       freeplayInventoryNextPage.disabled = pageCount <= 1;
     }
 
@@ -20257,9 +25818,10 @@
       const fuel=activeFurnace.inventory.fuel, input=activeFurnace.inventory.input, output=activeFurnace.inventory.output;
       if (furnaceCanSmelt(activeFurnace)) {
         const pct=activeFurnace && activeFurnace.smeltStartedAt ? Math.min(100, ((performance.now()-activeFurnace.smeltStartedAt)/2000)*100) : 0;
-        const label = input.typeId==='planks' ? 'Plank → Charcoal' : (input.typeId==='copper_ore' ? 'Copper Ore' : (input.typeId==='tungsten_ore' ? 'Tungsten Ore' : (input.typeId==='titanium_ore' ? 'Titanium Ore' : 'Iron Ore')));
+        const label = input.typeId==='planks' ? 'Plank → Charcoal' : (input.typeId==='sand' ? 'Sand → Glass' : (input.typeId==='copper_ore' ? 'Copper Ore' : (input.typeId==='tungsten_ore' ? 'Tungsten Ore' : (input.typeId==='titanium_ore' ? 'Titanium Ore' : 'Iron Ore'))));
         status.textContent='Smelting ' + label + '… ' + Math.round(pct) + '%';
       } else if (input && input.typeId==='planks') status.textContent='1 Plank + 1 Plank → 1 Charcoal';
+      else if (input && input.typeId==='sand') status.textContent='1 Plank + 1 Sand → 1 Glass';
       else status.textContent='1 Plank + 1 Ore → 1 Ingot';
     }
 
@@ -20274,8 +25836,8 @@
       // which meant valid fuel/ore was always rejected and immediately swapped back.
       const validForSlot = !inventoryItem ||
         (key === 'fuel' && inventoryItem.typeId === 'planks') ||
-        (key === 'input' && (inventoryItem.typeId === 'planks' || inventoryItem.typeId === 'iron_ore' || inventoryItem.typeId === 'copper_ore' || inventoryItem.typeId === 'tungsten_ore' || inventoryItem.typeId === 'titanium_ore')) ||
-        (key === 'output' && (inventoryItem.typeId === 'charcoal' || inventoryItem.typeId === 'iron_ingot' || inventoryItem.typeId === 'copper_ingot' || inventoryItem.typeId === 'tungsten_ingot' || inventoryItem.typeId === 'titanium_ingot'));
+        (key === 'input' && (inventoryItem.typeId === 'planks' || inventoryItem.typeId === 'sand' || inventoryItem.typeId === 'iron_ore' || inventoryItem.typeId === 'copper_ore' || inventoryItem.typeId === 'tungsten_ore' || inventoryItem.typeId === 'titanium_ore')) ||
+        (key === 'output' && (inventoryItem.typeId === 'charcoal' || inventoryItem.typeId === 'glass' || inventoryItem.typeId === 'iron_ingot' || inventoryItem.typeId === 'copper_ingot' || inventoryItem.typeId === 'tungsten_ingot' || inventoryItem.typeId === 'titanium_ingot'));
       if (!validForSlot) {
         const status = document.getElementById('furnaceStatus');
         if (status) {
@@ -20299,6 +25861,7 @@
 
     function getFurnaceResultType(inputTypeId) {
       if (inputTypeId === 'planks') return 'charcoal';
+      if (inputTypeId === 'sand') return 'glass';
       if (inputTypeId === 'copper_ore') return 'copper_ingot';
       if (inputTypeId === 'tungsten_ore') return 'tungsten_ingot';
       if (inputTypeId === 'titanium_ore') return 'titanium_ingot';
@@ -20321,15 +25884,18 @@
       }
     }
 
+    const localLightsPlayerWorldTemp = new THREE.Vector3();
+    const localLightsObjectWorldTemp = new THREE.Vector3();
+
     function updateLocalLights(delta = 0) {
       // Only a small number of nearby gameplay props use real point lights. This keeps
       // the scene inexpensive while making the key interactable objects feel grounded.
-      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      const playerWorld = player.getWorldPosition(localLightsPlayerWorldTemp);
       const inRocket = playerState.inRocket;
 
       if (typeof telephoneBooth !== 'undefined' && telephoneBooth?.userData?.localLight) {
         const light = telephoneBooth.userData.localLight;
-        const boothWorld = telephoneBooth.getWorldPosition(new THREE.Vector3());
+        const boothWorld = telephoneBooth.getWorldPosition(localLightsObjectWorldTemp);
         const distance = inRocket ? Infinity : playerWorld.distanceTo(boothWorld);
         const night = getNightAmountAtSurface(boothWorld, 'ivis');
         light.visible = distance < 28 && !onCordeliaAtmosphere;
@@ -20342,7 +25908,7 @@
       for (const pad of launchPads) {
         const light = pad.root?.userData?.localLight;
         if (!light) continue;
-        const padWorld = pad.root.getWorldPosition(new THREE.Vector3());
+        const padWorld = pad.root.getWorldPosition(localLightsObjectWorldTemp);
         const distance = inRocket ? Infinity : playerWorld.distanceTo(padWorld);
         const night = getNightAmountAtSurface(padWorld, pad.surfaceBodyId || 'ivis');
         light.visible = distance < 30;
@@ -20352,7 +25918,7 @@
       for (const campfire of campfires) {
         const light = campfire.localLight;
         if (!light) continue;
-        const campfireWorld = campfire.root.getWorldPosition(new THREE.Vector3());
+        const campfireWorld = campfire.root.getWorldPosition(localLightsObjectWorldTemp);
         const distance = inRocket ? Infinity : playerWorld.distanceTo(campfireWorld);
         light.visible = distance < 24;
         if (light.visible) {
@@ -20365,7 +25931,7 @@
         const light = furnace.localLight;
         if (!light) continue;
         const active = furnaceCanSmelt(furnace);
-        const furnaceWorld = furnace.root.getWorldPosition(new THREE.Vector3());
+        const furnaceWorld = furnace.root.getWorldPosition(localLightsObjectWorldTemp);
         const distance = inRocket ? Infinity : playerWorld.distanceTo(furnaceWorld);
         light.visible = active && distance < 26;
         if (light.visible) {
@@ -20419,6 +25985,166 @@
       uiState.furnaceOpen=false; activeFurnace=null; document.getElementById('furnaceOverlay').classList.add('hidden');
       if (state.gameState==='playing') { state.paused=false; attemptPointerLock(); }
     }
+    function findNearbyFuelSynthesizer() {
+      if (state.gameState !== 'playing' || playerState.inRocket || uiState.equippedItemType) return null;
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      let best = null, bestDistance = Infinity;
+      for (const structure of baseStructures) {
+        if (!structure?.root?.visible || structure.typeId !== 'fuel_synthesizer_module') continue;
+        const station = structure.root.userData.moduleStation;
+        if (!station) continue;
+        const world = station.getWorldPosition(new THREE.Vector3());
+        const distance = world.distanceTo(playerWorld);
+        if (distance > 4.5 || distance >= bestDistance) continue;
+        best = { structure, station, score: distance };
+        bestDistance = distance;
+      }
+      return best;
+    }
+
+    function cloneFuelSynthInventory(inventory) {
+      return {
+        methane: inventory?.methane ? { ...inventory.methane, methaneLiters: sanitizeMethaneLiters(inventory.methane.methaneLiters) } : null,
+        opal: inventory?.opal ? { ...inventory.opal } : null,
+        output: inventory?.output ? { ...inventory.output } : null
+      };
+    }
+
+    function getFuelSynthStructureInventory(structure) {
+      if (!structure.fuelSynthInventory || typeof structure.fuelSynthInventory !== 'object') {
+        structure.fuelSynthInventory = { methane: null, opal: null, output: null };
+      }
+      return structure.fuelSynthInventory;
+    }
+
+    function renderFuelSynthSlot(el, data, label, key) {
+      if (!el) return;
+      el.replaceChildren();
+      const labelEl = document.createElement('div'); labelEl.className = 'furnaceSlotLabel'; labelEl.textContent = label; el.appendChild(labelEl);
+      if (data) {
+        const icon = makeItemIconElement(data.typeId, 'inventoryGem'); el.appendChild(icon);
+        const n = document.createElement('div'); n.className = 'furnaceCount'; n.textContent = data.typeId === 'methane_container' ? Math.round(sanitizeMethaneLiters(data.methaneLiters)) + ' L' : data.count; el.appendChild(n);
+      }
+      el.dataset.fuelSynthKey = key;
+      el.classList.remove('selected');
+      bindDragSlot(el, { type: 'fuelSynth', key });
+    }
+
+    function updateFuelSynthUI() {
+      if (!activeFuelSynth) return;
+      const inv = getFuelSynthStructureInventory(activeFuelSynth.structure);
+      renderFuelSynthSlot(document.getElementById('fuelSynthMethaneSlot'), inv.methane, 'Methane', 'methane');
+      renderFuelSynthSlot(document.getElementById('fuelSynthOpalSlot'), inv.opal, 'Rainbow Opal', 'opal');
+      renderFuelSynthSlot(document.getElementById('fuelSynthOutputSlot'), inv.output, 'Fuel', 'output');
+      const grid = document.getElementById('fuelSynthInventoryGrid'); grid.replaceChildren();
+      for (let i = 0; i < INVENTORY_SLOT_COUNT; i++) {
+        const data = inventorySlots[i];
+        const slot = document.createElement('div'); slot.className = 'inventorySlot';
+        if (data) { slot.appendChild(makeItemIconElement(data.typeId, 'inventoryGem')); const n=document.createElement('div'); n.className='inventoryStackCount'; n.textContent=data.typeId==='methane_container'?Math.round(sanitizeMethaneLiters(data.methaneLiters))+'L':data.count; slot.appendChild(n); }
+        else { const e=document.createElement('div'); e.className='inventoryEmptyLabel'; e.textContent='EMPTY'; slot.appendChild(e); }
+        bindDragSlot(slot, { type: 'inventory', index: i });
+        grid.appendChild(slot);
+      }
+      const methane = inv.methane;
+      const opal = inv.opal;
+      const output = inv.output;
+      const button = document.getElementById('fuelSynthSynthesizeButton');
+      if (button) button.disabled = !(methane && methane.typeId === 'methane_container' && sanitizeMethaneLiters(methane.methaneLiters) >= METHANE_PER_JERRYCAN && (!output || (output.typeId === 'jerrycan' && !opal && output.count < 1) || (output.typeId === 'advanced_warp_fuel_jerrycan' && !!opal && output.count < 1)));
+      const status = document.getElementById('fuelSynthStatus');
+      if (status) status.textContent = methane ? (Math.round(sanitizeMethaneLiters(methane.methaneLiters)) + ' L Methane loaded' + (opal ? ' + 1 Rainbow Opal → Advanced Warp Fuel' : ' → Fuel')) : 'Insert a Methane Container. Rainbow Opal is optional.';
+    }
+
+    function canDropItemOnFuelSynthRef(item, ref) {
+      if (!ref || ref.type !== 'fuelSynth') return false;
+      if (!item) return true;
+      if (ref.key === 'methane') return item.typeId === 'methane_container';
+      if (ref.key === 'opal') return item.typeId === 'rainbow_opal';
+      if (ref.key === 'output') return item.typeId === 'jerrycan' || item.typeId === 'advanced_warp_fuel_jerrycan';
+      return false;
+    }
+
+    function getDragRefDataPatched(ref) {
+      if (ref?.type === 'fuelSynth') return activeFuelSynth ? getFuelSynthStructureInventory(activeFuelSynth.structure)[ref.key] : null;
+      return getDragRefData(ref);
+    }
+
+    function setDragRefDataPatched(ref, value) {
+      if (ref?.type === 'fuelSynth') {
+        if (!activeFuelSynth) return;
+        const inv = getFuelSynthStructureInventory(activeFuelSynth.structure);
+        inv[ref.key] = value ? { ...value } : null;
+        return;
+      }
+      setDragRefData(ref, value);
+    }
+
+    function openFuelSynthesizer(entry) {
+      if (!entry || !entry.structure || state.gameState !== 'playing' || playerState.inRocket) return false;
+      activeFuelSynth = entry;
+      uiState.fuelSynthOpen = true;
+      state.paused = true;
+      clearPhysicalKeys();
+      document.getElementById('fuelSynthesizerOverlay').classList.remove('hidden');
+      document.getElementById('fuelSynthesizerOverlay').setAttribute('aria-hidden', 'false');
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      updateFuelSynthUI();
+      return true;
+    }
+
+    function closeFuelSynthesizer() {
+      if (!uiState.fuelSynthOpen) return;
+      uiState.fuelSynthOpen = false;
+      activeFuelSynth = null;
+      document.getElementById('fuelSynthesizerOverlay').classList.add('hidden');
+      document.getElementById('fuelSynthesizerOverlay').setAttribute('aria-hidden', 'true');
+      document.getElementById('fuelSynthStatus').textContent = '';
+      if (state.gameState === 'playing') { state.paused = false; attemptPointerLock(); }
+    }
+
+    function moveFuelSynthItemWithInventory(index, key) {
+      if (!activeFuelSynth || index < 0 || index >= INVENTORY_SLOT_COUNT) return;
+      const inv = getFuelSynthStructureInventory(activeFuelSynth.structure);
+      const invItem = inventorySlots[index];
+      const machineItem = inv[key];
+      if (invItem && !canDropItemOnFuelSynthRef(invItem, { type: 'fuelSynth', key })) return;
+      if (key === 'output' && invItem && invItem.typeId !== 'jerrycan' && invItem.typeId !== 'advanced_warp_fuel_jerrycan') return;
+      inventorySlots[index] = machineItem;
+      inv[key] = invItem;
+      updateFuelSynthUI(); updateHotbarUI(); updateInventoryUI(); refreshEquippedItem();
+      markMultiplayerWorldDirty('fuel-synth-input');
+    }
+
+    async function synthesizeFuel() {
+      if (!activeFuelSynth) return;
+      const inv = getFuelSynthStructureInventory(activeFuelSynth.structure);
+      const methane = inv.methane, opal = inv.opal, output = inv.output;
+      const liters = sanitizeMethaneLiters(methane?.methaneLiters);
+      if (!methane || methane.typeId !== 'methane_container' || liters < METHANE_PER_JERRYCAN) { document.getElementById('fuelSynthStatus').textContent = 'Need at least 10 L of Methane.'; return; }
+      const advanced = !!opal;
+      const outputId = advanced ? 'advanced_warp_fuel_jerrycan' : 'jerrycan';
+      if (output && output.typeId !== outputId) { document.getElementById('fuelSynthStatus').textContent = 'Remove the current output first.'; return; }
+      if (output && output.count >= 1) { document.getElementById('fuelSynthStatus').textContent = 'Take the finished jerrycan out first.'; return; }
+      methane.methaneLiters = Math.max(0, liters - METHANE_PER_JERRYCAN);
+      if (advanced) inv.opal = null;
+      inv.output = { typeId: outputId, count: 1 };
+      if (methane.methaneLiters <= 0.001) inv.methane = null;
+      updateFuelSynthUI(); markMultiplayerWorldDirty('fuel-synthesized'); playAudio('uiClick', 0.74, 1.08, 350);
+    }
+
+    async function craftFuelSynthSecureMultiplayer(advanced) {
+      if (!pocketSupabase || !currentAccountUser || !multiplayerMode) throw new Error('Multiplayer crafting is unavailable.');
+      const { data, error } = await pocketSupabase.rpc('pu_synthesize_fuel_v1', { p_world_id: String(MULTIPLAYER_WORLD_ID), p_advanced: !!advanced });
+      if (error) throw error;
+      if (!data?.profile) throw new Error('Server returned an invalid synthesis result.');
+      applySecureProfileSnapshot(data.profile, { preserveHotbar: true, preserveCredits: true });
+      const inv = getFuelSynthStructureInventory(activeFuelSynth.structure);
+      const methane = inv.methane;
+      if (methane) { methane.methaneLiters = Math.max(0, sanitizeMethaneLiters(methane.methaneLiters) - METHANE_PER_JERRYCAN); if (methane.methaneLiters <= 0.001) inv.methane = null; }
+      if (advanced) inv.opal = null;
+      inv.output = { typeId: advanced ? 'advanced_warp_fuel_jerrycan' : 'jerrycan', count: 1 };
+      updateFuelSynthUI(); markMultiplayerWorldDirty('fuel-synthesized');
+    }
+
     // ---------- survival HUD ----------
     const staminaWrapEl = document.getElementById("staminaWrap");
     const staminaBarEl = document.getElementById("staminaBar");
@@ -21360,7 +27086,7 @@
       if (e.target && e.target.closest && e.target.closest('#telephoneOverlay')) return;
       if (e.target && e.target.closest) {
         const uiTarget = e.target.closest('button, input, select, textarea, a, .hotbarSlot, .inventorySlot, .merchantItemRow, .merchantBuyButton, .craftRecipe, .mapControl, .overlayPanel');
-        if (uiTarget || e.target.closest('#homeScreen, #pauseOverlay, #settingsModal, #inventoryOverlay, #craftingOverlay, #furnaceOverlay, #merchantOverlay, #mapOverlay')) {
+        if (uiTarget || e.target.closest('#homeScreen, #pauseOverlay, #settingsModal, #inventoryOverlay, #craftingOverlay, #furnaceOverlay, #merchantOverlay, #mapOverlay, #baseCoreOverlay')) {
           playAudio('uiClick', 0.34);
         }
       }
@@ -22214,7 +27940,6 @@
     const homeGems = document.getElementById('homeGems');
     const homeGemsAmount = document.getElementById('homeGemsAmount');
     const pauseAchievementsButton = document.getElementById('pauseAchievementsButton');
-    let currentAccountUser = null;
 
     // Step 10A: secure multiplayer account profile.  This is deliberately opt-in to
     // multiplayer so the existing singleplayer/local-save flow is not replaced yet.
@@ -22292,7 +28017,8 @@
             typeId: inner.typeId,
             count: innerCount,
             ...(innerItem.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(innerItem), Number.isFinite(Number(inner.durability)) ? Math.floor(Number(inner.durability)) : getToolMaxDurability(innerItem))) } : {}),
-            ...(inner.typeId === 'watering_can' ? { water: getWateringCanAmount(inner) } : {})
+            ...(inner.typeId === 'watering_can' ? { water: getWateringCanAmount(inner) } : {}),
+            ...((inner.typeId === 'gas_collection_system' || inner.typeId === 'methane_container') ? { methaneLiters: sanitizeMethaneLiters(inner.methaneLiters) } : {})
           };
         });
         return createBackpackItem(storage, typeof rawSlot.backpackId === 'string' ? rawSlot.backpackId : null);
@@ -22301,7 +28027,8 @@
         typeId: rawSlot.typeId,
         count,
         ...(item.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(item), Number.isFinite(Number(rawSlot.durability)) ? Math.floor(Number(rawSlot.durability)) : getToolMaxDurability(item))) } : {}),
-        ...(rawSlot.typeId === 'watering_can' ? { water: getWateringCanAmount(rawSlot) } : {})
+        ...(rawSlot.typeId === 'watering_can' ? { water: getWateringCanAmount(rawSlot) } : {}),
+        ...((rawSlot.typeId === 'gas_collection_system' || rawSlot.typeId === 'methane_container') ? { methaneLiters: sanitizeMethaneLiters(rawSlot.methaneLiters) } : {})
       };
     }
 
@@ -22317,6 +28044,9 @@
         }
         if (left.typeId === 'watering_can' || right.typeId === 'watering_can') {
           if (Number(left.water ?? 0) !== Number(right.water ?? 0)) return false;
+        }
+        if (left.typeId === 'gas_collection_system' || left.typeId === 'methane_container' || right.typeId === 'gas_collection_system' || right.typeId === 'methane_container') {
+          if (sanitizeMethaneLiters(left.methaneLiters) !== sanitizeMethaneLiters(right.methaneLiters)) return false;
         }
       }
       return true;
@@ -22406,6 +28136,12 @@
         if (serverSlot?.typeId !== 'watering_can') continue;
         const localSlot = local.find(slot => slot?.typeId === 'watering_can');
         if (localSlot) localSlot.water = getWateringCanAmount(serverSlot);
+      }
+      // Preserve server-side methane volume for gas collectors/containers.
+      for (const serverSlot of serverInventory) {
+        if (serverSlot?.typeId !== 'gas_collection_system' && serverSlot?.typeId !== 'methane_container') continue;
+        const localSlot = local.find(slot => slot?.typeId === serverSlot.typeId);
+        if (localSlot) localSlot.methaneLiters = sanitizeMethaneLiters(serverSlot.methaneLiters);
       }
       return local;
     }
@@ -22544,6 +28280,8 @@
       try {
         const usesHoeRpc = recipe.id === 'stone_hoe' || recipe.id === 'iron_hoe';
         const usesWateringCanRpc = recipe.id === 'watering_can';
+        const usesGasCollectorRpc = recipe.id === 'gas_collection_system';
+        const usesWorkbenchRpc = recipe.station === 'workbench';
         const { data, error } = usesHoeRpc
           ? await pocketSupabase.rpc('pu_craft_farming_hoe_v1', {
               p_world_id: MULTIPLAYER_WORLD_ID,
@@ -22552,6 +28290,15 @@
           : usesWateringCanRpc
           ? await pocketSupabase.rpc('pu_craft_watering_can_v1', {
               p_world_id: MULTIPLAYER_WORLD_ID
+            })
+          : usesGasCollectorRpc
+          ? await pocketSupabase.rpc('pu_craft_gas_collection_system_v1', {
+              p_world_id: MULTIPLAYER_WORLD_ID
+            })
+          : usesWorkbenchRpc
+          ? await pocketSupabase.rpc('pu_craft_workbench_recipe_v1', {
+              p_world_id: MULTIPLAYER_WORLD_ID,
+              p_recipe_id: String(recipe.id || '')
             })
           : await pocketSupabase.rpc('pu_craft_recipe', {
               p_world_id: MULTIPLAYER_WORLD_ID,
@@ -22562,7 +28309,6 @@
         if (profile?.user_id) applySecureProfileSnapshot(profile, { mergeLocalInventoryChanges: false });
         const crafted = data?.crafted || { typeId: recipe.output.typeId, count: recipe.output.count };
         const craftedItem = itemById[crafted.typeId] || itemById[recipe.output.typeId];
-        if (typeof recordConciergeQuestCrafted === 'function') recordConciergeQuestCrafted(crafted.typeId, Math.max(1, Number(crafted.count) || recipe.output.count));
         if (craftedItem?.tool) awardAchievement('first_tool');
         if (craftedItem?.id === 'rocket') awardAchievement('first_rocket');
         if (craftedItem?.id && /^stone_/.test(craftedItem.id) && craftedItem.tool) awardAchievement('first_stone_tool');
@@ -22736,11 +28482,11 @@
         selectedHotbarSlot: Math.max(0, Math.min(HOTBAR_SLOT_COUNT - 1, uiState.selectedHotbarSlot | 0)),
         mode: state.gameMode === 'survival' ? 'survival' : 'freeplay',
         surfaceBodyId: bodyId,
-        quests: serializeConciergeQuestState(),
         planetSpinAngle: Number(state.planetSpinAngle) || 0,
         ivisSolarOrbitAngle: Number(ivisSolarOrbitAngle) || 0,
         moonOrbitAngle: Number(moonOrbitAngle) || 0,
-        savedAt: new Date().toISOString()
+        savedAt: new Date().toISOString(),
+        researchedLandmarks: [...journalResearchedLandmarks]
       };
     }
 
@@ -22792,7 +28538,10 @@
       // The world directory is authoritative for the current mode. Older checkpoints
       // were always written as Freeplay, so legacy data must not flip a Survival world.
       state.gameMode = multiplayerWorldMeta?.mode === 'survival' ? 'survival' : (checkpoint.mode === 'survival' ? 'survival' : 'freeplay');
-      restoreConciergeQuestState(checkpoint.quests || null);
+      journalResearchedLandmarks.clear();
+      if (Array.isArray(checkpoint.researchedLandmarks)) {
+        for (const id of checkpoint.researchedLandmarks) if (landmarkById[id] && journalDiscoveredLandmarks.has(id)) journalResearchedLandmarks.add(id);
+      }
       playerState.currentPlanetId = bodyId;
       setFlashlight(playerState.flashlightOn);
       camera.rotation.set(playerState.pitch, 0, 0);
@@ -22824,7 +28573,6 @@
         if (checkpoint) {
           return applyMultiplayerPlayerCheckpoint(checkpoint);
         }
-        restoreConciergeQuestState(null);
 
         // Legacy Ivis Freeplay can still use the old account profile until it gets its
         // first world-scoped checkpoint. Every other world must start from a clean state.
@@ -22882,6 +28630,18 @@
           applySecureProfileSnapshot(data.profile, { mergeLocalInventoryChanges: false });
         }
         if (data?.checkpoint) applyMultiplayerPlayerCheckpoint(data.checkpoint);
+        // The secure player-state RPC validates/rebuilds the checkpoint schema and therefore
+        // does not retain custom research fields. Re-apply the tiny per-player research patch
+        // after each full Save Game so research survives the next save as well.
+        if (journalResearchedLandmarks.size) {
+          for (const researchedId of journalResearchedLandmarks) {
+            try {
+              await pocketSupabase.rpc('pu_save_landmark_research_v1', { p_world_id: MULTIPLAYER_WORLD_ID, p_landmark_id: String(researchedId) });
+            } catch (researchError) {
+              console.warn('Could not re-persist landmark research during multiplayer save:', researchError);
+            }
+          }
+        }
 
         const worldSaved = await persistMultiplayerWorld(true);
         if (!worldSaved && multiplayerChannel) {
@@ -23158,6 +28918,7 @@
     const ACHIEVEMENT_TOTAL_FLIGHT_DISTANCE = 10000;
     const flightAchievementFrameStart = new THREE.Vector3();
     let achievementTelemetrySaveTimer = 0;
+    const achievementPlayerWorldTemp = new THREE.Vector3();
     let rocketFlightElapsedSeconds = 0;
     let rocketFlightDistance = 0;
     let rocketFlightOriginBody = 'ivis';
@@ -23615,7 +29376,6 @@
 
     function recordCelestialBodyVisit(bodyId) {
       markJournalBodyVisited(bodyId);
-      if (typeof recordConciergeQuestVisit === 'function') recordConciergeQuestVisit(bodyId);
       if (!currentAccountUser || state.gameMode !== 'survival') return;
       if (!accountAchievementProgress.celestialBodies.includes(bodyId)) {
         accountAchievementProgress.celestialBodies.push(bodyId);
@@ -24123,12 +29883,26 @@
         openCrafting();
       }
     });
+    if (craftingPrevPage) craftingPrevPage.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const availableRecipes = CRAFTING_RECIPES.filter(recipe => (!recipe.station || craftingStationContext === recipe.station) && hasBlueprintForRecipe(recipe));
+      const pageCount = Math.max(1, Math.ceil(availableRecipes.length / CRAFTING_PAGE_SIZE));
+      if (pageCount <= 1) return;
+      craftingPage = (craftingPage - 1 + pageCount) % pageCount;
+      craftingStatusEl.textContent = '';
+      const craftingHeaderTitle = document.querySelector('#craftingHeader h1');
+      if (craftingHeaderTitle) craftingHeaderTitle.textContent = craftingStationContext === 'workbench' ? 'Workbench' : 'Crafting';
+      updateCraftingUI();
+    });
     craftingNextPage.addEventListener('click', (e) => {
       e.stopPropagation();
-      const pageCount = Math.max(1, Math.ceil(CRAFTING_RECIPES.length / CRAFTING_PAGE_SIZE));
+      const availableRecipes = CRAFTING_RECIPES.filter(recipe => (!recipe.station || craftingStationContext === recipe.station) && hasBlueprintForRecipe(recipe));
+      const pageCount = Math.max(1, Math.ceil(availableRecipes.length / CRAFTING_PAGE_SIZE));
       if (pageCount <= 1) return;
       craftingPage = (craftingPage + 1) % pageCount;
       craftingStatusEl.textContent = '';
+      const craftingHeaderTitle = document.querySelector('#craftingHeader h1');
+      if (craftingHeaderTitle) craftingHeaderTitle.textContent = craftingStationContext === 'workbench' ? 'Workbench' : 'Crafting';
       updateCraftingUI();
     });
     craftingClose.addEventListener('click', (e) => { e.stopPropagation(); closeCrafting(); });
@@ -24139,6 +29913,14 @@
     freeplayInventoryClose.addEventListener('click', (e) => { e.stopPropagation(); closeFreeplayInventory(); });
     backpackClose.addEventListener('click', (e) => { e.stopPropagation(); closeBackpackStorage(); updateInventoryUI(); });
     freeplayInventoryOverlay.addEventListener('click', (e) => { if (e.target === freeplayInventoryOverlay) closeFreeplayInventory(); });
+    if (freeplayInventoryPrevPage) freeplayInventoryPrevPage.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const pageCount = Math.max(1, Math.ceil(ITEM_TYPES.length / FREEPLAY_INVENTORY_PAGE_SIZE));
+      if (pageCount <= 1) return;
+      freeplayInventoryPage = (freeplayInventoryPage - 1 + pageCount) % pageCount;
+      freeplayInventoryStatusEl.textContent = '';
+      updateFreeplayInventoryUI();
+    });
     freeplayInventoryNextPage.addEventListener('click', (e) => {
       e.stopPropagation();
       const pageCount = Math.max(1, Math.ceil(ITEM_TYPES.length / FREEPLAY_INVENTORY_PAGE_SIZE));
@@ -24836,7 +30618,9 @@
       if (!pad) return;
       if (!pad.rocket || !pad.root.visible) { economyState.fuelingPad = null; economyState.fuelingStartedAt = 0; return; }
       if (uiState.equippedItemType !== 'jerrycan') { economyState.fuelingPad = null; economyState.fuelingStartedAt = 0; return; }
-      const distance = player.position.distanceTo(pad.root.position);
+      const playerWorld = player.getWorldPosition(new THREE.Vector3());
+      const padWorld = pad.root.getWorldPosition(new THREE.Vector3());
+      const distance = playerWorld.distanceTo(padWorld);
       if (distance > 7.0) {
         economyState.fuelingPad = null;
         economyState.fuelingStartedAt = 0;
@@ -24858,6 +30642,7 @@
       }
       const refillAmount = pad.engineType === 'upgraded' ? ROCKET_FUEL_REFILL_AMOUNT_UPGRADED : ROCKET_FUEL_REFILL_AMOUNT_STANDARD;
       pad.fuel = Math.min(getRocketFuelCapacity(pad), (Number(pad.fuel) || 0) + refillAmount);
+      syncRocketAndPadState(pad);
       if (multiplayerMode && pad.networkId) broadcastMultiplayerPlaceableInteraction('launch_pad', pad.networkId, 'rocket_fuel', { fuel: pad.fuel });
       if (pad.fuel >= getRocketFuelCapacity(pad)) awardAchievement('fuel_rocket');
       economyState.fuelingPad = null;
@@ -25305,6 +31090,10 @@
 
     function updateCordeliaPlayer(delta) {
       if (!cordeliaWalking || state.gameState !== 'playing' || state.paused) return;
+      if (sittingFurniture) {
+        if (isJumpRequested()) { consumeQueuedJump(); exitSittingFurniture(true); }
+        else { setSittingFurnitureTransform(); return; }
+      }
       let moveX = 0, moveZ = 0;
       if (isActionDown('moveForward')) moveZ -= 1;
       if (isActionDown('moveBackward')) moveZ += 1;
@@ -25333,7 +31122,7 @@
         if (!isWorldPositionBlocked(candidateCordeliaPosition)) player.position.copy(candidateCordeliaPosition);
       }
       const grounded = playerState.heightOffset <= 0;
-      if (grounded && !crouching && isActionDown('jump') && playerState.verticalVelocity <= 0 && getHungerBand() === 'low') playerState.verticalVelocity = CORDELIA_JUMP_SPEED;
+      if (grounded && !crouching && isJumpRequested() && playerState.verticalVelocity <= 0) { consumeQueuedJump(); playerState.verticalVelocity = CORDELIA_JUMP_SPEED; }
       playerState.verticalVelocity -= GRAVITY * delta;
       playerState.heightOffset += playerState.verticalVelocity * delta;
       if (playerState.heightOffset < 0) { playerState.heightOffset = 0; playerState.verticalVelocity = 0; }
@@ -25565,39 +31354,72 @@
 
     function updateDockedIvisRocketCamera(delta) {
       if (!flightRocket) return;
+      const pad = flightPad;
+      const dockingStructure = getDockingStructureForPad(pad);
+
+      // Ordinary Ivis launch pads are also children of the moving/orbiting planet. Their
+      // docked camera must therefore be rebuilt from the rocket's CURRENT world transform
+      // every frame; otherwise the scene-level flight camera is left behind as Ivis orbits.
+      if (!dockingStructure?.root) {
+        const rocketWorldPos = flightRocket.root.getWorldPosition(new THREE.Vector3());
+        const rocketWorldQuat = flightRocket.root.getWorldQuaternion(new THREE.Quaternion());
+        const up = getPlanetUpAt(rocketWorldPos, new THREE.Vector3());
+        const baseForward = new THREE.Vector3(0, 0, 1).applyQuaternion(rocketWorldQuat);
+        baseForward.addScaledVector(up, -baseForward.dot(up));
+        if (baseForward.lengthSq() < 0.00001) {
+          const fallback = Math.abs(up.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+          baseForward.copy(fallback).addScaledVector(up, -fallback.dot(up));
+        }
+        baseForward.normalize();
+        const yawQuat = new THREE.Quaternion().setFromAxisAngle(up, flightCameraYaw.value);
+        const orbitForward = baseForward.clone().applyQuaternion(yawQuat).normalize();
+        const orbitRight = new THREE.Vector3().crossVectors(orbitForward, up).normalize();
+        const pitchQuat = new THREE.Quaternion().setFromAxisAngle(orbitRight, flightCameraPitch.value);
+        const cameraForward = orbitForward.clone().applyQuaternion(pitchQuat).normalize();
+        const target = rocketWorldPos.clone().addScaledVector(up, 1.15);
+        const desired = target.clone().addScaledVector(cameraForward, -6.0);
+        const blend = Math.min(1, delta * FLIGHT_CAMERA_SMOOTH);
+        if (flightCamera.position.distanceTo(desired) > 15) flightCamera.position.copy(desired);
+        else flightCamera.position.lerp(desired, blend);
+        flightCamera.up.copy(up);
+        flightCamera.lookAt(target);
+        return;
+      }
+
+      const structure = dockingStructure.root;
       const rocketWorldPos = flightRocket.root.getWorldPosition(new THREE.Vector3());
       const rocketWorldQuat = flightRocket.root.getWorldQuaternion(new THREE.Quaternion());
-      const center = ivisSolarOrbitPosition;
-      const up = rocketWorldPos.clone().sub(center);
-      if (up.lengthSq() < 0.00001) up.set(0, 1, 0);
-      up.normalize();
+      const structureWorldQuat = structure.getWorldQuaternion(new THREE.Quaternion());
+      const structureInvQuat = structureWorldQuat.clone().invert();
 
-      const baseForward = new THREE.Vector3(0, 0, 1).applyQuaternion(rocketWorldQuat);
-      baseForward.addScaledVector(up, -baseForward.dot(up));
-      if (baseForward.lengthSq() < 0.00001) {
-        const fallback = Math.abs(up.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
-        baseForward.copy(fallback).addScaledVector(up, -fallback.dot(up));
-      }
+      const rocketLocalPos = structure.worldToLocal(rocketWorldPos.clone());
+      const rocketLocalQuat = structureInvQuat.clone().multiply(rocketWorldQuat);
+      const localUp = new THREE.Vector3(0, 1, 0);
+      const baseForward = new THREE.Vector3(0, 0, 1).applyQuaternion(rocketLocalQuat);
+      baseForward.addScaledVector(localUp, -baseForward.dot(localUp));
+      if (baseForward.lengthSq() < 0.00001) baseForward.set(0, 0, 1);
       baseForward.normalize();
 
-      const yawQuat = new THREE.Quaternion().setFromAxisAngle(up, flightCameraYaw.value);
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(localUp, flightCameraYaw.value);
       const orbitForward = baseForward.clone().applyQuaternion(yawQuat).normalize();
-      const orbitRight = new THREE.Vector3().crossVectors(orbitForward, up).normalize();
+      const orbitRight = new THREE.Vector3().crossVectors(orbitForward, localUp).normalize();
       const pitchQuat = new THREE.Quaternion().setFromAxisAngle(orbitRight, flightCameraPitch.value);
       const cameraForward = orbitForward.clone().applyQuaternion(pitchQuat).normalize();
 
-      const target = rocketWorldPos.clone().addScaledVector(up, 1.4);
-      const desiredPos = target.clone().addScaledVector(cameraForward, -FLIGHT_CAMERA_DISTANCE);
+      const targetLocal = rocketLocalPos.clone().add(new THREE.Vector3(0, 0.95, 0));
+      const desiredLocal = targetLocal.clone().addScaledVector(cameraForward, -3.0);
+      desiredLocal.x = THREE.MathUtils.clamp(desiredLocal.x, -3.0, 3.0);
+      desiredLocal.y = THREE.MathUtils.clamp(desiredLocal.y, 0.65, 3.75);
+      desiredLocal.z = THREE.MathUtils.clamp(desiredLocal.z, -3.0, 3.0);
+
+      const targetWorld = structure.localToWorld(targetLocal.clone());
+      const desiredWorld = structure.localToWorld(desiredLocal.clone());
+      const worldUp = localUp.clone().applyQuaternion(structureWorldQuat).normalize();
       const blend = Math.min(1, delta * FLIGHT_CAMERA_SMOOTH);
-
-      if (flightCamera.position.distanceTo(desiredPos) > FLIGHT_CAMERA_DISTANCE * 2.5) {
-        flightCamera.position.copy(desiredPos);
-      } else {
-        flightCamera.position.lerp(desiredPos, blend);
-      }
-
-      flightCamera.up.copy(up);
-      flightCamera.lookAt(target);
+      if (flightCamera.position.distanceTo(desiredWorld) > 10) flightCamera.position.copy(desiredWorld);
+      else flightCamera.position.lerp(desiredWorld, blend);
+      flightCamera.up.copy(worldUp);
+      flightCamera.lookAt(targetWorld);
     }
 
     function updateDockedMoonRocketCamera(delta) {
@@ -25679,10 +31501,156 @@
       flightCamera.lookAt(lookTarget);
     }
 
+    function getDockingStructureForPad(pad) {
+      if (!pad?.isDockingPad || !pad.embeddedStructureId) return null;
+      return baseStructures.find(s => String(s.structureId || '') === String(pad.embeddedStructureId || '')) || null;
+    }
+
+    function isDockingPadRoofOpen(pad) {
+      const structure = getDockingStructureForPad(pad);
+      return !!(structure && structure.typeId === 'docking_module' && structure.roofOpen);
+    }
+
+    function dockRocketOnDockingPad(pad) {
+      // The docking pad accepts the ship that is currently flying. An empty docking pad
+      // naturally has pad.rocket === null, so the old implementation could never land on
+      // a fresh Docking Module. Transfer the active ship state from its current pad into
+      // the destination pad, then parent the ship to the module so the whole assembly follows
+      // Ivis rotation/orbit exactly.
+      if (!pad?.isDockingPad || !flightRocket) return false;
+      const structure = getDockingStructureForPad(pad);
+      if (!structure?.root) return false;
+      if (pad.rocket && pad.rocket !== flightRocket) return false;
+
+      const sourcePad = flightPad && flightPad !== pad ? flightPad : (flightRocket.pad && flightRocket.pad !== pad ? flightRocket.pad : null);
+      if (sourcePad && sourcePad.rocket === flightRocket) {
+        sourcePad.rocket = null;
+      }
+
+      // Preserve the actual ship fuel/upgrades instead of replacing them with the empty
+      // destination pad's defaults. These values are what the ship HUD should display after docking.
+      if (sourcePad) {
+        pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(sourcePad.fuel) || Number(flightRocket.fuel) || 0));
+        pad.engineType = sourcePad.engineType || flightRocket.engineType || 'standard';
+        pad.warpDrive = !!sourcePad.warpDrive;
+        pad.warpDriveType = sourcePad.warpDriveType || null;
+        pad.gasCollectionInstalled = !!sourcePad.gasCollectionInstalled;
+        pad.methaneLiters = sanitizeMethaneLiters(sourcePad.methaneLiters ?? flightRocket.methaneLiters);
+      } else {
+        pad.fuel = Math.max(0, Math.min(getRocketFuelCapacity(pad), Number(flightRocket.fuel) || Number(pad.fuel) || 0));
+        pad.engineType = flightRocket.engineType || pad.engineType || 'standard';
+        pad.warpDrive = !!(flightRocket.warpDrive || pad.warpDrive);
+        pad.warpDriveType = flightRocket.warpDriveType || pad.warpDriveType || null;
+        pad.gasCollectionInstalled = !!(flightRocket.gasCollectionInstalled || pad.gasCollectionInstalled);
+        pad.methaneLiters = sanitizeMethaneLiters(flightRocket.methaneLiters ?? pad.methaneLiters);
+      }
+
+      if (sourcePad && sourcePad !== pad) {
+        // The fuel/upgrades belong to the flying ship. Once it moves to another pad, the
+        // original pad must become an empty pad so its old state cannot be duplicated.
+        sourcePad.fuel = 0;
+        sourcePad.engineType = 'standard';
+        sourcePad.warpDrive = false;
+        sourcePad.warpDriveType = null;
+        sourcePad.gasCollectionInstalled = false;
+        sourcePad.methaneLiters = 0;
+      }
+
+      pad.rocket = flightRocket;
+      flightRocket.pad = pad;
+      if (flightRocket.root.parent !== pad.root) pad.root.attach(flightRocket.root);
+      flightRocket.root.position.set(0, 0.18, 0);
+      flightRocket.root.quaternion.identity();
+      flightRocket.root.visible = true;
+      syncRocketAndPadState(pad);
+      ensureGasCollectionVisual(flightRocket);
+      ensureRocketEngineVisual(flightRocket);
+      flightPad = pad;
+      flightRocket = pad.rocket;
+      flightRocket.root.getWorldPosition(flightPosition);
+      flightRocket.root.getWorldQuaternion(flightRocketQuat);
+      playerState.rocketLanded = true;
+      playerState.rocketInSpace = false;
+      playerState.rocketFuelTimer = 0;
+      playerState.verticalVelocity = 0;
+      moonGravityActive = false; cordeliaGravityActive = false;
+      auroraGravityActive = false; mileriaGravityActive = false; syspoGravityActive = false;
+      freeSpacePlaneActive = false; freeSpaceDown.set(0, 1, 0);
+      resetFlightFrameTracking();
+      return true;
+    }
+
+    function undockDockingRocketForFlight() {
+      if (!flightPad?.isDockingPad || !flightRocket || !playerState.rocketLanded) return false;
+      const structure = getDockingStructureForPad(flightPad);
+      if (!structure?.root || !structure.roofOpen) return false;
+      const pad = flightPad;
+      const worldPos = flightRocket.root.getWorldPosition(new THREE.Vector3());
+      const worldQuat = flightRocket.root.getWorldQuaternion(new THREE.Quaternion());
+      const padWorldQuat = pad.root.getWorldQuaternion(new THREE.Quaternion());
+      const padUp = new THREE.Vector3(0, 1, 0).applyQuaternion(padWorldQuat).normalize();
+
+      scene.attach(flightRocket.root);
+      flightRocket.root.position.copy(worldPos);
+      flightRocket.root.quaternion.copy(worldQuat);
+      flightRocket.root.visible = true;
+
+      const releaseDistance = 4.5;
+      const releasePos = worldPos.clone().addScaledVector(padUp, releaseDistance);
+      flightRocket.root.position.copy(releasePos);
+      flightPosition.copy(releasePos);
+      flightRocketQuat.copy(worldQuat);
+      flightAchievementFrameStart.copy(flightPosition);
+      recordRocketTakeoff('ivis');
+      playerState.rocketLanded = false;
+      playerState.rocketInSpace = false;
+      playerState.rocketFuelTimer = 0;
+      playerState.verticalVelocity = 0;
+      moonGravityActive = false; cordeliaGravityActive = false;
+      auroraGravityActive = false; mileriaGravityActive = false; syspoGravityActive = false;
+      freeSpacePlaneActive = false; freeSpaceDown.set(0, 1, 0);
+      resetFlightFrameTracking();
+      lastRocketSpaceState = false;
+      rocketLaunchPlayed = false;
+      return true;
+    }
+
+    function findNearbyIvisFlightLandingPad() {
+      let best = null, bestDistance = Infinity;
+      for (const pad of launchPads) {
+        if (!pad?.root?.visible || (pad.surfaceBodyId && String(pad.surfaceBodyId) !== 'ivis')) continue;
+        const padWorld = pad.root.getWorldPosition(new THREE.Vector3());
+        const distance = flightPosition.distanceTo(padWorld);
+        if (distance > FLIGHT_LANDING_DISTANCE || distance >= bestDistance) continue;
+        const radialDifference = Math.abs(flightPosition.distanceTo(ivisSolarOrbitPosition) - padWorld.distanceTo(ivisSolarOrbitPosition));
+        if (radialDifference > FLIGHT_LANDING_HEIGHT_TOLERANCE) continue;
+        if (pad.rocket && pad.rocket !== flightRocket) continue;
+        if (pad.isDockingPad && !isDockingPadRoofOpen(pad)) continue;
+        best = pad; bestDistance = distance;
+      }
+      return best;
+    }
+
     function snapFlightToPad(pad) {
       if (!pad) return false;
+      if (pad.isDockingPad) {
+        if (!isDockingPadRoofOpen(pad)) return false;
+        const structure = getDockingStructureForPad(pad);
+        if (!dockRocketOnDockingPad(pad)) return false;
+        structure.roofOpen = true;
+        if (rocketFlightElapsedSeconds >= 300) awardAchievement('long_spaceflight_land');
+        if (rocketFlightHasMoved) awardAchievement('safe_flight');
+        if (getRocketFuelPercent(pad) < 10) awardAchievement('low_fuel_return');
+        rocketFlightElapsedSeconds = 0; rocketFlightDistance = 0; rocketFlightHasMoved = false;
+        moonLandedRocket = null; moonLandingPad = null; cordeliaLandedRocket = null; cordeliaLandingPad = null;
+        omegaLandedRocket = null; omegaLandedBodyId = null; omegaLandingPad = null;
+        moonWalking = false; cordeliaWalking = false; omegaWalkingBodyId = null;
+        return true;
+      }
       pad.root.getWorldPosition(flightPadWorld);
       pad.root.getWorldQuaternion(pad._flightWorldQuat || (pad._flightWorldQuat = new THREE.Quaternion()));
+      flightPad = pad;
+      if (pad.embeddedStructureId) { const dockStructure = baseStructures.find(s => String(s.structureId || '') === String(pad.embeddedStructureId || '')); if (dockStructure) setDockingRoofOpen(dockStructure, true, true); }
       flightPadUp.set(0, 1, 0).applyQuaternion(pad._flightWorldQuat).normalize();
       flightPadOffset.copy(flightPadUp).multiplyScalar(0.72);
       flightPosition.copy(flightPadWorld).add(flightPadOffset);
@@ -25719,10 +31687,13 @@
       freeSpaceDown.set(0, 1, 0);
 
       if (flightRocket) {
-        // Ivis' launch pad is part of the moving/rotating planetSystem. Keep a landed rocket
-        // parented directly to that pad so it follows Ivis perfectly instead of drifting away
-        // as the planet rotates or orbits the Sun. scene.attach() is used later when the rocket
-        // actually takes off, preserving the correct world transform at the moment of release.
+        // Re-register the flying rocket on the destination Ivis pad before restoring its
+        // parent/transform. undockIvisRocketForFlight() intentionally clears sourcePad.rocket
+        // so the old pad cannot look occupied while the ship is actually flying. When the ship
+        // lands, the normal pad must therefore reclaim the rocket exactly like the Docking
+        // Module does.
+        pad.rocket = flightRocket;
+        flightRocket.pad = pad;
         const desiredWorldPos = flightPosition.clone();
         const desiredWorldQuat = pad._flightWorldQuat.clone();
         if (flightRocket.root.parent !== pad.root) {
@@ -25732,6 +31703,7 @@
         const padWorldQuat = pad.root.getWorldQuaternion(new THREE.Quaternion());
         flightRocket.root.quaternion.copy(padWorldQuat.invert().multiply(desiredWorldQuat));
         flightRocket.root.visible = true;
+        syncRocketAndPadState(pad);
       }
       return true;
     }
@@ -25965,12 +31937,14 @@
       const reenteringMoonRocket = !!(moonWalking && moonLandedRocket && isNearLandedSurfaceRocket());
       const reenteringCordeliaRocket = !!(cordeliaWalking && cordeliaLandedRocket && isNearLandedSurfaceRocket());
       const reenteringOmegaRocket = !!(omegaWalkingBodyId && omegaLandedRocket && isNearLandedSurfaceRocket());
+      const reenteringDockingRocket = !!(pad?.isDockingPad || pad?.embeddedStructureId);
       if (!pad || !pad.rocket) {
         if (reenteringMoonRocket) pad = moonLandingPad;
         else if (reenteringCordeliaRocket) pad = cordeliaLandingPad;
         else if (reenteringOmegaRocket) pad = omegaLandingPad;
       }
       if (!pad || !pad.rocket) return false;
+      if (pad.isDockingPad) syncRocketAndPadState(pad);
       if ((Number(pad.fuel) || 0) <= 0) {
         showFlightPrompt('Rocket has no fuel. Fill it with a jerrycan first.');
         setTimeout(() => { if (state.gameState === 'playing' && !playerState.inRocket) updateCrystalPrompt(); }, 900);
@@ -25992,7 +31966,7 @@
       // A landed lunar rocket stays parented to the Moon while you are sitting inside it.
       // That keeps the ship physically docked to the moving Moon until you actually press a
       // flight control to take off. Ivis rockets are detached immediately as before.
-      if (!reenteringMoonRocket && !reenteringCordeliaRocket && !reenteringOmegaRocket) {
+      if (!reenteringMoonRocket && !reenteringCordeliaRocket && !reenteringOmegaRocket && !reenteringDockingRocket) {
         scene.attach(flightRocket.root);
         flightRocket.root.position.copy(flightPosition);
         flightRocket.root.quaternion.copy(flightRocketQuat);
@@ -26013,6 +31987,8 @@
         const omegaBody = getOmegaMesh(omegaLandedBodyId);
         const omegaCenter = omegaBody ? omegaBody.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3();
         initialUp = flightPosition.clone().sub(omegaCenter).normalize();
+      } else if (reenteringDockingRocket) {
+        initialUp = new THREE.Vector3(0, 1, 0).applyQuaternion(pad.root.getWorldQuaternion(new THREE.Quaternion())).normalize();
       } else {
         initialUp = getPlanetUpAt(flightPosition, new THREE.Vector3());
       }
@@ -26026,14 +32002,14 @@
       flightRight.crossVectors(flightForward, initialUp).normalize();
       clearRocketKeys();
       rocketLaunchPlayed = false;
-      lastRocketSpaceState = flightPosition.distanceTo(ivisSolarOrbitPosition) >= ROCKET_ATMOSPHERE_RADIUS;
+      lastRocketSpaceState = reenteringDockingRocket ? false : (flightPosition.distanceTo(ivisSolarOrbitPosition) >= ROCKET_ATMOSPHERE_RADIUS);
 
       scene.attach(player);
       player.position.copy(flightPosition);
       player.quaternion.copy(flightRocketQuat);
       playerState.inRocket = true;
-      playerState.rocketInSpace = (reenteringMoonRocket || reenteringCordeliaRocket || reenteringOmegaRocket) ? true : (flightPosition.distanceTo(ivisSolarOrbitPosition) >= ROCKET_ATMOSPHERE_RADIUS);
-      playerState.rocketLanded = reenteringMoonRocket || reenteringCordeliaRocket || reenteringOmegaRocket;
+      playerState.rocketInSpace = reenteringDockingRocket ? false : ((reenteringMoonRocket || reenteringCordeliaRocket || reenteringOmegaRocket) ? true : (flightPosition.distanceTo(ivisSolarOrbitPosition) >= ROCKET_ATMOSPHERE_RADIUS));
+      playerState.rocketLanded = reenteringMoonRocket || reenteringCordeliaRocket || reenteringOmegaRocket || reenteringDockingRocket;
       moonWalking = false;
       cordeliaWalking = false;
       omegaWalkingBodyId = null;
@@ -26092,6 +32068,11 @@
         updateDockedCordeliaRocketCamera(1 / 60);
       } else if (reenteringOmegaRocket) {
         updateDockedOmegaRocketCamera(1 / 60);
+      } else if (reenteringDockingRocket) {
+        flightCamera.position.copy(flightPosition).addScaledVector(initialUp, 2.0);
+        flightCamera.up.copy(initialUp);
+        flightCamera.lookAt(flightPosition);
+        updateDockedIvisRocketCamera(1 / 60);
       } else {
         flightCamera.position.copy(flightPosition).addScaledVector(initialUp, 8);
         flightCamera.up.copy(initialUp);
@@ -26099,6 +32080,7 @@
         updateFlightCamera(1 / 60);
       }
       updateFlightRocketVisual();
+      if (reenteringDockingRocket) updateDockedIvisRocketCamera(1 / 60);
       if (reenteringMoonRocket) updateDockedMoonRocketCamera(1 / 60);
       if (reenteringCordeliaRocket) updateDockedCordeliaRocketCamera(1 / 60);
       if (reenteringOmegaRocket) updateDockedOmegaRocketCamera(1 / 60);
@@ -26140,6 +32122,50 @@
       );
       if (!force && rocketIsPhysicallyDockedToOmega) {
         return exitRocketToOmega(omegaLandedBodyId);
+      }
+
+      const dockingPadStructure = flightPad?.embeddedStructureId
+        ? baseStructures.find(s => String(s.structureId || '') === String(flightPad.embeddedStructureId || ''))
+        : null;
+      if (dockingPadStructure && !force) {
+        const pad = flightPad;
+        const padWorldPos = pad.root.getWorldPosition(new THREE.Vector3());
+        const padWorldQuat = pad.root.getWorldQuaternion(new THREE.Quaternion());
+        const exitWorldPos = pad.root.localToWorld(new THREE.Vector3(0, 1.38, -3.05));
+        const padUp = new THREE.Vector3(0,1,0).applyQuaternion(padWorldQuat).normalize();
+        const padForward = new THREE.Vector3(0,0,-1).applyQuaternion(padWorldQuat); padForward.addScaledVector(padUp, -padForward.dot(padUp)).normalize();
+        const playerWorldQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), padUp);
+        const playerForward = new THREE.Vector3(0,0,1).applyQuaternion(playerWorldQuat);
+        const yaw = Math.atan2(padForward.dot(new THREE.Vector3(1,0,0).applyQuaternion(playerWorldQuat)), padForward.dot(playerForward));
+        playerWorldQuat.multiply(new THREE.Quaternion().setFromAxisAngle(padUp, yaw));
+        planetSystem.attach(player); player.position.copy(planetSystem.worldToLocal(exitWorldPos.clone())); player.quaternion.copy(planetSystem.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(playerWorldQuat));
+        if (flightRocket) {
+          // The normal launch pad lost its logical rocket reference during takeoff so the pad
+          // could be treated as empty while the ship was airborne. Restore that reference when
+          // the pilot exits back to the pad, mirroring the Docking Module's explicit dock state.
+          pad.rocket = flightRocket;
+          flightRocket.pad = pad;
+          pad.root.attach(flightRocket.root);
+          flightRocket.root.position.set(0,0.18,0);
+          flightRocket.root.quaternion.identity();
+          flightRocket.root.visible=true;
+          syncRocketAndPadState(pad);
+          if (multiplayerMode && multiplayerConnected) { playerState.inRocket=false; broadcastMultiplayerRocketFlightState(true); }
+        }
+        flightPad=null; flightRocket=null; playerState.inRocket=false; playerState.rocketInSpace=false; playerState.rocketLanded=false; playerState.rocketFuelTimer=0; playerState.heightOffset=0; playerState.verticalVelocity=0; freeSpacePlaneActive=false; freeSpaceDown.set(0,1,0);
+        playerState.thirdPerson = !!flightWasThirdPerson;
+        orientation.copy(player.quaternion);
+        playerBody.visible=true; document.body.classList.remove('rocket-flight'); heldCrystalFirstPerson.visible=!playerState.thirdPerson; heldCrystalThirdPerson.visible=playerState.thirdPerson; setFlashlight(false);
+        camera.layers.enable(0);
+        if (playerState.thirdPerson) camera.layers.enable(1); else camera.layers.disable(1);
+        targetCamPos.copy(playerState.thirdPerson ? CAM_THIRD : CAM_FIRST);
+        camera.position.copy(targetCamPos);
+        camera.rotation.set(playerState.pitch, 0, 0);
+        for (const k in systemState.keys) systemState.keys[k] = false;
+        clearPhysicalKeys();
+        state.paused = false;
+        setRocketFlightUI(); updateHotbarUI(); refreshEquippedItem(); attemptPointerLock();
+        return true;
       }
 
       const pad = flightPad;
@@ -26353,6 +32379,47 @@
       // Syspo has NO flight collision. Its core is handled exclusively by updateSyspoDanger()
       // so the warning/recovery sequence can be reached by flying directly toward the core.
 
+      // Base structure collision: the ship cannot pass through module walls or ceilings.
+      // Collision is evaluated in each structure's local space so the same test follows
+      // curved-planet placement and module rotation automatically. Open doors are ignored.
+      for (const structure of baseStructures) {
+        if (!structure?.root?.visible) continue;
+        const localStructurePos = structure.root.worldToLocal(worldPosition.clone());
+        const boxes = Array.isArray(structure.collisionBoxes) ? structure.collisionBoxes : (structure.root.userData.collisionBoxes || []);
+        for (const box of boxes) {
+          if (!box) continue;
+          if (box.isDoor && structure.doorStates?.[Number(box.doorIndex) || 0]) continue;
+          const hx = Math.max(0, Number(box.halfX) || 0) + FLIGHT_PROP_COLLISION_RADIUS;
+          const hy = Math.max(0, Number(box.halfY) || 0) + FLIGHT_PROP_COLLISION_RADIUS;
+          const hz = Math.max(0, Number(box.halfZ) || 0) + FLIGHT_PROP_COLLISION_RADIUS;
+          const cx = Number(box.center?.x) || 0;
+          const cy = Number(box.center?.y) || 0;
+          const cz = Number(box.center?.z) || 0;
+          if (Math.abs(localStructurePos.x - cx) <= hx &&
+              Math.abs(localStructurePos.y - cy) <= hy &&
+              Math.abs(localStructurePos.z - cz) <= hz) {
+            return true;
+          }
+        }
+
+        const floorBounds = structure.root.userData.floorBounds;
+        if (floorBounds && Number.isFinite(Number(floorBounds.ceilingY))) {
+          // Docking's retractable roof is deliberately the one exception: while it is open,
+          // the pilot can fly through the roof and settle onto the preinstalled launch pad.
+          const roofOpen = structure.typeId === 'docking_module' && !!structure.roofOpen;
+          if (!roofOpen) {
+            const halfX = Math.max(0, Number(floorBounds.halfX) || 3.68) + FLIGHT_PROP_COLLISION_RADIUS;
+            const halfZ = Math.max(0, Number(floorBounds.halfZ) || 3.68) + FLIGHT_PROP_COLLISION_RADIUS;
+            const roofY = Number(floorBounds.ceilingY);
+            if (Math.abs(localStructurePos.x) <= halfX &&
+                Math.abs(localStructurePos.z) <= halfZ &&
+                Math.abs(localStructurePos.y - roofY) <= (0.10 + FLIGHT_PROP_COLLISION_RADIUS)) {
+              return true;
+            }
+          }
+        }
+      }
+
       // Moon collision: the Moon is a solid space object. Always read its WORLD position
       // so the collision follows the moving/orbiting Moon exactly. During the brief Moon
       // takeoff phase the collision is intentionally ignored so the parked rocket can clear
@@ -26452,12 +32519,14 @@
 
     function undockIvisRocketForFlight() {
       if (!flightRocket || !playerState.rocketLanded) return false;
+      const sourcePad = flightPad;
       const worldPos = flightRocket.root.getWorldPosition(new THREE.Vector3());
       const worldQuat = flightRocket.root.getWorldQuaternion(new THREE.Quaternion());
       scene.attach(flightRocket.root);
       flightRocket.root.position.copy(worldPos);
       flightRocket.root.quaternion.copy(worldQuat);
       flightRocket.root.visible = true;
+      if (sourcePad && sourcePad.rocket === flightRocket) sourcePad.rocket = null;
       flightPosition.copy(worldPos);
       flightRocketQuat.copy(worldQuat);
       flightAchievementFrameStart.copy(flightPosition);
@@ -26476,6 +32545,28 @@
     function updateRocketFlight(delta) {
       if (!playerState.inRocket || !flightPad || !flightRocket) return;
       state.paused = false;
+
+      const dockingStructure = getDockingStructureForPad(flightPad);
+      const physicallyDockedToDockingPad = !!(flightPad?.isDockingPad && dockingStructure?.root && flightRocket?.root?.parent === flightPad.root && playerState.rocketLanded);
+      if (physicallyDockedToDockingPad) {
+        syncRocketAndPadState(flightPad);
+        const shouldTakeOff = ['moveForward','moveBackward','moveLeft','moveRight','jump','sprint'].some(action => rocketKeyHeld(...getBoundCodes(action)));
+        if (shouldTakeOff && Number(flightPad.fuel) > 0 && dockingStructure.roofOpen) {
+          undockDockingRocketForFlight();
+        } else {
+          flightRocket.root.visible = true;
+          flightRocket.root.getWorldPosition(flightPosition);
+          flightRocket.root.getWorldQuaternion(flightRocketQuat);
+          playerState.rocketLanded = true;
+          playerState.rocketInSpace = false;
+          player.position.copy(flightPosition);
+          player.quaternion.copy(flightRocketQuat);
+          updateRocketEngineAudio(false, false);
+          updateDockedIvisRocketCamera(delta);
+          setRocketFlightUI();
+          return;
+        }
+      }
 
       // A Moon-landed rocket stays docked to the Moon while the pilot is stationary.
       // The first held flight control undocks it into world space and allows normal flight.
@@ -26547,7 +32638,7 @@
       // Defensive safeguard: a landed rocket must never enter free-flight movement just because
       // its parent/reference state changed for a frame. Surface-docked rockets are handled above;
       // a normal Ivis-pad rocket can still undock on the first real flight input.
-      if (playerState.rocketLanded) {
+      if (playerState.rocketLanded && !flightPad?.isDockingPad) {
         const shouldTakeOff = ['moveForward','moveBackward','moveLeft','moveRight','jump','sprint'].some(action => rocketKeyHeld(...getBoundCodes(action)));
         if (shouldTakeOff && (Number(flightPad.fuel) || 0) > 0 && !moonLandedRocket && !cordeliaLandedRocket && !omegaLandedRocket) {
           undockIvisRocketForFlight();
@@ -26870,21 +32961,16 @@
         if (bestBody) landRocketOnOmega(bestBody);
       }
 
-      if (!playerState.rocketInSpace && flightPad && !anyFlightInput) {
-        flightPad.root.getWorldPosition(flightPadWorld);
-        const padDistance = flightPosition.distanceTo(flightPadWorld);
-        const radialDifference = Math.abs(
-          flightPosition.distanceTo(ivisSolarOrbitPosition) - flightPadWorld.distanceTo(ivisSolarOrbitPosition)
-        );
-        if (padDistance <= FLIGHT_LANDING_DISTANCE && radialDifference <= FLIGHT_LANDING_HEIGHT_TOLERANCE) {
-          snapFlightToPad(flightPad);
-        }
+      if (!playerState.rocketInSpace && !anyFlightInput) {
+        const landingPad = findNearbyIvisFlightLandingPad();
+        if (landingPad) snapFlightToPad(landingPad);
       }
 
       // Keep the hidden passenger proxy synced for systems that still inspect player position.
       player.position.copy(flightPosition);
       updateFlightRocketVisual();
-      updateFlightCamera(delta);
+      if (flightPad?.embeddedStructureId && playerState.rocketLanded) updateDockedIvisRocketCamera(delta);
+      else updateFlightCamera(delta);
       setRocketFlightUI();
     }
 
@@ -26892,8 +32978,8 @@
     // The save is a normal JSON file, so the player can keep it outside the browser and
     // move it between computers. A small browser-local backup is also written whenever
     // we save/leave a world, which is useful if the downloaded file is forgotten.
-    const SAVE_VERSION = 21;
-    const LOCAL_SAVE_KEY = "pocketUniverseSave_v21";
+    const SAVE_VERSION = 22;
+    const LOCAL_SAVE_KEY = "pocketUniverseSave_v22";
 
     function serializeSave() {
       commitActiveBackpackStorage();
@@ -26939,26 +33025,31 @@
               typeId: inner.typeId,
               count: inner.count,
               ...(itemById[inner.typeId] && itemById[inner.typeId].tool ? { durability: inner.durability == null ? getToolMaxDurability(itemById[inner.typeId]) : inner.durability } : {}),
-              ...(inner.typeId === 'watering_can' ? { water: getWateringCanAmount(inner) } : {})
+              ...(inner.typeId === 'watering_can' ? { water: getWateringCanAmount(inner) } : {}),
+              ...((inner.typeId === 'gas_collection_system' || inner.typeId === 'methane_container') ? { methaneLiters: sanitizeMethaneLiters(inner.methaneLiters) } : {})
             } : null) };
           }
           return {
             typeId: slot.typeId,
             count: slot.count,
             ...(itemById[slot.typeId] && itemById[slot.typeId].tool ? { durability: slot.durability == null ? getToolMaxDurability(itemById[slot.typeId]) : slot.durability } : {}),
-            ...(slot.typeId === 'watering_can' ? { water: getWateringCanAmount(slot) } : {})
+            ...(slot.typeId === 'watering_can' ? { water: getWateringCanAmount(slot) } : {}),
+            ...((slot.typeId === 'gas_collection_system' || slot.typeId === 'methane_container') ? { methaneLiters: sanitizeMethaneLiters(slot.methaneLiters) } : {})
           };
         }),
         journal: {
           discoveredItems: [...journalDiscoveredItems],
           visitedBodies: [...journalVisitedBodies],
           metPeople: [...journalMetPeople],
-          discoveredLandmarks: [...journalDiscoveredLandmarks]
+          discoveredLandmarks: [...journalDiscoveredLandmarks],
+          researchedLandmarks: [...journalResearchedLandmarks]
         },
         telephone: {
           conciergeHelpCompleted: !!conciergeHelpCompleted
         },
-        quests: serializeConciergeQuestState(),
+        quests: {
+          activeQuestIds: [...conciergeActiveQuestIds]
+        },
         // Crystal positions are saved too. The world uses random placement, so storing the
         // directions makes sure a loaded save restores the SAME crystal locations.
         crystals: crystalSpawns.map(spawn => ({
@@ -27036,11 +33127,71 @@
           engineType: pad.engineType === 'mark3' ? 'mark3' : (pad.engineType === 'upgraded' ? 'upgraded' : 'standard'),
           warpDrive: !!pad.warpDrive,
           warpDriveType: pad.warpDriveType || null,
-          surfaceBodyId: pad.surfaceBodyId || 'ivis'
+          gasCollectionInstalled: !!pad.gasCollectionInstalled,
+          methaneLiters: sanitizeMethaneLiters(pad.methaneLiters ?? pad.rocket?.methaneLiters),
+          surfaceBodyId: pad.surfaceBodyId || 'ivis',
+          embeddedStructureId: String(pad.embeddedStructureId || ''),
+          localPosition: pad.embeddedStructureId && pad.root?.parent ? pad.root.position.toArray() : null
         })),
-        containers: containers.map(container => ({ containerId: container.containerId, direction: container.direction.toArray(), yaw: container.yaw, surfaceBodyId: container.surfaceBodyId || 'ivis', inventory: container.inventory.map(slot => slot ? { typeId: slot.typeId, count: slot.count, ...(itemById[slot.typeId]?.tool ? { durability: slot.durability } : {}) } : null) })),
+        gasCollectionSystems: gasCollectionSystems.map(system => ({ networkId: String(system.networkId || ''), direction: system.direction.toArray(), yaw: Number(system.yaw) || 0, surfaceBodyId: system.surfaceBodyId || 'ivis', methaneLiters: sanitizeMethaneLiters(system.methaneLiters) })).filter(system => system.networkId),
+        containers: containers.filter(container => !container.embeddedStructureId).map(container => ({ containerId: container.containerId, direction: container.direction.toArray(), yaw: container.yaw, surfaceBodyId: container.surfaceBodyId || 'ivis', inventory: container.inventory.map(slot => slot ? { typeId: slot.typeId, count: slot.count, ...(itemById[slot.typeId]?.tool ? { durability: slot.durability } : {}), ...((slot.typeId === 'gas_collection_system' || slot.typeId === 'methane_container') ? { methaneLiters: sanitizeMethaneLiters(slot.methaneLiters) } : {}) } : null) })),
         sleepingBags: sleepingBags.map(bag => ({ direction: bag.direction.toArray(), yaw: bag.yaw, surfaceBodyId: bag.surfaceBodyId || 'ivis' })),
         drills: placedDrills.map(drill => ({ direction: drill.direction.toArray(), yaw: drill.yaw, durability: drill.durability, surfaceBodyId: drill.surfaceBodyId || 'ivis' })),
+        baseCores: baseCores.map(base => ({
+          baseId: String(base.baseId || base.networkId || ''),
+          direction: base.direction.toArray(),
+          constructionForward: base.constructionForward?.toArray?.() || [0,0,1],
+          yaw: Number(base.yaw) || 0,
+          surfaceBodyId: base.surfaceBodyId || 'ivis',
+          name: sanitizeBaseName(base.name),
+          ownerUserId: String(base.ownerUserId || 'local-player'),
+          ownerName: String(base.ownerName || 'Explorer').slice(0, 24),
+          permissions: { ...(base.permissions || {}) },
+          permissionNames: { ...(base.permissionNames || {}) }
+        })).filter(base => base.baseId),
+        baseStructures: baseStructures.map(structure => ({
+          structureId: String(structure.structureId || ''),
+          baseId: String(structure.baseId || ''),
+          typeId: String(structure.typeId || ''),
+          interiorMaterial: normalizeBaseInteriorMaterial(structure.interiorMaterial),
+          mirroredX: !!structure.mirroredX,
+          localPosition: structure.root?.position?.toArray?.() || [0,0.06,0],
+          yaw: Number(structure.yaw) || 0,
+          doorSide: String(structure.doorSide || structure.doorSides?.[0] || 'north'),
+          doorSides: normalizeBaseDoorSides(structure.doorSides || structure.doorSide, ['north', 'south']),
+          doorStates: Array.isArray(structure.doorStates) ? structure.doorStates.map(Boolean) : [],
+          roofOpen: !!structure.roofOpen,
+          dockingLaunchPad: structure.typeId === 'docking_module' && structure.dockingLaunchPad ? { fuel: Math.max(0, Number(structure.dockingLaunchPad.fuel) || 0), engineType: structure.dockingLaunchPad.engineType || 'standard', warpDrive: !!structure.dockingLaunchPad.warpDrive, warpDriveType: structure.dockingLaunchPad.warpDriveType || null, gasCollectionInstalled: !!structure.dockingLaunchPad.gasCollectionInstalled, methaneLiters: sanitizeMethaneLiters(structure.dockingLaunchPad.methaneLiters), hasRocket: !!structure.dockingLaunchPad.rocket } : null,
+          ownerUserId: String(structure.ownerUserId || 'local-player'),
+          ownerName: String(structure.ownerName || 'Explorer').slice(0,24),
+          doorOpen: !!structure.doorOpen,
+          furniture: Array.isArray(structure.furniture) ? structure.furniture.map(item => ({
+            furnitureId: String(item.furnitureId || ''),
+            typeId: String(item.typeId || ''),
+            localPosition: item.root?.position?.toArray?.() || item.localPosition?.toArray?.() || [0, 0.2, 0],
+            yaw: Number(item.yaw) || Number(item.root?.rotation?.y) || 0,
+            lampOn: item.lampOn !== false
+          })).filter(item => item.furnitureId && isFurnitureType(item.typeId)) : [],
+          fuelSynthInventory: structure.typeId === 'fuel_synthesizer_module' ? cloneFuelSynthInventory(structure.fuelSynthInventory) : null,
+          storageContainers: structure.typeId === 'storage_module' ? (structure.storageContainers || []).map(container => ({
+            containerId: String(container.containerId || ''),
+            localPosition: container.root?.position?.toArray?.() || [0, 0.20, 0],
+            yaw: Number(container.yaw) || 0,
+            inventory: container.inventory.map(slot => slot ? { typeId: slot.typeId, count: slot.count, ...(itemById[slot.typeId]?.tool ? { durability: slot.durability } : {}), ...((slot.typeId === 'gas_collection_system' || slot.typeId === 'methane_container') ? { methaneLiters: sanitizeMethaneLiters(slot.methaneLiters) } : {}) } : null)
+          })).filter(rec => rec.containerId) : [],
+          hydroponicPlots: structure.typeId === 'hydroponics_module' ? (structure.hydroponicPlots || []).map(plot => ({
+            slotIndex: Math.max(0, Math.min(7, Math.floor(Number(plot.hydroSlotIndex) || 0))),
+            cropGeneration: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)),
+            crop: plot.crop ? {
+              cropKey: String(plot.crop.cropKey || getFarmPlotCropKey(plot)), cropId: String(plot.crop.cropId || ''),
+              plantedAtMs: Math.max(0, Math.floor(Number(plot.crop.plantedAtMs) || Date.now())),
+              stage: Math.max(0, Math.min(3, Math.floor(Number(plot.crop.stage) || 0))), generation: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)),
+              growthProgressSec: Math.max(0, Number(plot.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())),
+              wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)), wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0))
+            } : null
+          })) : []
+        })).filter(structure => structure.baseId && getBaseStructureDefinition(structure.typeId)),
+        homeBaseId: String(baseHomeByUserId[getBaseLocalUserId()] || ''),
         farmPlots: tilledPlots.map(plot => {
           if (plot.crop) { advanceCropGrowth(plot.crop, Date.now()); plot.crop.stage = getCropGrowthStage(plot.crop); }
           return {
@@ -27049,7 +33200,7 @@
             direction: plot.direction.toArray(),
             forward: plot.forward?.toArray?.() || [1,0,0],
             cropGeneration: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)),
-            crop: plot.crop ? { cropKey: String(plot.crop.cropKey || getFarmPlotCropKey(plot)), cropId: String(plot.crop.cropId || ''), plantedAtMs: Math.max(0, Math.floor(Number(plot.crop.plantedAtMs) || Date.now())), stage: Math.max(0, Math.min(3, Math.floor(Number(plot.crop.stage) || 0))), generation: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)), growthProgressSec: Math.max(0, Number(plot.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())), wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)), wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0)), plantedByUserId: String(plot.crop.plantedByUserId || 'local-player') } : null
+            crop: plot.crop ? { cropKey: String(plot.crop.cropKey || getFarmPlotCropKey(plot)), cropId: String(plot.crop.cropId || ''), plantedAtMs: Math.max(0, Math.floor(Number(plot.crop.plantedAtMs) || Date.now())), stage: Math.max(0, Math.min(3, Math.floor(Number(plot.crop.stage) || 0))), generation: Math.max(0, Math.floor(Number(plot.cropGeneration) || 0)), growthProgressSec: Math.max(0, Number(plot.crop.growthProgressSec) || 0), growthUpdatedAtMs: Math.max(0, Math.floor(Number(plot.crop.growthUpdatedAtMs) || Date.now())), wateredAtMs: Math.max(0, Math.floor(Number(plot.crop.wateredAtMs) || 0)), wateredUntilMs: Math.max(0, Math.floor(Number(plot.crop.wateredUntilMs) || 0)) } : null
           };
         }),
         cordeliaFlowers: cordeliaFlowers.map(flower => ({ cactusIndex: flower.cactusIndex, picked: !!flower.picked, regrowAtMs: Math.max(0, Number(flower.regrowAtMs) || 0), generation: Math.max(0, Math.floor(Number(flower.generation) || 0)) })),
@@ -27092,7 +33243,8 @@
               typeId: inner.typeId,
               count: Math.max(1, Math.min(innerItem.maxStack, Math.floor(inner.count))),
               ...(innerItem.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(innerItem), Number.isFinite(inner.durability) ? Math.floor(inner.durability) : getToolMaxDurability(innerItem))) } : {}),
-              ...(inner.typeId === 'watering_can' ? { water: getWateringCanAmount(inner) } : {})
+              ...(inner.typeId === 'watering_can' ? { water: getWateringCanAmount(inner) } : {}),
+              ...((inner.typeId === 'gas_collection_system' || inner.typeId === 'methane_container') ? { methaneLiters: sanitizeMethaneLiters(inner.methaneLiters) } : {})
             };
           }) : createBackpackStorage();
           inventorySlots[i] = createBackpackItem(storage, slot.backpackId);
@@ -27101,7 +33253,8 @@
             typeId: slot.typeId,
             count: Math.max(1, Math.min(item.maxStack, Math.floor(slot.count))),
             ...(item.tool ? { durability: Math.max(0, Math.min(getToolMaxDurability(item), Number.isFinite(slot.durability) ? Math.floor(slot.durability) : getToolMaxDurability(item))) } : {}),
-            ...(slot.typeId === 'watering_can' ? { water: getWateringCanAmount(slot) } : {})
+            ...(slot.typeId === 'watering_can' ? { water: getWateringCanAmount(slot) } : {}),
+            ...((slot.typeId === 'gas_collection_system' || slot.typeId === 'methane_container') ? { methaneLiters: sanitizeMethaneLiters(slot.methaneLiters) } : {})
           };
         }
       }
@@ -27147,8 +33300,12 @@
       journalVisitedBodies.add('ivis');
       journalMetPeople = journalSafeIds(savedJournal && savedJournal.metPeople, validJournalPeople);
       journalDiscoveredLandmarks.clear();
+      journalResearchedLandmarks.clear();
       if (savedJournal && Array.isArray(savedJournal.discoveredLandmarks)) {
         for (const id of savedJournal.discoveredLandmarks) if (landmarkById[id]) journalDiscoveredLandmarks.add(id);
+      }
+      if (savedJournal && Array.isArray(savedJournal.researchedLandmarks)) {
+        for (const id of savedJournal.researchedLandmarks) if (landmarkById[id] && journalDiscoveredLandmarks.has(id)) journalResearchedLandmarks.add(id);
       }
       conciergeHelpCompleted = !!(data.telephone && data.telephone.conciergeHelpCompleted);
       restoreConciergeQuestState(data.quests || null);
@@ -27457,6 +33614,16 @@
       // Restore placed furnaces and their inventories.
       for (const furnace of furnaces) if (furnace.root && furnace.root.parent) furnace.root.parent.remove(furnace.root);
       furnaces.length = 0;
+      for (const gas of gasCollectionSystems) if (gas.root?.parent) gas.root.parent.remove(gas.root);
+      gasCollectionSystems.length = 0;
+      if (Array.isArray(data.gasCollectionSystems)) {
+        for (const savedGas of data.gasCollectionSystems) {
+          if (!Array.isArray(savedGas.direction)) continue;
+          const dir = new THREE.Vector3().fromArray(savedGas.direction).normalize();
+          createGasCollectionSystemObject(dir, Number(savedGas.yaw) || 0, ['ivis','aurora','cordelia','moon','mileria'].includes(savedGas.surfaceBodyId) ? savedGas.surfaceBodyId : 'ivis', savedGas.networkId || null, savedGas.methaneLiters);
+        }
+      }
+
       if (Array.isArray(data.furnaces)) {
         for (const saved of data.furnaces) {
           if (!Array.isArray(saved.direction)) continue;
@@ -27464,7 +33631,7 @@
           if (saved.inventory && typeof saved.inventory === 'object') {
             for (const key of ['fuel','input','output']) {
               const v=saved.inventory[key];
-              if (v && itemById[v.typeId] && ((key==='fuel' && v.typeId==='planks') || (key==='input' && (v.typeId==='planks' || v.typeId==='iron_ore' || v.typeId==='copper_ore' || v.typeId==='tungsten_ore' || v.typeId==='titanium_ore')) || (key==='output' && (v.typeId==='charcoal' || v.typeId==='iron_ingot' || v.typeId==='copper_ingot' || v.typeId==='tungsten_ingot' || v.typeId==='titanium_ingot')))) furnace.inventory[key]={typeId:v.typeId,count:Math.max(1,Math.min(10,Math.floor(v.count||1)))};
+              if (v && itemById[v.typeId] && ((key==='fuel' && v.typeId==='planks') || (key==='input' && (v.typeId==='planks' || v.typeId==='sand' || v.typeId==='iron_ore' || v.typeId==='copper_ore' || v.typeId==='tungsten_ore' || v.typeId==='titanium_ore')) || (key==='output' && (v.typeId==='charcoal' || v.typeId==='glass' || v.typeId==='iron_ingot' || v.typeId==='copper_ingot' || v.typeId==='tungsten_ingot' || v.typeId==='titanium_ingot')))) furnace.inventory[key]={typeId:v.typeId,count:Math.max(1,Math.min(10,Math.floor(v.count||1)))};
             }
           }
         }
@@ -27493,6 +33660,12 @@
         for (const saved of data.launchPads) {
           if (!Array.isArray(saved.direction)) continue;
           const pad = createLaunchPadObject(new THREE.Vector3().fromArray(saved.direction).normalize(), Number.isFinite(saved.yaw) ? saved.yaw : 0, saved.surfaceBodyId || 'ivis');
+          if (saved.embeddedStructureId) {
+            pad.isDockingPad = true;
+            pad.embeddedStructureId = String(saved.embeddedStructureId);
+            pad.dockingStructureId = String(saved.embeddedStructureId);
+            pad.root.userData.isDockingLaunchPad = true;
+          }
           if (saved.hasRocket) placeRocketOnLaunchPad(pad);
           pad.engineType = saved.engineType === 'mark3' ? 'mark3' : (saved.engineType === 'upgraded' ? 'upgraded' : 'standard');
           pad.warpDrive = !!saved.warpDrive;
@@ -27556,6 +33729,142 @@
 
       if (activeConciergeDeliveryVisual?.root?.parent) activeConciergeDeliveryVisual.root.parent.remove(activeConciergeDeliveryVisual.root);
       activeConciergeDeliveryVisual = null; conciergeDeliveryOrders = []; nextConciergeOrderId = 1;
+      for (const base of baseCores) if (base.root && base.root.parent) base.root.parent.remove(base.root);
+      baseCores.length = 0;
+      for (const key of Object.keys(baseHomeByUserId)) delete baseHomeByUserId[key];
+      if (Array.isArray(data.baseCores)) {
+        for (const saved of data.baseCores) {
+          if (!Array.isArray(saved.direction)) continue;
+          const bodyId = ['ivis','aurora','cordelia','moon','mileria'].includes(String(saved.surfaceBodyId || '')) ? String(saved.surfaceBodyId) : 'ivis';
+          const direction = new THREE.Vector3().fromArray(saved.direction).normalize();
+          if (direction.lengthSq() < 0.5) continue;
+          const forward = Array.isArray(saved.constructionForward) ? new THREE.Vector3().fromArray(saved.constructionForward).normalize() : null;
+          createBaseCoreObject(direction, forward, Number(saved.yaw) || 0, bodyId, String(saved.baseId || createBaseCoreId()), {
+            baseId: String(saved.baseId || createBaseCoreId()), name: saved.name, ownerUserId: saved.ownerUserId, ownerName: saved.ownerName,
+            permissions: saved.permissions, permissionNames: saved.permissionNames
+          });
+        }
+      }
+      const savedHomeBaseId = String(data.homeBaseId || '');
+      if (savedHomeBaseId && baseCores.some(base => String(base.baseId) === savedHomeBaseId)) baseHomeByUserId[getBaseLocalUserId()] = savedHomeBaseId;
+
+      for (const structure of baseStructures) {
+        if (Array.isArray(structure.storageContainers)) {
+          for (const container of structure.storageContainers) {
+            const ci = containers.indexOf(container);
+            if (ci >= 0) containers.splice(ci, 1);
+          }
+        }
+        if (structure.root && structure.root.parent) structure.root.parent.remove(structure.root);
+      }
+      baseStructures.length = 0;
+      if (Array.isArray(data.baseStructures)) {
+        for (const saved of data.baseStructures) {
+          const base = baseCores.find(b => String(b.baseId || '') === String(saved?.baseId || ''));
+          const def = getBaseStructureDefinition(saved?.typeId);
+          if (!base || !def || !Array.isArray(saved.localPosition)) continue;
+          const doorSides = (def.id === 'hydroponics_module' || def.id === 'docking_module') ? ['north'] : (['habitat_room', 'observation_module', 'storage_module', 'workshop_module', 'research_module', 'fuel_synthesizer_module'].includes(def.id) ? normalizeBaseDoorSides(saved.doorSides || saved.doorSide, ['north', 'south']) : []);
+          const root = createBaseStructureVisual(def.id, doorSides, false, normalizeBaseInteriorMaterial(saved.interiorMaterial), !!saved.mirroredX);
+          root.position.fromArray(saved.localPosition);
+          root.rotation.y = Number(saved.yaw) || 0;
+          base.root.add(root);
+          const doorStates = (root.userData.doors || []).map((_, i) => Array.isArray(saved.doorStates) ? !!saved.doorStates[i] : (i === 0 && !!saved.doorOpen));
+          const structure = {
+            root,
+            structureId: String(saved.structureId || ('structure:local:' + Date.now() + ':' + Math.random().toString(36).slice(2,9))),
+            baseId: String(base.baseId),
+            typeId: def.id,
+            interiorMaterial: normalizeBaseInteriorMaterial(saved.interiorMaterial),
+            mirroredX: !!saved.mirroredX,
+            localPosition: root.position.clone(),
+            yaw: Number(saved.yaw) || 0,
+            doorSide: doorSides[0] || null,
+            doorSides: doorSides.slice(),
+            ownerUserId: String(saved.ownerUserId || base.ownerUserId || getBaseLocalUserId()),
+            ownerName: String(saved.ownerName || base.ownerName || 'Explorer').slice(0,24),
+            connectionPoints: getBaseStructureConnectionPointsForState(def.id, doorSides, !!saved.mirroredX)
+              .map((point) => ({ ...point, elevated: !!point.elevated || Math.abs(Number(root.position?.y) || 0) > 0.9 })),
+            collisionBoxes: root.userData.collisionBoxes || [],
+            doorStates,
+            doorTargets: doorStates.map((open, i) => open ? (root.userData.doors?.[i]?.openRotation || Math.PI / 2) : 0),
+            doorOpen: doorStates.some(Boolean),
+            doorAnimating: false,
+            roofOpen: (def.id === 'observation_module' || def.id === 'docking_module') ? !!saved.roofOpen : false,
+            roofTarget: (def.id === 'observation_module' || def.id === 'docking_module') && saved.roofOpen ? 1 : 0,
+            roofAnimating: false,
+            roofLeverTarget: (def.id === 'observation_module' || def.id === 'docking_module') && saved.roofOpen ? 0.52 : -0.52,
+            roofLeverAnimating: false,
+            storageContainers: [],
+            hydroponicPlots: [],
+            furniture: [],
+            fuelSynthInventory: structure.typeId === 'fuel_synthesizer_module' ? cloneFuelSynthInventory(saved.fuelSynthInventory) : { methane: null, opal: null, output: null }
+          };
+          baseStructures.push(structure);
+          if (structure.typeId === 'docking_module') {
+            const savedPad = launchPads.find(pad => String(pad.embeddedStructureId || '') === structure.structureId);
+            if (savedPad) {
+              if (Array.isArray(savedPad._savedEmbeddedLocalPosition)) savedPad.root.position.fromArray(savedPad._savedEmbeddedLocalPosition);
+              savedPad.root.rotation.set(0,0,0);
+              savedPad.root.scale.setScalar(0.84);
+              if (savedPad.root.parent !== structure.root) structure.root.add(savedPad.root);
+              if (structure.root.userData.dockingPadVisual?.parent === structure.root && structure.root.userData.dockingPadVisual !== savedPad.root) structure.root.remove(structure.root.userData.dockingPadVisual);
+              savedPad.isDockingPad = true;
+              savedPad.root.userData.isDockingLaunchPad = true;
+              savedPad.dockingStructureId = structure.structureId;
+              savedPad.embeddedStructureId = structure.structureId;
+              structure.dockingLaunchPad=savedPad;
+            } else registerDockingLaunchPadForStructure(structure);
+            const ps=saved.dockingLaunchPad || {}; const pad=structure.dockingLaunchPad;
+            if (pad) {
+              pad.fuel=Math.max(0,Math.min(getRocketFuelCapacity(pad),Number(ps.fuel)||pad.fuel||0)); pad.engineType=ps.engineType==='mark3'?'mark3':(ps.engineType==='upgraded'?'upgraded':'standard'); pad.warpDrive=!!ps.warpDrive; pad.warpDriveType=ps.warpDriveType||null; pad.gasCollectionInstalled=!!ps.gasCollectionInstalled; pad.methaneLiters=sanitizeMethaneLiters(ps.methaneLiters ?? pad.methaneLiters);
+              if (ps.hasRocket && !pad.rocket) placeRocketOnLaunchPad(pad);
+              if (pad.rocket) { pad.rocket.engineType=pad.engineType; pad.rocket.warpDrive=pad.warpDrive; pad.rocket.warpDriveType=pad.warpDriveType; pad.rocket.gasCollectionInstalled=!!pad.gasCollectionInstalled; pad.rocket.methaneLiters=sanitizeMethaneLiters(pad.methaneLiters); ensureGasCollectionVisual(pad.rocket); ensureRocketEngineVisual(pad.rocket); }
+            }
+          }
+          if (Array.isArray(saved.furniture)) {
+            for (const savedFurniture of saved.furniture) {
+              if (!isFurnitureType(savedFurniture?.typeId) || !Array.isArray(savedFurniture.localPosition)) continue;
+              const placed = createPlacedFurnitureVisual(savedFurniture.typeId);
+              placed.position.fromArray(savedFurniture.localPosition);
+              placed.rotation.set(0, Number(savedFurniture.yaw) || 0, 0);
+              placed.userData.furnitureId = String(savedFurniture.furnitureId || ('furniture:' + Date.now() + ':' + Math.random().toString(36).slice(2, 9)));
+              structure.root.add(placed);
+              const furnitureRecord = {
+                furnitureId: placed.userData.furnitureId,
+                typeId: savedFurniture.typeId,
+                localPosition: placed.position.clone(),
+                yaw: Number(savedFurniture.yaw) || 0,
+                lampOn: savedFurniture.lampOn !== false,
+                root: placed,
+                collisionBox: null
+              };
+              structure.furniture.push(furnitureRecord);
+              refreshFurnitureCollisionData(structure, furnitureRecord);
+              if (savedFurniture.typeId === 'furniture_light') applyFurnitureLampState(furnitureRecord, furnitureRecord.lampOn);
+            }
+          }
+          if (structure.typeId === 'hydroponics_module') createHydroponicPlotsForStructure(structure, Array.isArray(saved.hydroponicPlots) ? saved.hydroponicPlots : []);
+          if (structure.typeId === 'storage_module' && Array.isArray(saved.storageContainers)) {
+            for (const savedContainer of saved.storageContainers) {
+              const localPosition = Array.isArray(savedContainer.localPosition) ? savedContainer.localPosition : [0, 0.20, 0];
+              const inventory = Array.isArray(savedContainer.inventory) && savedContainer.inventory.length === 20
+                ? savedContainer.inventory.map(normalizeContainerSlot)
+                : createContainerStorage();
+              createStructureStorageContainer(structure, localPosition, Number(savedContainer.yaw) || 0, inventory, typeof savedContainer.containerId === 'string' ? savedContainer.containerId : null);
+            }
+            // Migration fallback for an old/corrupt Storage Module save with no stored bins.
+            if (!structure.storageContainers.length) {
+              [[3.08,0.20,-2.45,Math.PI/2],[3.08,0.20,0,Math.PI/2],[3.08,0.20,2.45,Math.PI/2]].forEach(([x,y,z,yaw]) => createStructureStorageContainer(structure,[x,y,z],yaw));
+            }
+          }
+          updateBaseStructureFoundationSupports(structure);
+          doorStates.forEach((open, i) => { if (open) setBaseDoorOpen(structure, i, true, false); });
+          if (structure.typeId === 'observation_module') setObservationRoofOpen(structure, structure.roofOpen, false);
+          if (structure.typeId === 'docking_module') setDockingRoofOpen(structure, structure.roofOpen, false);
+        }
+      }
+
+      refreshAllBaseFoundationSupports();
       if (Array.isArray(data.conciergeDeliveries)) {
         for (const savedOrder of data.conciergeDeliveries) {
           if (!Array.isArray(savedOrder.items)) continue;
@@ -27776,6 +34085,13 @@
 
     function resetPlayerState(options = {}) {
       clearTilledPlots();
+      closeBaseCoreMenu();
+      exitBaseBuildMode('reset');
+      for (const structure of baseStructures) if (structure.root?.parent) structure.root.parent.remove(structure.root);
+      baseStructures.length = 0;
+      for (const base of baseCores) if (base.root && base.root.parent) base.root.parent.remove(base.root);
+      baseCores.length = 0;
+      for (const key of Object.keys(baseHomeByUserId)) delete baseHomeByUserId[key];
       if (sleepingActive) finishSleeping();
       if (playerState.inRocket) exitRocketFlight(true);
       resetInventory({ starterSeedPack: !!options.starterSeedPack });
@@ -28959,7 +35275,6 @@
           prompt.textContent = error?.message || 'Resource claim failed';
           return;
         }
-        if (typeof recordConciergeQuestItemCollected === 'function') recordConciergeQuestItemCollected(minedItemId, miningYield);
       } else if (!canAddItemToInventory(minedItemId, miningYield) || !addItemToInventory(minedItemId, miningYield, null, true)) {
         prompt.classList.remove('hidden');
         prompt.textContent = 'Inventory full — ' + minedItemName + ' was not collected';
@@ -29032,11 +35347,113 @@
       return true;
     }
 
+    function getActiveSurfaceSandAvailability() {
+      const bodyId = getActiveCollisionBodyId();
+      if (bodyId === 'cordelia') return { available: true, reason: 'cordelia' };
+      if (bodyId === 'ivis') {
+        const dir = player.position.clone().normalize();
+        const info = nearestRiverInfo(dir);
+        return { available: info.angle < 0.085, reason: 'river' };
+      }
+      if (bodyId === 'aurora') {
+        const dir = player.position.clone().normalize();
+        let nearest = Infinity;
+        for (const lakeDir of auroraLakeDirs) nearest = Math.min(nearest, dir.angleTo(lakeDir));
+        return { available: nearest * AURORA_RADIUS < 15.5, reason: 'lake' };
+      }
+      return { available: false, reason: '' };
+    }
+
+    function tryCollectSand() {
+      if (state.gameState !== 'playing' || state.paused || playerState.inRocket || uiState.baseBuildOpen || uiState.baseCoreOpen) return false;
+      if (uiState.equippedItemType) return false;
+      const availability = getActiveSurfaceSandAvailability();
+      if (!availability.available) return false;
+      if (!addItemToInventory('sand', 1, null, true)) {
+        const prompt = document.getElementById('crystalPrompt');
+        if (prompt) { prompt.classList.remove('hidden'); prompt.textContent = 'Inventory full — make room for Sand'; }
+        return true;
+      }
+      markJournalItemDiscovered('sand');
+      const prompt = document.getElementById('crystalPrompt');
+      if (prompt) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">+1</span> Sand collected';
+        setTimeout(() => { if (state.gameState === 'playing') updateCrystalPrompt(); }, 650);
+      }
+      persistLocalBackup();
+      return true;
+    }
+
+    function getFurnitureRefundPreviewElement() {
+      let el = document.getElementById('furnitureRefundPreview');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'furnitureRefundPreview';
+        el.className = 'hidden';
+        el.setAttribute('aria-live', 'polite');
+        document.body.appendChild(el);
+      }
+      return el;
+    }
+
+    function hideFurnitureRefundPreview() {
+      const el = document.getElementById('furnitureRefundPreview');
+      if (el) el.classList.add('hidden');
+    }
+
+    function updateFurnitureRefundPreview(target) {
+      const el = getFurnitureRefundPreviewElement();
+      if (!target?.furniture?.typeId) {
+        el.classList.add('hidden');
+        return;
+      }
+      const typeId = target.furniture.typeId;
+      const itemName = itemById[typeId]?.name || 'Furniture';
+      const canRefund = canAddItemToInventory(typeId, 1);
+      el.classList.remove('hidden');
+      el.classList.toggle('blocked', !canRefund);
+      el.innerHTML = '<div class="furnitureRefundTitle">REFUND PREVIEW</div>' +
+        '<div class="furnitureRefundRow"><span class="furnitureRefundPlus">+' + (canRefund ? '1' : '0') + '</span><span>' + itemName + '</span></div>' +
+        '<div class="furnitureRefundHint">' + (canRefund ? 'Returned to inventory' : 'Inventory full — make room first') + '</div>';
+    }
+
+    function getFurnitureDismantleParticleColors(typeId) {
+      if (typeId === 'furniture_light') return [0xffe15a, 0x9aa3ad, 0xd7fbff];
+      if (typeId === 'furniture_wardrobe' || typeId === 'furniture_desk' || typeId === 'furniture_chair' || typeId === 'furniture_bed') return [0xc99a68, 0xe7c18f, 0x7d5638];
+      return [0xb8a78f, 0xe2cfaa, 0x8c7b68];
+    }
+
+    function spawnFurnitureDismantleEffect(furnitureRoot, typeId) {
+      if (!furnitureRoot) return;
+      const worldPosition = furnitureRoot.getWorldPosition(new THREE.Vector3());
+      const [a, b, c] = getFurnitureDismantleParticleColors(typeId);
+      spawnImpactParticles(worldPosition, a, { count: 12, life: 0.42, speed: 1.05, size: 0.055, gravity: 2.3, spread: 1.05 });
+      spawnImpactParticles(worldPosition, b, { count: 8, life: 0.32, speed: 1.55, size: 0.042, gravity: 2.9, spread: 1.25 });
+      spawnImpactParticles(worldPosition, c, { count: 5, life: 0.52, speed: 0.72, size: 0.07, gravity: 1.6, spread: 0.75 });
+    }
+
     function updateCrystalPrompt() {
+      hideFurnitureRefundPreview();
+      if (uiState.baseBuildOpen) { const prompt = document.getElementById('crystalPrompt'); if (prompt) prompt.classList.add('hidden'); return; }
+      updateFurniturePlacementEntry();
       nearbyCrystal = null;
+      if (furniturePlacementState.active) {
+        const prompt = document.getElementById('crystalPrompt');
+        if (prompt && state.gameState === 'playing' && !state.paused) {
+          prompt.classList.remove('hidden');
+          const itemName = itemById[furniturePlacementState.typeId]?.name || 'Furniture';
+          if (!furniturePlacementState.valid) {
+            prompt.innerHTML = '<span class="promptKey">BLOCKED</span> Invalid position &nbsp; <span class="promptKey">SCROLL</span> Move &nbsp; <span class="promptKey">R</span> Rotate &nbsp; <span style="opacity:.72">' + itemName + '</span>';
+          } else {
+            prompt.innerHTML = '<span class="promptKey">SCROLL</span> Closer / farther &nbsp; <span class="promptKey">R</span> Rotate 90° &nbsp; <span class="promptKey">E</span> Place &nbsp; <span style="opacity:.72">' + itemName + '</span>';
+          }
+        }
+        return;
+      }
       nearbyRock = null;
       const prompt = document.getElementById('crystalPrompt');
-      if (!prompt || state.gameState !== 'playing' || state.paused || uiState.telephoneOpen || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || economyState.merchantOpen) {
+      if (!prompt || state.gameState !== 'playing' || state.paused || uiState.telephoneOpen || uiState.inventoryOpen || uiState.craftingOpen || uiState.furnaceOpen || uiState.fuelSynthOpen || uiState.baseCoreOpen || economyState.merchantOpen) {
         if (prompt) prompt.classList.add('hidden');
         return;
       }
@@ -29047,10 +35464,13 @@
         if (playerState.rocketLanded) {
           const onMoon = !!(moonLandedRocket && flightRocket === moonLandedRocket && flightRocket.root.parent === moonMesh);
           const onCordelia = !!(cordeliaLandedRocket && flightRocket === cordeliaLandedRocket && flightRocket.root.parent === cordeliaMesh);
-          const place = onMoon ? 'the Moon' : (onCordelia ? 'Cordelia' : 'Ivis launch pad');
+          const onDocking = !!flightPad?.embeddedStructureId;
+          const place = onMoon ? 'the Moon' : (onCordelia ? 'Cordelia' : (onDocking ? 'Docking Module' : 'Ivis launch pad'));
           prompt.innerHTML = '<span class="promptKey">E</span> Exit spaceship · Landed on ' + place + ' · Fuel ' + fuel + '%';
         } else {
-          prompt.innerHTML = 'WASD Move · <span class="promptKey">SPACE</span> Up · <span class="promptKey">SHIFT</span> Down · Fuel ' + fuel + '%';
+          const gasInstalled = !!(flightRocket?.gasCollectionInstalled || flightPad?.gasCollectionInstalled);
+          const methaneLiters = Math.round(sanitizeMethaneLiters(flightRocket?.methaneLiters ?? flightPad?.methaneLiters));
+          prompt.innerHTML = 'WASD Move · <span class="promptKey">SPACE</span> Up · <span class="promptKey">SHIFT</span> Down · Fuel ' + fuel + '%' + (gasInstalled ? ' · Methane ' + methaneLiters + ' / ' + METHANE_CONTAINER_CAPACITY + ' L' : '');
         }
         return;
       }
@@ -29124,6 +35544,98 @@
         const pct = Math.max(0, Math.min(100, elapsed / ROCKET_FUEL_TIME_MS * 100));
         prompt.classList.remove('hidden');
         prompt.innerHTML = '<span class="promptKey">' + Math.round(pct) + '%</span> Filling rocket with fuel…';
+        return;
+      }
+
+      if (sittingFurniture) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">SPACE</span> Stand up';
+        return;
+      }
+
+      const nearbyFurniture = getFurnitureInteractionTarget();
+      if (nearbyFurniture && !furniturePlacementState.active) {
+        prompt.classList.remove('hidden');
+        const furnitureName = itemById[nearbyFurniture.furniture.typeId]?.name || 'Furniture';
+        if (uiState.equippedItemType === 'hammer') {
+          updateFurnitureRefundPreview(nearbyFurniture);
+          prompt.innerHTML = '<span class="promptKey">LMB</span> Remove ' + furnitureName;
+        } else {
+          prompt.innerHTML = '<span class="promptKey">E</span> ' + getFurnitureInteractionLabel(nearbyFurniture);
+        }
+        return;
+      }
+
+      const nearbyResearchStation = findNearbyResearchStation();
+      if (nearbyResearchStation) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">E</span> Use Research Station';
+        return;
+      }
+
+      const nearbyFuelSynth = findNearbyFuelSynthesizer();
+      if (nearbyFuelSynth) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">RMB</span> Use Fuel Synthesizer';
+        return;
+      }
+
+      const nearbyGroundGas = !uiState.equippedItemType ? findNearbyGroundGasCollectionSystem() : null;
+      if (nearbyGroundGas) {
+        prompt.classList.remove('hidden');
+        if (nearbyGroundGas.methaneLiters > 0.001) prompt.innerHTML = '<span class="promptKey">RMB</span> Extract Methane Container · ' + Math.round(nearbyGroundGas.methaneLiters) + ' L';
+        else prompt.innerHTML = '<span class="promptKey">E</span> Pick Up Gas Collection System';
+        return;
+      }
+
+      const nearbyWorkbench = findNearbyWorkbench();
+      if (nearbyWorkbench) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">E</span> Use Workbench · Advanced Electronics';
+        return;
+      }
+
+      const nearbyObservationLever = findNearbyObservationRoofLever();
+      if (nearbyObservationLever) {
+        prompt.classList.remove('hidden');
+        const roofOpen = !!nearbyObservationLever.structure?.roofOpen;
+        prompt.innerHTML = '<span class="promptKey">RMB</span> Flip Roof Lever · ' + (roofOpen ? 'Close Roof' : 'Pull Back Roof');
+        return;
+      }
+
+      const nearbyDockingLever = findNearbyDockingRoofLever();
+      if (nearbyDockingLever) {
+        prompt.classList.remove('hidden');
+        const roofOpen = !!nearbyDockingLever.structure?.roofOpen;
+        prompt.innerHTML = '<span class="promptKey">RMB</span> Flip Roof Lever · ' + (roofOpen ? 'Close Roof' : 'Pull Back Roof');
+        return;
+      }
+
+      const nearbyBaseDoor = findNearbyBaseDoor();
+      if (nearbyBaseDoor) {
+        const doorIsOpen = !!nearbyBaseDoor.structure?.doorStates?.[nearbyBaseDoor.doorIndex];
+        prompt.classList.remove('hidden');
+        const doorLabel = getBaseStructureDoorLabel(nearbyBaseDoor.structure);
+        prompt.innerHTML = '<span class="promptKey">E</span> ' + (doorIsOpen ? 'Close ' + doorLabel : 'Open ' + doorLabel);
+        return;
+      }
+
+      const sandAvailability = getActiveSurfaceSandAvailability();
+      if (!uiState.equippedItemType && sandAvailability.available) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">E</span> Collect Sand';
+        return;
+      }
+
+      if (uiState.equippedItemType === 'base_core') {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">E</span> Place Base Core';
+        return;
+      }
+      const nearbyBaseCore = findNearbyBaseCore();
+      if (nearbyBaseCore) {
+        prompt.classList.remove('hidden');
+        prompt.innerHTML = '<span class="promptKey">RMB</span> Manage Base · ' + sanitizeBaseName(nearbyBaseCore.name);
         return;
       }
 
@@ -29212,6 +35724,13 @@
       if (nearbyUpgradeableRocket && uiState.equippedItemType === 'warp_drive') {
         prompt.classList.remove('hidden');
         prompt.innerHTML = (nearbyUpgradeableRocket.warpDrive || nearbyUpgradeableRocket.pad?.warpDrive) ? '<span class="promptKey">INSTALLED</span> Warp Drive already installed' : '<span class="promptKey">E</span> Install Warp Drive · Iron Wrench';
+        return;
+      }
+      if (nearbyUpgradeableRocket && uiState.equippedItemType === 'gas_collection_system') {
+        prompt.classList.remove('hidden');
+        const installed = !!(nearbyUpgradeableRocket.gasCollectionInstalled || nearbyUpgradeableRocket.pad?.gasCollectionInstalled);
+        const liters = Math.round(sanitizeMethaneLiters(nearbyUpgradeableRocket.methaneLiters ?? nearbyUpgradeableRocket.pad?.methaneLiters));
+        prompt.innerHTML = installed ? '<span class="promptKey">INSTALLED</span> Gas Collection System · ' + liters + ' / ' + METHANE_CONTAINER_CAPACITY + ' L' : '<span class="promptKey">E</span> Install Gas Collection System';
         return;
       }
       if (nearbyUpgradeableRocket && uiState.equippedItemType === 'engine_mark_3') {
@@ -29516,6 +36035,7 @@
       // save is still created with the Save Game button.
       try { persistLocalBackup(); } catch (e) {}
       state.paused = false;
+      closeBaseCoreMenu();
       uiState.craftingOpen = false;
       uiState.shipInventoryOpen = false;
       const shipInventoryOverlay = document.getElementById('shipInventoryOverlay');
@@ -29576,6 +36096,7 @@
 
     function startGame(mode = 'survival', isMultiplayer = false) {
       closeMultiplayerPlayerList(false);
+      closeBaseCoreMenu();
       multiplayerMode = !!isMultiplayer;
       if (!multiplayerMode) disconnectMultiplayer(true);
       closeAchievements();
@@ -29588,7 +36109,6 @@
       // Every genuinely NEW singleplayer game starts with the same farming starter pack
       // as a fresh multiplayer world. Loading a save does not call this path.
       resetPlayerState({ starterSeedPack: true });
-      restoreConciergeQuestState(null);
       // Freeplay is a sandbox, so the Journal opens as a complete encyclopedia.
       // Survival keeps the normal discovery-based progression.
       if (state.gameMode === 'freeplay') {
@@ -29671,9 +36191,15 @@
         state.paused = false;
         pauseOverlay.classList.add("hidden");
       } else {
+        // Base Build Mode deliberately releases pointer lock. Consume the one-shot
+        // suppression before considering the normal pointer-lock-loss pause behavior.
+        if (suppressPauseAfterBaseBuildPointerUnlock) {
+          suppressPauseAfterBaseBuildPointerUnlock = false;
+          return;
+        }
         // Opening the inventory intentionally releases pointer lock; that should not
         // also trigger the normal pause overlay.
-        if (!multiplayerPlayerListOpen && performance.now() >= multiplayerPlayerListGraceUntil && !playerState.inRocket && !uiState.inventoryOpen && !uiState.freeplayInventoryOpen && !uiState.shipInventoryOpen && !uiState.containerOpen && !uiState.telephoneOpen && !economyState.merchantOpen && (!weatherControlOverlay || weatherControlOverlay.classList.contains('hidden'))) pauseGame();
+        if (!multiplayerPlayerListOpen && !emoteWheelOpen && performance.now() >= multiplayerPlayerListGraceUntil && !uiState.baseBuildOpen && !playerState.inRocket && !uiState.inventoryOpen && !uiState.freeplayInventoryOpen && !uiState.shipInventoryOpen && !uiState.containerOpen && !uiState.telephoneOpen && !uiState.baseCoreOpen && !economyState.merchantOpen && (!weatherControlOverlay || weatherControlOverlay.classList.contains('hidden'))) pauseGame();
       }
     });
 
@@ -29684,14 +36210,56 @@
     document.getElementById('furnaceClose').addEventListener('click', (e) => { e.stopPropagation(); closeFurnace(); });
     // Furnace slots now use drag-and-drop instead of click-to-select swapping.
     document.getElementById('furnaceOverlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeFurnace(); });
-    window.addEventListener('contextmenu', (e) => { if (uiState.telephoneOpen) { e.preventDefault(); e.stopPropagation(); } }, true);
+    // The game uses right-click for in-world interactions (Base Core, doors, machines, etc.).
+    // Prevent the browser's own context menu while gameplay is active so a right-click
+    // never opens the browser Back/Forward/Reload menu over the game.
+    window.addEventListener('contextmenu', (e) => {
+      if (state.gameState === 'playing') {
+        e.preventDefault();
+      }
+    }, true);
+    window.addEventListener('contextmenu', (e) => {
+      if (state.gameState === 'playing' && !playerState.inRocket && !uiState.fuelSynthOpen && !uiState.equippedItemType && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen) {
+        const fuelSynth = findNearbyFuelSynthesizer();
+        if (fuelSynth) { e.preventDefault(); e.stopPropagation(); openFuelSynthesizer(fuelSynth); return; }
+      }
+      if (tryToggleNearbyObservationRoofLever()) { e.preventDefault(); e.stopPropagation(); return; }
+      if (tryToggleNearbyDockingRoofLever()) { e.preventDefault(); e.stopPropagation(); return; }
+      if (uiState.baseBuildOpen) { e.preventDefault(); e.stopPropagation(); return; } if (uiState.telephoneOpen) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
     window.addEventListener('mousedown', (e) => {
+      if (e.button === 2 && state.gameState === 'playing' && !playerState.inRocket && !uiState.fuelSynthOpen && !uiState.equippedItemType && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen) {
+        const fuelSynth = findNearbyFuelSynthesizer();
+        if (fuelSynth) { e.preventDefault(); e.stopPropagation(); openFuelSynthesizer(fuelSynth); return; }
+      }
+      if (uiState.baseBuildOpen) {
+        if (e.button === 2) {
+          // Do not let right-clicking the build HUD/cards cancel construction.
+          if (e.target?.closest?.('#baseBuildHud')) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const structure = getBuildModeStructureFromPointerEvent(e);
+          if (structure && removeBaseStructureFromBuildMode(structure)) return;
+          exitBaseBuildMode('cancel');
+        }
+        return;
+      }
       if (e.button !== 2) return;
+      if (tryToggleNearbyObservationRoofLever()) { e.preventDefault(); e.stopPropagation(); return; }
+      if (tryToggleNearbyDockingRoofLever()) { e.preventDefault(); e.stopPropagation(); return; }
       if (trySleepInNearbySleepingBag()) { e.preventDefault(); return; }
       if (state.gameState === 'playing' && !playerState.inRocket && uiState.equippedItemType === 'journal' && !uiState.craftingOpen && !uiState.furnaceOpen && !economyState.merchantOpen && !cosmeticShopOpen && !journalOpen) {
         e.preventDefault(); e.stopPropagation(); openJournal(false); return;
       }
       if (state.gameState === 'playing' && !playerState.inRocket && pickupNearbyDrill()) { e.preventDefault(); return; }
+      if (state.gameState === 'playing' && !playerState.inRocket && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !uiState.baseCoreOpen) {
+        const nearbyBase = findNearbyBaseCore();
+        if (nearbyBase) {
+          e.preventDefault();
+          openBaseCoreMenu(nearbyBase);
+          return;
+        }
+      }
       if (state.gameState === 'playing' && !playerState.inRocket && uiState.equippedItemType === 'backpack' && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen) {
         e.preventDefault();
         openBackpackStorage(inventorySlots[getSelectedHotbarInventoryIndex()]);
@@ -29750,16 +36318,68 @@
           return;
         }
       }
-      if (state.gameState === 'playing' && !playerState.inRocket && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen) {
+      if (state.gameState === 'playing' && !playerState.inRocket && !uiState.inventoryOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !uiState.fuelSynthOpen) {
+        const fuelSynth = findNearbyFuelSynthesizer();
+        if (fuelSynth) { e.preventDefault(); openFuelSynthesizer(fuelSynth); return; }
+        if (!uiState.equippedItemType) { const gas = findNearbyGroundGasCollectionSystem(); if (gas && gas.methaneLiters > 0.001) { e.preventDefault(); tryExtractMethaneFromGroundGasCollectionSystem(); return; } }
         const furnace=findNearbyFurnace();
         if (furnace) { e.preventDefault(); openFurnace(furnace); return; }
       }
       if (uiState.furnaceOpen) e.preventDefault();
     });
+    const baseCoreCloseButton = document.getElementById('baseCoreClose');
+    const baseCoreSaveButton = document.getElementById('baseCoreSaveName');
+    const baseCoreHomeButton = document.getElementById('baseCoreHomeButton');
+    const baseCoreBuildButton = document.getElementById('baseCoreBuildButton');
+    const baseCoreOverlay = document.getElementById('baseCoreOverlay');
+    const baseCorePanel = document.getElementById('baseCorePanel');
+    const baseCoreNameField = document.getElementById('baseCoreNameInput');
+    baseCoreCloseButton?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); closeBaseCoreMenu(); });
+    baseCoreSaveButton?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); saveBaseCoreName(); });
+    baseCoreHomeButton?.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const base = window.__puActiveBaseCore;
+      if (base) setBaseCoreHome(base);
+    });
+    baseCoreBuildButton?.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const base = window.__puActiveBaseCore;
+      if (base) enterBaseBuildMode(base);
+    });
+    document.querySelectorAll('.baseBuildCard[data-base-structure]').forEach((button) => {
+      button.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); selectBaseBuildStructure(button.dataset.baseStructure); });
+    });
+    document.querySelectorAll('#baseBuildDoorPicker [data-base-door]').forEach((button) => {
+      button.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); setBaseBuildDoorSide(button.dataset.baseDoor, Number(button.dataset.baseDoorSlot) || 0); });
+    });
+    document.querySelectorAll('#baseBuildDoorPicker [data-base-door-toggle]').forEach((button) => {
+      button.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); setBaseBuildDoorTwoEnabled(!baseBuildState.doorTwoEnabled); });
+    });
+    document.querySelectorAll('#baseBuildMaterialPicker [data-base-interior-material]').forEach((button) => {
+      button.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); setBaseBuildInteriorMaterial(button.dataset.baseInteriorMaterial); });
+    });
+    document.getElementById('baseBuildMirrorButton')?.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation(); setBaseBuildMirror();
+    });
+    baseCoreNameField?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); saveBaseCoreName(); }
+      if (e.key === 'Escape') { e.preventDefault(); closeBaseCoreMenu(); }
+      e.stopPropagation();
+    });
+    baseCorePanel?.addEventListener('click', (e) => e.stopPropagation());
+    baseCoreOverlay?.addEventListener('click', (e) => { if (e.target === e.currentTarget) closeBaseCoreMenu(); });
+
+    document.getElementById('fuelSynthesizerClose')?.addEventListener('click', (e) => { e.stopPropagation(); closeFuelSynthesizer(); });
+    document.getElementById('fuelSynthesizerPanel')?.addEventListener('click', (e) => e.stopPropagation());
+    document.getElementById('fuelSynthesizerOverlay')?.addEventListener('click', (e) => { if (e.target === e.currentTarget) closeFuelSynthesizer(); });
+    document.getElementById('fuelSynthSynthesizeButton')?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); synthesizeFuel(); });
+    document.addEventListener('keydown', (e) => { if (uiState.fuelSynthOpen && e.key === 'Escape') { e.preventDefault(); closeFuelSynthesizer(); } });
+
     document.getElementById('containerClose').addEventListener('click', (e) => { e.stopPropagation(); closeContainer(); });
     document.getElementById('containerPanel').addEventListener('click', (e) => e.stopPropagation());
     document.getElementById('containerOverlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeContainer(); });
     document.addEventListener('keydown', (e) => { if (uiState.containerOpen && e.key === 'Escape') { e.preventDefault(); closeContainer(); } });
+    document.addEventListener('keydown', (e) => { if (uiState.researchOpen && e.key === 'Escape') { e.preventDefault(); closeResearchStation(); } });
     document.getElementById('shipInventoryClose').addEventListener('click', (e) => { e.stopPropagation(); closeShipInventory(); });
     document.getElementById('shipInventoryPanel').addEventListener('click', (e) => e.stopPropagation());
     document.getElementById('shipInventoryOverlay').addEventListener('click', (e) => {
@@ -29903,6 +36523,23 @@
     const physicalKeys = Object.create(null);
     const isPhysicalKeyDown = (code) => !!physicalKeys[code] || !!systemState.keys[code];
     const clearPhysicalKeys = () => { for (const k in physicalKeys) physicalKeys[k] = false; };
+    let queuedJumpAt = 0;
+    const queueJumpRequest = () => { queuedJumpAt = performance.now(); };
+    const isJumpRequested = () => {
+      const queued = queuedJumpAt > 0 && (performance.now() - queuedJumpAt) <= 280;
+      return queued || isActionDown('jump');
+    };
+    const consumeQueuedJump = () => { queuedJumpAt = 0; };
+    let suppressPauseUntilEscapeUp = false;
+    // When Escape closes Base Build Mode the browser has already consumed the key event
+    // that caused pointer lock to be released. Re-locking from that same keydown can be
+    // rejected by browser user-activation rules, so we defer the request until Escape is
+    // released.
+    let relockPointerAfterBaseBuildEscape = false;
+    // Exiting Base Build Mode releases pointer lock. The resulting pointerlockchange
+    // event must not be mistaken for a normal gameplay pointer-lock loss (which pauses).
+    // Consume this one-shot latch in the pointerlockchange handler below.
+    let suppressPauseAfterBaseBuildPointerUnlock = false;
 
     // Keyboard state is shared through systemState.
     const GAME_KEYS = new Set([
@@ -29935,9 +36572,54 @@
         return;
       }
 
+      if (e.altKey && e.code === 'KeyP' && !e.repeat) {
+        e.preventDefault();
+        performanceProfilerEl?.classList.toggle('hidden');
+        return;
+      }
+
       if (uiState.telephoneOpen) {
         if (e.key === 'Escape') { e.preventDefault(); closeTelephone(); }
         return;
+      }
+
+      if (uiState.baseBuildOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          suppressPauseUntilEscapeUp = true;
+          suppressPauseAfterBaseBuildPointerUnlock = true;
+          relockPointerAfterBaseBuildEscape = true;
+          exitBaseBuildMode('cancel');
+          return;
+        }
+        if (e.code === 'Enter' && !e.repeat) { e.preventDefault(); tryPlaceBaseStructure(); return; }
+        if (e.code === 'KeyR' && !e.repeat) { e.preventDefault(); if (!baseBuildState.dragging) { baseBuildState.yaw = (baseBuildState.yaw + Math.PI / 2) % (Math.PI * 2); if (baseBuildState.ghost) baseBuildState.ghost.rotation.y = baseBuildState.yaw; updateGhostConnectorDotsOnly(); maybeSnapBaseBuildGhost(); updateBaseBuildGhostAppearance(); } return; }
+        if (['KeyW','KeyA','KeyS','KeyD'].includes(e.code)) { e.preventDefault(); physicalKeys[e.code] = true; return; }
+        if (['Space','ShiftLeft','ShiftRight'].includes(e.code)) { e.preventDefault(); return; }
+        return;
+      }
+
+      // Furniture placement controls are intentionally isolated from base construction.
+      // R rotates the ghost 90°; E is reserved for the future placement step and is blocked
+      // here so it cannot accidentally trigger another world interaction.
+      if (furniturePlacementState.active && isFurnitureType(furniturePlacementState.typeId) && state.gameState === 'playing' && !state.paused) {
+        if (e.code === 'KeyR' && !e.repeat) {
+          e.preventDefault();
+          e.stopPropagation();
+          furniturePlacementState.yaw = (furniturePlacementState.yaw + Math.PI / 2) % (Math.PI * 2);
+          if (furniturePlacementState.ghost) furniturePlacementState.ghost.rotation.y = furniturePlacementState.yaw;
+          const roomInfo = getFurniturePlacementRoom();
+          if (roomInfo) updateFurniturePlacementValidity(roomInfo);
+          updateCrystalPrompt();
+          return;
+        }
+        if (e.code === 'KeyE' && !e.repeat) {
+          e.preventDefault();
+          e.stopPropagation();
+          tryPlaceFurniture();
+          return;
+        }
       }
 
       if (activeRebindAction && !settingsModal.classList.contains('hidden')) {
@@ -29947,15 +36629,16 @@
         return;
       }
 
-      if (isActionEvent(e, 'emote') && !e.repeat && !emoteWheelOpen && state.gameState === 'playing' && !state.paused && settingsModal.classList.contains('hidden') && !uiState.inventoryOpen && !uiState.freeplayInventoryOpen && !uiState.shipInventoryOpen && !uiState.containerOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !economyState.merchantOpen && !uiState.telephoneOpen) {
+      if (isActionEvent(e, 'emote') && !e.repeat && state.gameState === 'playing' && !state.paused && settingsModal.classList.contains('hidden') && !uiState.inventoryOpen && !uiState.freeplayInventoryOpen && !uiState.shipInventoryOpen && !uiState.containerOpen && !uiState.craftingOpen && !uiState.furnaceOpen && !economyState.merchantOpen && !uiState.telephoneOpen) {
         e.preventDefault();
-        toggleEmoteWheel();
+        e.stopPropagation();
+        if (!emoteWheelOpen) openEmoteWheel();
         return;
       }
 
-      if (emoteWheelOpen && e.key === 'Escape') {
+      if (emoteWheelOpen && (e.key === 'Escape' || e.code === 'KeyB')) {
         e.preventDefault();
-        closeEmoteWheel();
+        e.stopPropagation();
         return;
       }
 
@@ -29972,6 +36655,7 @@
       }
 
       physicalKeys[e.code] = true;
+      if (isActionEvent(e, 'jump') && !e.repeat) queueJumpRequest();
       if (isActionEvent(e, 'screenshotUI') && !e.repeat && state.gameState === 'playing') {
         e.preventDefault();
         toggleScreenshotUI();
@@ -29988,8 +36672,9 @@
         return;
       }
 
-      if (isActionEvent(e, 'interact') && !e.repeat && state.gameState === "playing" && !state.paused && !uiState.inventoryOpen && !economyState.merchantOpen && settingsModal.classList.contains("hidden")) {
+      if (isActionEvent(e, 'interact') && !e.repeat && state.gameState === "playing" && !state.paused && !uiState.inventoryOpen && !uiState.baseCoreOpen && !economyState.merchantOpen && settingsModal.classList.contains("hidden")) {
         e.preventDefault();
+        if (tryInteractWithFurniture()) return;
         if (openNearbyTelephone()) return;
         if (collectConciergeDelivery()) return;
         if (openMerchant()) return;
@@ -29998,13 +36683,18 @@
         if (tryUpgradeNearbyRocket()) return;
         if (tryInstallWarpDriveMark2NearbyRocket()) return;
         if (tryInstallWarpDriveNearbyRocket()) return;
+        if (tryInstallGasCollectionNearbyRocket()) return;
         if (startRocketFueling()) return;
         if (startDrillRefueling()) return;
+        if (tryUseNearbyResearchStation()) return;
+        if (tryUseNearbyWorkbench()) return;
         // On Moon/Cordelia, only allow re-entry when the player is actually beside the landed
         // rocket. Previously enterRocket() could fall back to the landed rocket reference even
         // when the player was standing near a crystal, causing E to teleport them back inside.
         const canEnterSurfaceRocket = (moonWalking || cordeliaWalking) && isNearLandedSurfaceRocket();
         if (!uiState.equippedItemType && (!moonWalking && !cordeliaWalking || canEnterSurfaceRocket) && enterRocket()) return;
+        if (tryToggleNearbyBaseDoor()) return;
+        if (tryCollectSand()) return;
         if (uiState.equippedItemType === 'furnace' && tryPlaceFurnace()) return;
         if (uiState.equippedItemType === 'campfire' && tryPlaceCampfire()) return;
         if (uiState.equippedItemType === 'raw_beobaka') {
@@ -30020,9 +36710,12 @@
         if (!uiState.equippedItemType && harvestNearbyFarmCrop()) return;
         if (!uiState.equippedItemType && pickNearbyCordeliaFlower()) return;
         if (!uiState.equippedItemType && triggerVeyraFruitHarvest()) return;
+        if (uiState.equippedItemType === 'base_core' && tryPlaceBaseCore()) return;
         if (uiState.equippedItemType === 'drill' && tryPlaceDrill()) return;
         if (uiState.equippedItemType === 'launch_pad' && tryPlaceLaunchPad()) return;
         if (uiState.equippedItemType === 'container' && tryPlaceContainer()) return;
+        if (uiState.equippedItemType === 'gas_collection_system' && tryPlaceGasCollectionSystem()) return;
+        if (!uiState.equippedItemType && tryPickupNearbyGasCollectionSystem()) return;
         if (uiState.equippedItemType === 'sleeping_bag' && tryPlaceSleepingBag()) return;
         if (!uiState.equippedItemType && tryPickupNearbySleepingBag()) return;
         if (uiState.equippedItemType === 'rocket' && tryPlaceRocketOnNearbyPad()) return;
@@ -30063,7 +36756,7 @@
 
       if (isActionEvent(e, 'slot1') || isActionEvent(e, 'slot2') || isActionEvent(e, 'slot3') || isActionEvent(e, 'slot4')) {
         if (playerState.inRocket) return;
-        if (state.gameState === "playing" && !uiState.inventoryOpen && settingsModal.classList.contains("hidden")) {
+        if (state.gameState === "playing" && !uiState.inventoryOpen && !uiState.baseCoreOpen && !state.paused && settingsModal.classList.contains("hidden")) {
           e.preventDefault();
           selectHotbarSlot(isActionEvent(e, 'slot1') ? 0 : isActionEvent(e, 'slot2') ? 1 : isActionEvent(e, 'slot3') ? 2 : 3);
         }
@@ -30077,7 +36770,7 @@
         return;
       }
 
-      if (isActionEvent(e, 'map') && !e.repeat && state.gameState === "playing" && settingsModal.classList.contains("hidden")) {
+      if (isActionEvent(e, 'map') && !e.repeat && state.gameState === "playing" && !uiState.baseCoreOpen && settingsModal.classList.contains("hidden")) {
         e.preventDefault();
         if (playerState.inRocket && playerState.rocketInSpace && !playerState.rocketLanded) toggleSpaceMap();
         else togglePlanetMap();
@@ -30085,6 +36778,11 @@
       }
 
       if (isActionEvent(e, 'pause')) {
+        if (e.code === 'Escape' && suppressPauseUntilEscapeUp) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
         if (multiplayerPlayerListOpen) { e.preventDefault(); closeMultiplayerPlayerList(true); return; }
         if (spaceMapOpen) { closeSpaceMap(); return; }
         if (mapOpen) {
@@ -30109,6 +36807,10 @@
         }
         if (uiState.containerOpen) {
           closeContainer();
+          return;
+        }
+        if (uiState.baseCoreOpen) {
+          closeBaseCoreMenu();
           return;
         }
         if (uiState.craftingOpen) {
@@ -30142,12 +36844,35 @@
       }
     });
     window.addEventListener("keyup", (e) => {
+      if (e.code === 'Escape') {
+        suppressPauseUntilEscapeUp = false;
+        if (relockPointerAfterBaseBuildEscape) {
+          relockPointerAfterBaseBuildEscape = false;
+          // Escape-up is a fresh user gesture in browsers that reject a request made
+          // from the Escape keydown that released pointer lock. Re-lock only after the
+          // build UI has closed and only while normal gameplay is active.
+          if (state.gameState === 'playing' && !state.paused && document.pointerLockElement !== canvas) {
+            setTimeout(() => {
+              if (state.gameState === 'playing' && !state.paused && !uiState.baseBuildOpen && document.pointerLockElement !== canvas) {
+                attemptPointerLock();
+              }
+            }, 0);
+          }
+        }
+      }
+      if (isActionEvent(e, 'emote')) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (emoteWheelOpen) closeEmoteWheel({ relock: true });
+        return;
+      }
       if (GAME_KEYS.has(e.code)) e.preventDefault();
       physicalKeys[e.code] = false;
       systemState.keys[e.code] = false;
       if (isActionEvent(e, 'useTool')) keyboardToolUseDown = false;
     });
     window.addEventListener("blur", () => {
+      if (emoteWheelOpen) closeEmoteWheel({ relock: false });
       clearPhysicalKeys();
       for (const k in systemState.keys) systemState.keys[k] = false;
       clearPhysicalKeys();
@@ -30224,6 +36949,7 @@
     // Left-click is the default binding, but the same action can be rebound to any keyboard key.
     function startPrimaryToolAction() {
       if (state.gameState !== 'playing' || playerState.inRocket || uiState.inventoryOpen || !settingsModal.classList.contains('hidden')) return false;
+      if (uiState.equippedItemType === 'hammer') return removeFurnitureWithHammer();
       if (uiState.equippedItemType === 'drill') {
         if (breakNearbyFurnace()) return true;
         if (findNearbyRock()) { mineStone(); return true; }
@@ -30248,14 +36974,57 @@
     let isDragging = false;
 
     canvas.addEventListener("mousedown", (e) => {
+      if (uiState.baseBuildOpen) {
+        if (e.button === 0) { e.preventDefault(); beginBaseBuildDrag(e); }
+        return;
+      }
       if (state.gameState === "playing" && e.button === 0) {
+        if (furniturePlacementState.active && tryPlaceFurniture()) {
+          e.preventDefault();
+          return;
+        }
+        // The hammer is deliberately a direct left-click interaction, independent of the
+        // configurable primary-tool binding, so furniture removal always feels predictable.
+        if (uiState.equippedItemType === 'hammer') {
+          e.preventDefault();
+          isDragging = false;
+          mouseButtonDown = false;
+          removeFurnitureWithHammer();
+          return;
+        }
         isDragging = true;
         if (playerState.inRocket) { mouseButtonDown = false; return; }
         mouseButtonDown = isMouseToolBound();
         if (mouseButtonDown) startPrimaryToolAction();
       }
     });
+    window.addEventListener('wheel', (e) => {
+      if (!furniturePlacementState.active || !isFurnitureType(furniturePlacementState.typeId) || state.gameState !== 'playing' || state.paused) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Negative deltaY is the usual scroll-up/outward direction, so it pushes the ghost farther.
+      const delta = THREE.MathUtils.clamp(-Number(e.deltaY) * 0.0035, -0.70, 0.70);
+      furniturePlacementState.distance = THREE.MathUtils.clamp(
+        (Number(furniturePlacementState.distance) || 1.65) + delta,
+        0.70, 6.00
+      );
+      const roomInfo = getFurniturePlacementRoom();
+      if (roomInfo) {
+        placeFurnitureGhostNearPlayer(roomInfo);
+        updateFurniturePlacementValidity(roomInfo);
+        updateCrystalPrompt();
+      }
+    }, { passive: false, capture: true });
+
     window.addEventListener("mouseup", (e) => {
+      if (uiState.baseBuildOpen && (e.button === 0 || e.button === undefined)) {
+        baseBuildState.dragging = false;
+        document.body.classList.remove('base-build-dragging');
+        maybeSnapBaseBuildGhost();
+        updateGhostConnectorDotsOnly();
+        updateBaseBuildGhostAppearance();
+        return;
+      }
       if (e.button === 0 || e.button === undefined) {
         isDragging = false;
         mouseButtonDown = false;
@@ -30306,6 +37075,7 @@
 
     document.addEventListener("mousemove", (e) => {
       if (state.gameState !== "playing") return;
+      if (uiState.baseBuildOpen) { updateBaseBuildPointer(e); return; }
       if (mapOpen || uiState.telephoneOpen) return;
       const locked = document.pointerLockElement === canvas;
       if (!locked && !isDragging) return;
@@ -30385,6 +37155,32 @@
     // with getWorldPosition()/worldToLocal() was the reason the previous collisions failed.
     const PLAYER_COLLISION_RADIUS = 0.45;
 
+    // Base-module floor grounding gets a small amount of hysteresis. The room floor is
+    // intentionally a separate tangent plane from the planet surface, so switching for a
+    // single frame between module-floor support and terrain support produces a noticeable
+    // vertical camera/player pop. Keep the last room floor locked while the player is still
+    // within a small interior margin.
+    const baseFloorLock = { structureId: '', bodyId: '', active: false };
+    const BASE_FLOOR_LOCK_MARGIN = 0.58;
+    // Once the player is inside a module, keep the module as the authoritative walking
+    // surface until the player has actually moved beyond its interior release envelope.
+    // This prevents planetary grounding from briefly taking ownership between frames.
+    const BASE_FLOOR_RELEASE_MARGIN = 0.72;
+    const BASE_FLOOR_STAIRWELL_UPPER_RELEASE_MARGIN = 0.14;
+    // Stairwell-only floor transition state. This is collision/grounding state, not build state:
+    // it remembers the upper doorway plane long enough to bridge a one-frame seam between the
+    // stair flight and any elevated module attached to the top socket.
+    const stairwellCollisionState = { structureId: '', bodyId: '', active: false };
+    const STAIRWELL_UPPER_TRANSITION_FORWARD_MIN = -1.10;
+    const STAIRWELL_UPPER_TRANSITION_FORWARD_MAX = 3.20;
+    const STAIRWELL_UPPER_TRANSITION_HALF_WIDTH = 1.78;
+    const STAIRWELL_UPPER_TRANSITION_VERTICAL = 1.35;
+    const STAIRWELL_UPPER_CONNECTION_MATCH_DISTANCE = 0.55;
+    // Keep the generic module-socket bridge for ordinary same-level modules. The stairwell has a
+    // dedicated transition path below because its upper socket is at a different local height.
+    const BASE_FLOOR_CONNECTION_BRIDGE_RADIUS = 1.30;
+    const BASE_FLOOR_CONNECTION_BRIDGE_VERTICAL = 1.05;
+
     function getActiveCollisionBodyObject() {
       if (moonWalking) return moonMesh;
       if (cordeliaWalking) return cordeliaMesh;
@@ -30445,6 +37241,499 @@
         if (testLandmarkCollision(localPosition, landmark, bodyObject, bodyId)) return true;
       }
       return false;
+    }
+
+
+    function updateBaseFurnitureCollision(localPosition) {
+      if (!baseStructures.length) return false;
+      const bodyObject = getActiveCollisionBodyObject();
+      const bodyId = getActiveCollisionBodyId();
+      if (!bodyObject) return false;
+      const candidateWorld = bodyObject.localToWorld(localPosition.clone());
+      const surfaceNormalWorld = getActiveWalkingSurfaceWorld(new THREE.Vector3()).normalize();
+      const footWorld = candidateWorld.clone().addScaledVector(surfaceNormalWorld, -EYE_HEIGHT);
+      const playerHeight = 1.80;
+      const playerBottom = 0.05;
+      for (const structure of baseStructures) {
+        const base = baseCores.find(item => String(item.baseId || '') === String(structure?.baseId || ''));
+        if (!base || String(base.surfaceBodyId || '') !== String(bodyId || '')) continue;
+        if (!structure?.root?.parent || !structure.root.visible || !Array.isArray(structure.furniture)) continue;
+        for (const furniture of structure.furniture) {
+          if (!furniture?.root?.visible) continue;
+          const c = furniture.collisionBox || refreshFurnitureCollisionData(structure, furniture);
+          if (!c) continue;
+          // Furniture bounds are local to the furniture root. Compare the player's foot/body
+          // volume so low furniture (chairs, beds, desks, lamps) is actually solid while the
+          // player is standing beside it, without falsely using the camera height as the feet.
+          const furnitureLocal = furniture.root.worldToLocal(footWorld.clone());
+          const pad = Number.isFinite(c.padding) ? c.padding : 0.05;
+          const overlapsXZ = Math.abs(furnitureLocal.x - c.center.x) <= c.halfX + PLAYER_COLLISION_RADIUS + pad &&
+            Math.abs(furnitureLocal.z - c.center.z) <= c.halfZ + PLAYER_COLLISION_RADIUS + pad;
+          const playerTop = furnitureLocal.y + playerHeight;
+          const playerLow = furnitureLocal.y + playerBottom;
+          const overlapsY = playerTop >= c.center.y - c.halfY - pad &&
+            playerLow <= c.center.y + c.halfY + pad;
+          if (overlapsXZ && overlapsY) return true;
+        }
+      }
+      return false;
+    }
+
+    function updateBaseStructureCollision(localPosition) {
+      if (!baseStructures.length) return false;
+      const bodyObject = getActiveCollisionBodyObject();
+      const bodyId = getActiveCollisionBodyId();
+      if (!bodyObject) return false;
+      const candidateWorld = bodyObject.localToWorld(localPosition.clone());
+      for (const structure of baseStructures) {
+        const base = baseCores.find(item => String(item.baseId || '') === String(structure?.baseId || ''));
+        if (!base || String(base.surfaceBodyId || '') !== bodyId) continue;
+        if (!structure?.root?.parent || !structure.collisionBoxes?.length || !structure.root.visible) continue;
+        const structureLocal = structure.root.worldToLocal(candidateWorld.clone());
+        for (const c of structure.collisionBoxes) {
+          if (c?.isFloor) continue;
+          if (c?.isDoor && Array.isArray(structure.doorStates) && structure.doorStates[c.doorIndex]) continue;
+          if (c?.isFloor) continue;
+          if (c?.isDoor && !Array.isArray(structure.doorStates) && structure.doorOpen) continue;
+          const collisionPadding = Number.isFinite(c.padding) ? c.padding : BASE_BUILD_PLAYER_PADDING;
+          if (Math.abs(structureLocal.x - (c.center?.x || 0)) <= (c.halfX || 0) + PLAYER_COLLISION_RADIUS + collisionPadding &&
+              Math.abs(structureLocal.y - (c.center?.y || 0)) <= (c.halfY || 0) + PLAYER_COLLISION_RADIUS + collisionPadding &&
+              Math.abs(structureLocal.z - (c.center?.z || 0)) <= (c.halfZ || 0) + PLAYER_COLLISION_RADIUS + collisionPadding) return true;
+        }
+      }
+      return false;
+    }
+
+    function trySlideAlongBaseStructure(desiredStep, currentPosition, out = new THREE.Vector3()) {
+      if (!baseStructures.length || desiredStep.lengthSq() < 0.0000001) return false;
+      const bodyObject = getActiveCollisionBodyObject();
+      const bodyId = getActiveCollisionBodyId();
+      if (!bodyObject) return false;
+      let best = null;
+      let bestLengthSq = -1;
+      const desired = desiredStep.clone();
+      for (const structure of baseStructures) {
+        const base = baseCores.find(item => String(item.baseId || '') === String(structure?.baseId || ''));
+        if (!base || String(base.surfaceBodyId || '') !== bodyId) continue;
+        if (!structure?.root?.parent || !structure.collisionBoxes?.length || !structure.root.visible) continue;
+        const candidateWorld = bodyObject.localToWorld(currentPosition.clone().add(desired));
+        const localCandidate = structure.root.worldToLocal(candidateWorld.clone());
+        let blocking = false;
+        for (const c of structure.collisionBoxes) {
+          if (c?.isFloor) continue;
+          if (c?.isDoor && Array.isArray(structure.doorStates) && structure.doorStates[c.doorIndex]) continue;
+          if (c?.isFloor) continue;
+          if (c?.isDoor && !Array.isArray(structure.doorStates) && structure.doorOpen) continue;
+          const collisionPadding = Number.isFinite(c.padding) ? c.padding : BASE_BUILD_PLAYER_PADDING;
+          if (Math.abs(localCandidate.x - (c.center?.x || 0)) <= (c.halfX || 0) + PLAYER_COLLISION_RADIUS + collisionPadding &&
+              Math.abs(localCandidate.y - (c.center?.y || 0)) <= (c.halfY || 0) + PLAYER_COLLISION_RADIUS + collisionPadding &&
+              Math.abs(localCandidate.z - (c.center?.z || 0)) <= (c.halfZ || 0) + PLAYER_COLLISION_RADIUS + collisionPadding) { blocking = true; break; }
+        }
+        if (!blocking) continue;
+        const combined = new THREE.Quaternion().multiplyQuaternions(base.root.quaternion, structure.root.quaternion);
+        const axisX = new THREE.Vector3(1, 0, 0).applyQuaternion(combined).normalize();
+        const axisZ = new THREE.Vector3(0, 0, 1).applyQuaternion(combined).normalize();
+        const compX = axisX.multiplyScalar(desired.dot(axisX));
+        const compZ = axisZ.multiplyScalar(desired.dot(axisZ));
+        const slideAlongZ = desired.clone().sub(compX);
+        const slideAlongX = desired.clone().sub(compZ);
+        for (const candidateStep of [slideAlongZ, slideAlongX]) {
+          if (candidateStep.lengthSq() < 0.0000001) continue;
+          const candidatePos = currentPosition.clone().add(candidateStep);
+          if (!isWorldPositionBlocked(candidatePos)) {
+            const lenSq = candidateStep.lengthSq();
+            if (lenSq > bestLengthSq) { bestLengthSq = lenSq; best = candidateStep; }
+          }
+        }
+      }
+      if (!best) return false;
+      out.copy(best);
+      return true;
+    }
+
+    function getBaseStructureFloorSurface(structure, local) {
+      const baseY = Number(structure?.root?.userData?.floorBounds?.topY) || 0.20;
+      // Some modules, notably the two-level stairwell, have more than one walkable floor.
+      // Check explicit floor levels first so an upper landing does not fall back to the
+      // module's lower base floor at a doorway seam.
+      const floorLevels = Array.isArray(structure?.root?.userData?.floorLevels) ? structure.root.userData.floorLevels : [];
+      let bestLevel = null;
+      let bestPriority = -Infinity;
+      for (const level of floorLevels) {
+        const minX = Number(level.minX) || 0;
+        const maxX = Number(level.maxX) || 0;
+        const minZ = Number(level.minZ) || 0;
+        const maxZ = Number(level.maxZ) || 0;
+        if (local.x < Math.min(minX, maxX) || local.x > Math.max(minX, maxX) ||
+            local.z < Math.min(minZ, maxZ) || local.z > Math.max(minZ, maxZ)) continue;
+        const y = Number.isFinite(Number(level.y)) ? Number(level.y) : baseY;
+        const priority = Number.isFinite(Number(level.priority)) ? Number(level.priority) : 0;
+        if (priority > bestPriority) {
+          bestPriority = priority;
+          bestLevel = { y, normal: new THREE.Vector3(Number(level.normal?.x) || 0, Number(level.normal?.y) || 1, Number(level.normal?.z) || 0).normalize() };
+        }
+      }
+      if (bestLevel) return { y: bestLevel.y, normal: bestLevel.normal, ramp: null, t: 0 };
+
+      // Stairwell upper landing: this is the only flat upper surface owned by the stairwell.
+      // Crossing between that surface and an elevated module is handled by the dedicated
+      // stairwell transition support in getBaseStructureFloorSupport().
+      if (structure?.typeId === 'stairwell') {
+        const upperFloorY = Number(structure.root.userData?.upperFloorY);
+        const upperPortal = Array.isArray(structure.root.userData?.floorPortals)
+          ? structure.root.userData.floorPortals.find(portal => String(portal?.side || '') === 'north')
+          : null;
+        if (upperPortal && Number.isFinite(upperFloorY)) {
+          const halfX = Number(upperPortal.halfX) || 0;
+          const halfZ = Number(upperPortal.halfZ) || 0;
+          const dx = local.x - (Number(upperPortal.center?.x) || 0);
+          const dz = local.z - (Number(upperPortal.center?.z) || 0);
+          if (Math.abs(dx) <= halfX + 0.08 && Math.abs(dz) <= halfZ + 0.08 && local.z <= -2.22) {
+            return { y: upperFloorY, normal: new THREE.Vector3(0, 1, 0), ramp: null, t: 1 };
+          }
+        }
+      }
+
+      const ramps = Array.isArray(structure?.root?.userData?.floorRamps) ? structure.root.userData.floorRamps : [];
+      for (const ramp of ramps) {
+        const minX = Number(ramp.minX) || 0;
+        const maxX = Number(ramp.maxX) || 0;
+        const minZ = Number(ramp.minZ) || 0;
+        const maxZ = Number(ramp.maxZ) || 0;
+        if (local.x < Math.min(minX, maxX) || local.x > Math.max(minX, maxX) || local.z < Math.min(minZ, maxZ) || local.z > Math.max(minZ, maxZ)) continue;
+        const lowZ = Number(ramp.lowZ);
+        const highZ = Number(ramp.highZ);
+        const lowY = Number(ramp.lowY);
+        const highY = Number(ramp.highY);
+        const denom = highZ - lowZ;
+        const t = Math.abs(denom) > 0.0001 ? (local.z - lowZ) / denom : 0;
+        const clampedT = Math.max(0, Math.min(1, t));
+        const y = lowY + (highY - lowY) * clampedT;
+        const dyDz = Math.abs(denom) > 0.0001 ? (highY - lowY) / denom : 0;
+        const normal = new THREE.Vector3(0, 1, -dyDz).normalize();
+        return { y, normal, ramp, t: clampedT };
+      }
+      return { y: baseY, normal: new THREE.Vector3(0, 1, 0), ramp: null, t: 0 };
+    }
+
+    function getStairwellUpperTransitionSupport(localPosition, bodyId, bodyObject) {
+      if (!baseStructures.length || !bodyObject) return null;
+      const activeBodyId = String(bodyId || '');
+      const playerWorld = bodyObject.localToWorld(localPosition.clone());
+
+      const stairwells = baseStructures.filter(structure => {
+        if (String(structure?.typeId || '') !== 'stairwell') return false;
+        if (!structure?.root?.parent || !structure.root.visible) return false;
+        const base = baseCores.find(candidate => String(candidate?.baseId || '') === String(structure.baseId || ''));
+        return !!base && String(base.surfaceBodyId || '') === activeBodyId;
+      });
+
+      for (const stairwell of stairwells) {
+        const topPoint = (Array.isArray(stairwell.connectionPoints) ? stairwell.connectionPoints : [])
+          .find(point => String(point?.id || '') === 'top-entry' || !!point?.elevated);
+        if (!topPoint?.position) continue;
+
+        const stairRootQuat = stairwell.root.getWorldQuaternion(new THREE.Quaternion());
+        const stairUpWorld = new THREE.Vector3(0, 1, 0).applyQuaternion(stairRootQuat).normalize();
+        const stairNormalWorld = topPoint.normal.clone().applyQuaternion(stairRootQuat).normalize();
+        const stairSocketWorld = stairwell.root.localToWorld(topPoint.position.clone());
+        const toPlayer = playerWorld.clone().sub(stairSocketWorld);
+        const signedVertical = toPlayer.dot(stairUpWorld);
+        if (Math.abs(signedVertical) > STAIRWELL_UPPER_TRANSITION_VERTICAL) continue;
+
+        const tangent = toPlayer.clone().addScaledVector(stairUpWorld, -signedVertical);
+        const forward = tangent.dot(stairNormalWorld);
+        const lateral = tangent.clone().addScaledVector(stairNormalWorld, -forward).length();
+        if (forward < STAIRWELL_UPPER_TRANSITION_FORWARD_MIN ||
+            forward > STAIRWELL_UPPER_TRANSITION_FORWARD_MAX ||
+            lateral > STAIRWELL_UPPER_TRANSITION_HALF_WIDTH) continue;
+
+        const upperFloorY = Number(stairwell.root.userData?.upperFloorY);
+        if (!Number.isFinite(upperFloorY)) continue;
+
+        // Confirm this is a real module-to-stairwell doorway seam when possible. The build
+        // system already guarantees matching connection positions; this check keeps the custom
+        // collision rule from activating on a free-standing stairwell in the middle of nowhere.
+        let hasUpperNeighbor = false;
+        for (const other of baseStructures) {
+          if (other === stairwell || String(other?.baseId || '') !== String(stairwell.baseId || '')) continue;
+          if (!other?.root?.parent || !other.root.visible) continue;
+          const points = Array.isArray(other.connectionPoints) ? other.connectionPoints : [];
+          for (const point of points) {
+            if (!point?.position) continue;
+            const otherSocketWorld = other.root.localToWorld(point.position.clone());
+            if (otherSocketWorld.distanceTo(stairSocketWorld) <= STAIRWELL_UPPER_CONNECTION_MATCH_DISTANCE) {
+              hasUpperNeighbor = true;
+              break;
+            }
+          }
+          if (hasUpperNeighbor) break;
+        }
+
+        // At the landing itself there is no need for a neighbor to exist; just past the socket,
+        // however, require a matching elevated module so the stairwell does not become a magical
+        // floor bridge into empty space.
+        if (forward > 0.25 && !hasUpperNeighbor) continue;
+
+        stairwellCollisionState.structureId = String(stairwell.structureId || '');
+        stairwellCollisionState.bodyId = activeBodyId;
+        stairwellCollisionState.active = true;
+        return {
+          structure: stairwell,
+          local: stairwell.root.worldToLocal(playerWorld.clone()),
+          floorTop: upperFloorY,
+          floorNormal: new THREE.Vector3(0, 1, 0),
+          edgeDepth: 2.25
+        };
+      }
+
+      // One-frame seam fallback: if the player has just crossed the socket and the normal room
+      // floor has not become active yet, continue using the same upper stairwell plane instead of
+      // letting the movement loop fall through to the planetary surface.
+      if (stairwellCollisionState.active && stairwellCollisionState.bodyId === activeBodyId) {
+        const stairwell = baseStructures.find(structure =>
+          String(structure?.structureId || '') === String(stairwellCollisionState.structureId || '') &&
+          String(structure?.typeId || '') === 'stairwell'
+        );
+        if (stairwell?.root?.parent && stairwell.root.visible) {
+          const topPoint = (Array.isArray(stairwell.connectionPoints) ? stairwell.connectionPoints : [])
+            .find(point => String(point?.id || '') === 'top-entry' || !!point?.elevated);
+          const upperFloorY = Number(stairwell.root.userData?.upperFloorY);
+          if (topPoint?.position && Number.isFinite(upperFloorY)) {
+            const rootQuat = stairwell.root.getWorldQuaternion(new THREE.Quaternion());
+            const upWorld = new THREE.Vector3(0, 1, 0).applyQuaternion(rootQuat).normalize();
+            const normalWorld = topPoint.normal.clone().applyQuaternion(rootQuat).normalize();
+            const socketWorld = stairwell.root.localToWorld(topPoint.position.clone());
+            const delta = playerWorld.clone().sub(socketWorld);
+            const v = delta.dot(upWorld);
+            const tangentDelta = delta.clone().addScaledVector(upWorld, -v);
+            const forward = tangentDelta.dot(normalWorld);
+            const lateral = tangentDelta.clone().addScaledVector(normalWorld, -forward).length();
+            if (Math.abs(v) <= STAIRWELL_UPPER_TRANSITION_VERTICAL &&
+                forward >= STAIRWELL_UPPER_TRANSITION_FORWARD_MIN - 0.35 &&
+                forward <= STAIRWELL_UPPER_TRANSITION_FORWARD_MAX + 0.50 &&
+                lateral <= STAIRWELL_UPPER_TRANSITION_HALF_WIDTH + 0.25) {
+              return {
+                structure: stairwell,
+                local: stairwell.root.worldToLocal(playerWorld.clone()),
+                floorTop: upperFloorY,
+                floorNormal: new THREE.Vector3(0, 1, 0),
+                edgeDepth: 2.0
+              };
+            }
+          }
+        }
+        // Do not keep stale state after the player has clearly left the upper transition.
+        stairwellCollisionState.active = false;
+        stairwellCollisionState.structureId = '';
+        stairwellCollisionState.bodyId = '';
+      }
+      return null;
+    }
+
+    function getBaseStructureFloorSupport(localPosition, bodyId, bodyObject) {
+      if (!baseStructures.length || !bodyObject) return null;
+      const activeBodyId = String(bodyId || '');
+      const playerWorld = bodyObject.localToWorld(localPosition.clone());
+
+      const findConnectionFloorSupport = () => {
+        let best = null;
+        let bestScore = Infinity;
+        const playerWorldPos = playerWorld.clone();
+        for (const structure of baseStructures) {
+          if (!structure?.root?.parent || !structure.root.visible) continue;
+          const base = baseCores.find(candidate => String(candidate?.baseId || '') === String(structure.baseId || ''));
+          if (!base || String(base.surfaceBodyId || '') !== activeBodyId) continue;
+          const points = Array.isArray(structure.connectionPoints) && structure.connectionPoints.length
+            ? structure.connectionPoints
+            : (Array.isArray(structure.root.userData?.connectionPoints) ? structure.root.userData.connectionPoints : []);
+          if (!points.length) continue;
+          const rootQuat = structure.root.getWorldQuaternion(new THREE.Quaternion());
+          const upWorld = new THREE.Vector3(0, 1, 0).applyQuaternion(rootQuat).normalize();
+          for (const point of points) {
+            if (!point?.position) continue;
+            const connectionLocal = point.position.clone();
+            const connectionWorld = structure.root.localToWorld(connectionLocal.clone());
+            const toPlayer = playerWorldPos.clone().sub(connectionWorld);
+            const vertical = Math.abs(toPlayer.dot(upWorld));
+            if (vertical > BASE_FLOOR_CONNECTION_BRIDGE_VERTICAL) continue;
+            const lateral = toPlayer.clone().addScaledVector(upWorld, -toPlayer.dot(upWorld));
+            const lateralDistance = lateral.length();
+            if (lateralDistance > BASE_FLOOR_CONNECTION_BRIDGE_RADIUS) continue;
+
+            const structureLocal = structure.root.worldToLocal(playerWorldPos.clone());
+            const surface = getBaseStructureFloorSurface(structure, connectionLocal);
+            const floorLocal = connectionLocal.clone();
+            floorLocal.y = surface.y + EYE_HEIGHT;
+            const floorWorld = structure.root.localToWorld(floorLocal);
+            const floorDelta = playerWorldPos.clone().sub(floorWorld);
+            const floorVertical = Math.abs(floorDelta.dot(upWorld));
+            if (floorVertical > BASE_FLOOR_CONNECTION_BRIDGE_VERTICAL) continue;
+
+            // Prefer the nearest seam. A tiny bias toward the owning structure prevents
+            // oscillating between both modules when the player is exactly centered in a doorway.
+            const score = lateralDistance + floorVertical * 0.35;
+            if (score >= bestScore) continue;
+            bestScore = score;
+            best = {
+              structure,
+              local: structureLocal,
+              floorTop: surface.y,
+              floorNormal: surface.normal,
+              edgeDepth: BASE_FLOOR_LOCK_MARGIN
+            };
+          }
+        }
+        return best;
+      };
+
+      const stairwellTransition = getStairwellUpperTransitionSupport(localPosition, bodyId, bodyObject);
+      if (stairwellTransition) return stairwellTransition;
+
+      const floorContains = (structure, local, margin = 0) => {
+        const bounds = structure.root.userData.floorBounds;
+        if (!bounds) return false;
+        if (local.y < (bounds.topY - 1.15) || local.y > (bounds.ceilingY + 1.0)) return false;
+
+        const floorRects = Array.isArray(structure.root.userData.floorRects) ? structure.root.userData.floorRects : null;
+        if (floorRects?.length) {
+          const onRect = floorRects.some(rect =>
+            local.x >= Number(rect.minX) - margin && local.x <= Number(rect.maxX) + margin &&
+            local.z >= Number(rect.minZ) - margin && local.z <= Number(rect.maxZ) + margin
+          );
+          if (onRect) return true;
+        } else if (Math.abs(local.x) <= bounds.halfX + margin && Math.abs(local.z) <= bounds.halfZ + margin) {
+          return true;
+        }
+        const rampSurface = getBaseStructureFloorSurface(structure, local);
+        if (rampSurface?.ramp) {
+          const ramp = rampSurface.ramp;
+          const rampMargin = Number(ramp.sideClearance) || 0;
+          if (local.x >= Number(ramp.minX) - rampMargin - margin && local.x <= Number(ramp.maxX) + rampMargin + margin &&
+              local.z >= Number(ramp.minZ) - rampMargin - margin && local.z <= Number(ramp.maxZ) + rampMargin + margin) return true;
+        }
+
+        // Doorway portals intentionally extend the usable floor a little past the visible
+        // chamber edge so adjoining modules remain one continuous walking surface.
+        const portals = Array.isArray(structure.root.userData.floorPortals) ? structure.root.userData.floorPortals : [];
+        for (const portal of portals) {
+          const halfX = Number(portal.halfX) || 0;
+          const halfZ = Number(portal.halfZ) || 0;
+          const dx = local.x - (Number(portal.center?.x) || 0);
+          const dz = local.z - (Number(portal.center?.z) || 0);
+          if (Math.abs(dx) <= halfX + margin && Math.abs(dz) <= halfZ + margin &&
+              local.y >= (Number(portal.minY) || -1.25) - margin &&
+              local.y <= (Number(portal.maxY) || 1.25) + margin) return true;
+        }
+        return false;
+      };
+
+      // STRUCTURE GROUND MODE: while a structure is active, it owns the player's ground
+      // plane. Do not temporarily fall back to the planet just because a frame lands near
+      // a wall, doorway, or module seam. Release only after the player is outside the room's
+      // expanded interior envelope.
+      if (baseFloorLock.active && baseFloorLock.bodyId === activeBodyId) {
+        const lockedStructure = baseStructures.find(structure =>
+          String(structure?.structureId || '') === String(baseFloorLock.structureId || '')
+        );
+        if (lockedStructure?.root?.parent && lockedStructure.root.visible) {
+          const base = baseCores.find(candidate => String(candidate?.baseId || '') === String(lockedStructure.baseId || ''));
+          if (base && String(base.surfaceBodyId || '') === activeBodyId) {
+            const lockedLocal = lockedStructure.root.worldToLocal(playerWorld.clone());
+            const lockedSurface = getBaseStructureFloorSurface(lockedStructure, lockedLocal);
+            const lockedBaseY = Number(lockedStructure.root.userData?.floorBounds?.topY) || 0.20;
+            const stairwellUpperLocked = String(lockedStructure.typeId || '') === 'stairwell' && lockedSurface.y > lockedBaseY + 0.75;
+            const lockedReleaseMargin = stairwellUpperLocked
+              ? BASE_FLOOR_STAIRWELL_UPPER_RELEASE_MARGIN
+              : BASE_FLOOR_RELEASE_MARGIN;
+            if (floorContains(lockedStructure, lockedLocal, lockedReleaseMargin)) {
+              return {
+                structure: lockedStructure,
+                local: lockedLocal,
+                floorTop: lockedSurface.y,
+                floorNormal: lockedSurface.normal,
+                edgeDepth: BASE_FLOOR_LOCK_MARGIN
+              };
+            }
+          }
+        }
+        // The player genuinely left the locked structure. Only now may the planet or another
+        // structure become the active ground source.
+        baseFloorLock.active = false;
+        baseFloorLock.structureId = '';
+        baseFloorLock.bodyId = '';
+      }
+
+      let best = null;
+      let bestDepth = -Infinity;
+
+      for (const structure of baseStructures) {
+        if (!structure?.root?.parent || !structure.root.visible) continue;
+        const base = baseCores.find(candidate => String(candidate?.baseId || '') === String(structure.baseId || ''));
+        if (!base || String(base.surfaceBodyId || '') !== activeBodyId) continue;
+        const bounds = structure.root.userData.floorBounds;
+        if (!bounds) continue;
+        const local = structure.root.worldToLocal(playerWorld.clone());
+        if (!floorContains(structure, local, 0)) continue;
+
+        let edgeDepth = Math.min(bounds.halfX - Math.abs(local.x), bounds.halfZ - Math.abs(local.z));
+        const floorRects = Array.isArray(structure.root.userData.floorRects) ? structure.root.userData.floorRects : null;
+        if (floorRects?.length) {
+          edgeDepth = floorRects.reduce((bestEdge, rect) => {
+            if (local.x < Number(rect.minX) || local.x > Number(rect.maxX) || local.z < Number(rect.minZ) || local.z > Number(rect.maxZ)) return bestEdge;
+            const edge = Math.min(local.x - Number(rect.minX), Number(rect.maxX) - local.x, local.z - Number(rect.minZ), Number(rect.maxZ) - local.z);
+            return Math.max(bestEdge, edge);
+          }, -Infinity);
+        }
+        if (edgeDepth > bestDepth) {
+          const floorSurface = getBaseStructureFloorSurface(structure, local);
+          best = { structure, local, floorTop: floorSurface.y, floorNormal: floorSurface.normal, edgeDepth };
+          bestDepth = edgeDepth;
+        }
+      }
+
+      // A connection seam can legitimately be shared by two modules whose individual floor
+      // rectangles stop just short of one another. Prefer that explicit socket bridge over
+      // falling back to the planet for a frame. Once the player is farther inside either module,
+      // the normal floor-rectangle logic takes over again.
+      const connectionBridge = findConnectionFloorSupport();
+      if (connectionBridge && (!best || connectionBridge.edgeDepth >= best.edgeDepth - 0.15)) {
+        best = connectionBridge;
+      }
+
+      if (best?.structure) {
+        baseFloorLock.structureId = String(best.structure.structureId || '');
+        baseFloorLock.bodyId = activeBodyId;
+        baseFloorLock.active = true;
+        if (String(best.structure.typeId || '') !== 'stairwell') {
+          // A normal elevated room/corridor has taken ownership of the floor again. Keep the
+          // stairwell transition state armed only while the player is actually near its top end.
+          if (stairwellCollisionState.active) {
+            const lockedStair = baseStructures.find(structure => String(structure?.structureId || '') === String(stairwellCollisionState.structureId || ''));
+            if (!lockedStair?.root?.parent) {
+              stairwellCollisionState.active = false;
+              stairwellCollisionState.structureId = '';
+              stairwellCollisionState.bodyId = '';
+            }
+          }
+        }
+      }
+      return best;
+    }
+
+    function resolveBaseStructureFloor(localPosition, bodyId, bodyObject, heightOffset, outPosition, outNormal) {
+      const support = getBaseStructureFloorSupport(localPosition, bodyId, bodyObject);
+      if (!support) return false;
+      const bodyWorld = bodyObject.localToWorld(localPosition.clone());
+      const structureLocal = support.structure.root.worldToLocal(bodyWorld.clone());
+      structureLocal.y = support.floorTop + EYE_HEIGHT + Math.max(0, Number(heightOffset) || 0);
+      const resolvedWorld = support.structure.root.localToWorld(structureLocal);
+      outPosition.copy(bodyObject.worldToLocal(resolvedWorld));
+      const structureQuatWorld = support.structure.root.getWorldQuaternion(new THREE.Quaternion());
+      const bodyQuatWorld = bodyObject.getWorldQuaternion(new THREE.Quaternion());
+      const localNormal = support.floorNormal?.clone?.() || new THREE.Vector3(0, 1, 0);
+      outNormal.copy(localNormal).applyQuaternion(structureQuatWorld).applyQuaternion(bodyQuatWorld.invert()).normalize();
+      return true;
     }
 
     function isWorldPositionBlocked(localPosition) {
@@ -30512,6 +37801,9 @@
         }
       }
 
+      if (updateBaseStructureCollision(localPosition)) return true;
+      if (updateBaseFurnitureCollision(localPosition)) return true;
+
       // Day 19A landmark structures that are meant to be solid. Natural/soft landmarks
       // such as lakes, grass clearings, sleeping bags, resource piles, and wildlife remain
       // walkable; only the explicitly registered structural colliders block the player.
@@ -30566,6 +37858,24 @@
     }
 
     function getActiveWalkingSurfaceWorld(out = new THREE.Vector3()) {
+      const bodyObject = getActiveCollisionBodyObject();
+      const bodyId = getActiveCollisionBodyId();
+
+      // Inside a room, movement must be tangent to the MODULE FLOOR, not tangent to the
+      // spherical planet underneath it. Using the planetary radial normal here was causing
+      // horizontal movement to repeatedly inject a tiny vertical correction into the room floor.
+      const support = getBaseStructureFloorSupport(player.position, bodyId, bodyObject);
+      if (support?.structure?.root) {
+        // IMPORTANT: this function promises a WORLD-SPACE surface normal.  The previous
+        // implementation converted the structure normal back into body-local space and then
+        // handed that vector to the camera-relative movement code as if it were world-space.
+        // On a rotating/orbiting planet that mismatch gave WASD a tiny normal component, which
+        // was then corrected by the room-floor snap every frame and showed up as vertical jitter.
+        const structureQuatWorld = support.structure.root.getWorldQuaternion(new THREE.Quaternion());
+        out.set(0, 1, 0).applyQuaternion(structureQuatWorld).normalize();
+        return out;
+      }
+
       const playerWorld = player.getWorldPosition(new THREE.Vector3());
       let centerWorld;
       if (moonWalking) centerWorld = moonMesh.getWorldPosition(new THREE.Vector3());
@@ -30582,6 +37892,10 @@
     }
 
     function updatePlayer(delta) {
+      if (sittingFurniture) {
+        if (isJumpRequested()) { consumeQueuedJump(); exitSittingFurniture(true); }
+        else { setSittingFurnitureTransform(); return; }
+      }
       let moveX = 0, moveZ = 0;
       if (isActionDown('moveForward')) moveZ -= 1;
       if (isActionDown('moveBackward')) moveZ += 1;
@@ -30657,35 +37971,118 @@
             continue;
           }
 
-          // The current sub-step would enter an obstacle, so cancel just this small step.
-          // The remaining sub-steps still run, which keeps the collision stable even while
-          // sprinting and avoids tunnelling through thin trunks.
+          // Base corridors use thin walls. Project a blocked step along the wall so the
+          // player slides smoothly instead of losing the entire movement step.
+          const slideStep = new THREE.Vector3();
+          if (trySlideAlongBaseStructure(stepMove, player.position, slideStep)) {
+            player.position.add(slideStep);
+          }
+
+          // If no slide is possible, cancel just this small step. The remaining sub-steps
+          // still run, which keeps collision stable even while sprinting.
         }
       }
 
       tmpDir.copy(player.position).normalize();
 
-      const grounded = playerState.heightOffset <= 0;
-      if (grounded && !wasGroundedForAudio) {
-        playAudio('land2', 0.5, 0.98 + Math.random() * 0.04);
-        const landingPos = player.position.clone();
-        const landingNormal = landingPos.clone().normalize();
-        spawnLandingDust(landingPos, landingNormal);
-      }
-      wasGroundedForAudio = grounded;
-      if (grounded && !crouching && isActionDown('jump') && getHungerBand() === 'low') {
-        playerState.verticalVelocity = JUMP_SPEED;
-      }
-      playerState.verticalVelocity -= GRAVITY * delta;
-      playerState.heightOffset += playerState.verticalVelocity * delta;
-      if (playerState.heightOffset < 0) {
-        playerState.heightOffset = 0;
-        playerState.verticalVelocity = 0;
+      const activeBodyObject = getActiveCollisionBodyObject();
+      const activeBodyId = getActiveCollisionBodyId();
+      const baseFloorPosition = new THREE.Vector3();
+      const baseFloorNormal = new THREE.Vector3();
+      let onBaseFloor = resolveBaseStructureFloor(
+        player.position,
+        activeBodyId,
+        activeBodyObject,
+        playerState.heightOffset,
+        baseFloorPosition,
+        baseFloorNormal
+      );
+      // A supported module becomes the sole ground authority for this frame.  While the player
+      // is stably standing on that floor, do not run planetary gravity at all.  Previously we
+      // applied gravity, accumulated a tiny negative height, clamped it back to zero, and then
+      // snapped the player to the module floor again every frame.  That write/correct cycle was
+      // harmless numerically on the planet surface but visibly unstable against a separate room
+      // plane.
+      let structureGroundActive = !!onBaseFloor;
+      let structureGrounded = structureGroundActive &&
+        playerState.heightOffset <= 0.06 &&
+        Math.abs(playerState.verticalVelocity) <= 0.65;
+
+      if (structureGroundActive) {
+        tmpDir.copy(baseFloorNormal);
+        if (structureGrounded) {
+          const wantsJump = !crouching && isJumpRequested();
+          if (wantsJump) {
+            consumeQueuedJump();
+            playerState.verticalVelocity = JUMP_SPEED;
+            playerState.heightOffset = Math.max(0, playerState.heightOffset);
+            structureGrounded = false;
+          } else {
+            playerState.heightOffset = 0;
+            playerState.verticalVelocity = 0;
+          }
+        }
       }
 
-      const groundRadius = PLANET_RADIUS + heightAt(tmpDir);
-      const radius = groundRadius + EYE_HEIGHT + playerState.heightOffset;
-      player.position.copy(tmpDir).multiplyScalar(radius);
+      if (!structureGroundActive && !crouching && playerState.heightOffset <= 0.06 && playerState.verticalVelocity <= 0.65 && isJumpRequested()) {
+        // Outside modules, the planetary ground owns the jump. The module-floor branch above
+        // already applies the jump impulse while standing inside a room. The old code skipped
+        // this branch entirely on the planet surface, so Space worked indoors but did nothing outdoors.
+        consumeQueuedJump();
+        playerState.verticalVelocity = JUMP_SPEED;
+      }
+
+      if (!structureGrounded) {
+        const grounded = playerState.heightOffset <= 0;
+        if (grounded && !wasGroundedForAudio) {
+          playAudio('land2', 0.5, 0.98 + Math.random() * 0.04);
+          const landingPos = player.position.clone();
+          const landingNormal = structureGroundActive ? baseFloorNormal.clone() : landingPos.clone().normalize();
+          spawnLandingDust(landingPos, landingNormal);
+        }
+        playerState.verticalVelocity -= GRAVITY * delta;
+        playerState.heightOffset += playerState.verticalVelocity * delta;
+        if (playerState.heightOffset < 0) {
+          playerState.heightOffset = 0;
+          playerState.verticalVelocity = 0;
+          structureGrounded = structureGroundActive;
+        }
+      }
+
+      if (structureGroundActive) {
+        // Re-resolve after gravity/jump integration so the room floor position is based on the
+        // FINAL heightOffset for this frame rather than the value from the previous frame.
+        onBaseFloor = resolveBaseStructureFloor(
+          player.position,
+          activeBodyId,
+          activeBodyObject,
+          playerState.heightOffset,
+          baseFloorPosition,
+          baseFloorNormal
+        );
+        structureGroundActive = !!onBaseFloor;
+        if (structureGroundActive) {
+          tmpDir.copy(baseFloorNormal);
+          player.position.copy(baseFloorPosition);
+        } else if (stairwellCollisionState.active && playerState.heightOffset <= 0.08) {
+          // A stairwell doorway can straddle two separately-owned floor rectangles. If the
+          // destination module has not claimed the seam yet, keep the player's current upper
+          // floor position for this frame instead of switching to the planet surface. The next
+          // frame re-runs the normal floor resolver and hands control to the attached module.
+          structureGroundActive = true;
+          structureGrounded = true;
+          playerState.heightOffset = 0;
+          playerState.verticalVelocity = 0;
+          tmpDir.copy(baseFloorNormal);
+        }
+      } else {
+        const groundRadius = PLANET_RADIUS + heightAt(tmpDir);
+        const radius = groundRadius + EYE_HEIGHT + playerState.heightOffset;
+        player.position.copy(tmpDir).multiplyScalar(radius);
+      }
+
+      const grounded = playerState.heightOffset <= 0 && Math.abs(playerState.verticalVelocity) <= 0.65;
+      wasGroundedForAudio = grounded;
 
       tmpUpOld.set(0, 1, 0).applyQuaternion(orientation);
       tmpAlign.setFromUnitVectors(tmpUpOld, tmpDir);
@@ -30795,6 +38192,10 @@
 
     function updateMoonPlayer(delta) {
       if (!moonWalking || state.gameState !== 'playing' || state.paused) return;
+      if (sittingFurniture) {
+        if (isJumpRequested()) { consumeQueuedJump(); exitSittingFurniture(true); }
+        else { setSittingFurnitureTransform(); return; }
+      }
 
       let moveX = 0, moveZ = 0;
       if (isActionDown('moveForward')) moveZ -= 1;
@@ -30825,7 +38226,8 @@
       }
 
       const grounded = playerState.heightOffset <= 0;
-      if (grounded && !crouching && isActionDown('jump') && playerState.verticalVelocity <= 0 && getHungerBand() === 'low') {
+      if (grounded && !crouching && isJumpRequested() && playerState.verticalVelocity <= 0) {
+        consumeQueuedJump();
         playerState.verticalVelocity = MOON_JUMP_SPEED;
       }
       playerState.verticalVelocity -= GRAVITY * delta;
@@ -30893,6 +38295,10 @@
 
     function updateOmegaPlayer(delta) {
       if (!omegaWalkingBodyId || state.gameState !== 'playing' || state.paused) return;
+      if (sittingFurniture) {
+        if (isJumpRequested()) { consumeQueuedJump(); exitSittingFurniture(true); }
+        else { setSittingFurnitureTransform(); return; }
+      }
       const body = getOmegaMesh(omegaWalkingBodyId);
       if (!body) return;
       const bodyRadius = omegaWalkingBodyId === 'aurora' ? AURORA_RADIUS : MILERIA_RADIUS;
@@ -30929,7 +38335,7 @@
       }
 
       const grounded = playerState.heightOffset <= 0;
-      if (grounded && !crouching && isActionDown('jump') && playerState.verticalVelocity <= 0 && getHungerBand() === 'low') playerState.verticalVelocity = jumpSpeed;
+      if (grounded && !crouching && isJumpRequested() && playerState.verticalVelocity <= 0) { consumeQueuedJump(); playerState.verticalVelocity = jumpSpeed; }
       playerState.verticalVelocity -= bodyGravity * delta;
       playerState.heightOffset += playerState.verticalVelocity * delta;
       if (playerState.heightOffset < 0) {
@@ -31031,8 +38437,7 @@
     function updateAccountAchievementTelemetry(delta) {
       if (!currentAccountUser || state.gameMode !== 'survival' || state.gameState !== 'playing' || state.paused) return;
 
-      const playerWorldPosition = new THREE.Vector3();
-      player.getWorldPosition(playerWorldPosition);
+      const playerWorldPosition = player.getWorldPosition(achievementPlayerWorldTemp);
       const distanceFromIvis = playerWorldPosition.distanceTo(ivisSolarOrbitPosition);
 
       // 'Away from Ivis' means genuinely outside Ivis' local area. The five-minute threshold
@@ -31087,11 +38492,92 @@
     configureWorldShadows();
 
 
+    // ---------- OPT-C: triangle-aware world detail streaming ----------
+    // The world contains many small static meshes (trees, grass, flowers) that do not need
+    // to be rendered across the entire planet at once. They remain fully present for saves,
+    // multiplayer and harvesting; only their visual meshes are temporarily hidden when they
+    // are too far from the camera. This lowers rendered triangle count without changing world
+    // density or gameplay state.
+    const renderDetailOpt = {
+      timer: 0,
+      interval: 0.18,
+      cameraWorld: new THREE.Vector3(),
+      ivisCameraLocal: new THREE.Vector3(),
+      cordeliaCameraLocal: new THREE.Vector3(),
+      auroraCameraLocal: new THREE.Vector3(),
+      treeDistSq: 240 * 240,
+      grassDistSq: 115 * 115,
+      flowerDistSq: 140 * 140,
+      omegaTreeDistSq: 170 * 170,
+      cordeliaPropDistSq: 180 * 180
+    };
+
+    function updateRenderDetailOptimization(delta) {
+      renderDetailOpt.timer -= Math.max(0, Number(delta) || 0);
+      if (renderDetailOpt.timer > 0) return;
+      renderDetailOpt.timer = renderDetailOpt.interval;
+      if (state.gameState !== 'playing') return;
+
+      camera.getWorldPosition(renderDetailOpt.cameraWorld);
+
+      // Ivis detail cap.
+      renderDetailOpt.ivisCameraLocal.copy(renderDetailOpt.cameraWorld);
+      planetSystem.worldToLocal(renderDetailOpt.ivisCameraLocal);
+      const ivisCam = renderDetailOpt.ivisCameraLocal;
+      for (const tree of treeSpawns) {
+        const root = tree?.root;
+        if (!root) continue;
+        const visible = !tree.chopped && root.position.distanceToSquared(ivisCam) <= renderDetailOpt.treeDistSq;
+        if (root.visible !== visible) root.visible = visible;
+      }
+      for (const grass of grassSpawns) {
+        const root = grass?.root;
+        if (!root) continue;
+        const visible = !grass.cut && root.position.distanceToSquared(ivisCam) <= renderDetailOpt.grassDistSq;
+        if (root.visible !== visible) root.visible = visible;
+      }
+      for (const flower of ivisFlowerRoots) {
+        if (!flower) continue;
+        const visible = flower.position.distanceToSquared(ivisCam) <= renderDetailOpt.flowerDistSq;
+        if (flower.visible !== visible) flower.visible = visible;
+      }
+
+      // Aurora forest is streamed independently, so the distant planet keeps its terrain
+      // silhouette but does not render hundreds of tiny trees from across the solar system.
+      renderDetailOpt.auroraCameraLocal.copy(renderDetailOpt.cameraWorld);
+      auroraMesh.worldToLocal(renderDetailOpt.auroraCameraLocal);
+      const auroraCam = renderDetailOpt.auroraCameraLocal;
+      for (const tree of auroraTreeSpawns) {
+        const root = tree?.root;
+        if (!root) continue;
+        const visible = !tree.chopped && root.position.distanceToSquared(auroraCam) <= renderDetailOpt.omegaTreeDistSq;
+        if (root.visible !== visible) root.visible = visible;
+      }
+
+      // Cordelia's static cactus/resource dressing gets the same treatment.
+      renderDetailOpt.cordeliaCameraLocal.copy(renderDetailOpt.cameraWorld);
+      cordeliaMesh.worldToLocal(renderDetailOpt.cordeliaCameraLocal);
+      const cordeliaCam = renderDetailOpt.cordeliaCameraLocal;
+      for (const cactus of cordeliaCactusSpawns) {
+        const root = cactus?.root;
+        if (!root) continue;
+        const visible = root.position.distanceToSquared(cordeliaCam) <= renderDetailOpt.cordeliaPropDistSq;
+        if (root.visible !== visible) root.visible = visible;
+      }
+      for (const rock of cordeliaRockSpawns) {
+        const root = rock?.root;
+        if (!root) continue;
+        const visible = !rock.mined && root.position.distanceToSquared(cordeliaCam) <= renderDetailOpt.cordeliaPropDistSq;
+        if (root.visible !== visible) root.visible = visible;
+      }
+    }
+
     // ---------- main loop ----------
     let interactionPromptUpdateTimer = 0;
     const clock = new THREE.Clock();
     function animate() {
       requestAnimationFrame(animate);
+      const profilerFrameMs = recordPerformanceProfilerFrame();
       rainbowCosmeticTime += 0.012;
       if (accountCosmetics.equippedColor === 'rainbow') {
         applyPlayerShirtRainbow(rainbowCosmeticTime);
@@ -31111,12 +38597,12 @@
       if (sleepingWasActive) sleepingGameRemaining = Math.max(0, sleepingGameRemaining - sleepGameStep);
       const simulationDelta = sleepingWasActive ? sleepGameStep : delta;
       updateParticles(delta);
+      updateBaseCoreVisuals(delta);
+      updateBaseDoorAnimations(delta);
+      updateObservationRoofAnimations(delta);
+      updateDockingRoofAnimations(delta);
       updateSpecialParticles(delta);
       updatePlanetaryLandmarkDiscoveries();
-      if (state.gameState === 'playing') {
-        updateConciergeQuestInvestigationProximity();
-        updateConciergeQuestWildlifeObservations(delta);
-      }
       conciergeQuestUiTimer -= delta;
       if (conciergeQuestUiTimer <= 0) {
         conciergeQuestUiTimer = 1;
@@ -31177,6 +38663,7 @@
         updateCrystalRespawns();
         updateAllFurnaceSmelting();
         updateLocalLights(delta);
+        updateRenderDetailOptimization(delta);
         updateAmbientAudio();
       }
       updateMusic(delta);
@@ -31233,6 +38720,7 @@
         interactionPromptUpdateTimer += delta;
         if (interactionPromptUpdateTimer >= 0.075) {
           interactionPromptUpdateTimer = 0;
+          updateFurniturePlacementEntry();
           updateCrystalPrompt();
         }
         flashlightStatus.classList.toggle("hidden", !playerState.flashlightOn);
@@ -31241,14 +38729,15 @@
         if (!solarHazardLock && !spaceFuelHazardLock && !syspoHazardLock && !sleepingActive) {
           if (playerState.inRocket && !warpInProgress) {
             updateRocketFlight(delta);
+            autoCollectSyspoMethane(delta);
             setRocketFlightUI();
           } else if (moonWalking) {
-            updateMoonPlayer(delta);
+            if (!uiState.baseBuildOpen) updateMoonPlayer(delta);
           } else if (cordeliaWalking) {
-            updateCordeliaPlayer(delta);
+            if (!uiState.baseBuildOpen) updateCordeliaPlayer(delta);
           } else if (omegaWalkingBodyId) {
-            updateOmegaPlayer(delta);
-          } else if (!state.paused) {
+            if (!uiState.baseBuildOpen) updateOmegaPlayer(delta);
+          } else if (!state.paused && !uiState.baseBuildOpen) {
             updatePlayer(delta);
           }
           updatePlayerModelAnimation(delta);
@@ -31260,6 +38749,8 @@
         }
         updateMultiplayerEntityVisuals(delta);
         updateCompassHud();
+        if (uiState.baseBuildOpen) updateBaseBuildCamera(delta);
+        updateBaseConnectionSnapPulses(delta);
         if (sleepingWasActive) {
           sleepingRealElapsed += delta;
           const overlayText = document.getElementById('sleepOverlaySubtext');
@@ -31272,6 +38763,7 @@
           if (sleepingRealElapsed >= SLEEP_REAL_SECONDS - 0.001 || sleepingGameRemaining <= 0) finishSleeping();
         }
         renderer.render(scene, activeCamera);
+        updatePerformanceProfilerUi(profilerFrameMs);
         if (mapOpen) {
           updateMapPlayerMarker();
           mapRenderer.render(mapScene, mapCamera);
@@ -31283,6 +38775,7 @@
         flashlightStatus.classList.add("hidden"); // keep the distant home-screen view of the planet crisp, not hazy
         updateMenuCamera(delta);
         renderer.render(scene, menuCamera);
+        updatePerformanceProfilerUi(profilerFrameMs);
       }
     }
 
